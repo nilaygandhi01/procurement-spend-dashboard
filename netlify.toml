@@ -1,0 +1,10 @@
+# Optional: deploy from this folder with Netlify CLI or drag-and-drop:
+#   npx netlify-cli deploy --prod --dir .
+# Useful if data.json exceeds GitHub's 100 MB blob limit.
+[build]
+  publish = "."
+
+[[headers]]
+  for = "/data.json"
+  [headers.values]
+    Cache-Control = "public, max-age=300"
