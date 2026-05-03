@@ -1,0 +1,2513 @@
+<!DOCTYPE html>
+<!-- Data: python refresh_data.py → data.json (same folder as this HTML) or public/data/data.json. Serve from that folder.  -->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Cummins IDP procurement spend (CCS). data.json is a flat JSON array (refresh_data.py). Yearly and total spend."
+    />
+    <meta name="color-scheme" content="light" />
+    <title>Cummins IDP Dashboard — CCS Spend</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <style>
+      :root {
+        --idp-page: #f2f2f2;
+        --idp-card: #ffffff;
+        --idp-line: #e6e6e6;
+        --idp-txt: #333333;
+        --idp-muted: #8a8a8a;
+        --idp-c-direct: #a7b1ce;
+        --idp-c-indirect: #f07f00;
+        --idp-c-action: #f07f00;
+        --idp-c-positive: #6fbf73;
+        --idp-c-trend-primary: #1f3a8a;
+        --idp-c-trend-secondary: #2e5cb8;
+      }
+      #idp-app {
+        background: var(--idp-page) !important;
+        color: var(--idp-txt);
+        font-family: Inter, system-ui, sans-serif;
+      }
+      #idp-app .idp-card,
+      .idp-card,
+      .idp-surface,
+      .kpi-exec {
+        background: var(--idp-card) !important;
+        border: 1px solid var(--idp-line) !important;
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05), 0 1px 8px rgba(0, 0, 0, 0.04) !important;
+        color: var(--idp-txt) !important;
+      }
+      #idp-app h1,
+      #idp-app h2,
+      #idp-app h3,
+      #idp-app h4,
+      .idp-body-text {
+        color: var(--idp-txt) !important;
+      }
+      #idp-app .text-slate-500,
+      #idp-app .text-slate-400,
+      .idp-muted,
+      .text-idp-muted {
+        color: var(--idp-muted) !important;
+      }
+      .idp-ytd {
+        color: var(--idp-c-action) !important;
+      }
+      .dash-shell,
+      #app-main {
+        overflow: visible;
+      }
+      #filter-wrap,
+      #filter-scroll {
+        overflow: visible !important;
+      }
+      #filter-wrap {
+        margin-bottom: 1rem;
+        margin-top: 0;
+        border-color: var(--idp-line) !important;
+      }
+      #filter-bar .ff-group .ff-btn.ff-filter-active {
+        border-color: #1f3a8a !important;
+        box-shadow: 0 0 0 1px rgba(31, 58, 138, 0.15);
+      }
+      #filter-bar .ff-group .ff-btn.ff-filter-active .ff-val {
+        color: #1f3a8a !important;
+        font-weight: 600;
+      }
+      #filter-bar .ff-group .ff-btn:hover {
+        border-color: #6b7280 !important;
+        background: #fafafa !important;
+      }
+      .ff-panel,
+      [id^="ff-panel"] {
+        position: absolute;
+        z-index: 9999;
+        background: var(--idp-card) !important;
+        border: 1px solid var(--idp-line) !important;
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08) !important;
+        color: var(--idp-txt) !important;
+      }
+      .ff-opts {
+        -webkit-overflow-scrolling: touch;
+      }
+      .ff-chk-row.ff-chk-sel,
+      .ff-sa.ff-sa-sel {
+        background-color: rgba(167, 177, 206, 0.25);
+      }
+      .ff-chk-row:hover,
+      .ff-sa:hover,
+      label.ff-sa:hover {
+        background: rgba(46, 92, 184, 0.06) !important;
+      }
+      .ff-cb,
+      .ff-cb-sa {
+        accent-color: #f07f00;
+      }
+      #idp-app .ff-btn,
+      .ff-btn.idp-ff {
+        background: #ffffff !important;
+        color: #333 !important;
+        border: 1px solid #8a8a8a !important;
+        box-shadow: none;
+      }
+      #idp-app .ff-ic,
+      .ff-ic {
+        color: #333 !important;
+        background: #f2f2f2 !important;
+        border-color: var(--idp-line) !important;
+      }
+      #idp-app .ff-val,
+      .ff-val {
+        color: #333 !important;
+      }
+      .ff-apply,
+      #idp-app .ff-apply {
+        background: #f07f00 !important;
+        color: #fff !important;
+        border: none;
+      }
+      .ff-apply:hover {
+        filter: brightness(1.05);
+      }
+      .site-header {
+        overflow: visible;
+      }
+      .site-header h1 {
+        box-sizing: border-box;
+        max-width: 100%;
+        color: var(--idp-txt);
+      }
+      .chart-loading {
+        background: rgba(255, 255, 255, 0.65) !important;
+      }
+      #idp-app .tqb,
+      .tqb {
+        border: 1px solid #8a8a8a;
+        color: #333;
+        background: #fff;
+      }
+      .tqb.rounded {
+        color: #333;
+      }
+      .tqb.border-cyan-500\/40,
+      .tqb.text-cyan-200 {
+        border: 1px solid #1f3a8a;
+        color: #1f3a8a;
+        background: #fff;
+        font-weight: 600;
+      }
+      .f-ym,
+      .idp-ym {
+        color: #333;
+        background: #fff;
+        border: 1px solid #8a8a8a;
+      }
+      #idp-app #btn-reset-filters,
+      .btn-idp-ghost {
+        color: #333;
+        background: #fff;
+        border: 1px solid #8a8a8a;
+      }
+      #idp-app #app-sidebar,
+      #idp-app #app-sidebar a {
+        color: #333;
+      }
+      #app-layout {
+        --sb-w: 16rem;
+        width: 100%;
+      }
+      #app-layout-inner {
+        display: flex;
+        width: 100%;
+        align-items: stretch;
+        min-height: 100%;
+      }
+      #app-layout.sidebar--collapsed {
+        --sb-w: 3.5rem;
+      }
+      #app-sidebar {
+        box-sizing: border-box;
+        flex: 0 0 var(--sb-w);
+        width: var(--sb-w);
+        min-width: 0;
+        max-width: var(--sb-w);
+        overflow: hidden;
+        transition: flex-basis 0.22s ease, width 0.22s ease, max-width 0.22s ease, background 0.15s ease;
+        background: #ffffff !important;
+        border-right: 1px solid #e6e6e6 !important;
+        display: flex;
+        flex-direction: column;
+        min-height: 100%;
+        color: #333;
+      }
+      #app-main-wrap {
+        flex: 1 1 0;
+        min-width: 0;
+        min-height: 0;
+        background: #f2f2f2;
+      }
+      .sidebar-title {
+        transition: opacity 0.15s ease;
+        color: #8a8a8a;
+      }
+      #app-layout.sidebar--collapsed .sidebar-when-expanded {
+        display: none !important;
+      }
+      .app-nav-btn {
+        display: flex;
+        align-items: center;
+        gap: 0.5rem;
+        width: 100%;
+        border-radius: 0.5rem;
+        border: 1px solid transparent;
+        padding: 0.5rem 0.65rem;
+        font-size: 0.8125rem;
+        font-weight: 500;
+        color: #333 !important;
+        background: transparent;
+        text-align: left;
+        transition: color 0.12s, background 0.12s, border-color 0.12s;
+        cursor: pointer;
+      }
+      .app-nav-btn:hover {
+        color: #f07f00;
+        background: #f2f2f2;
+        border-color: #e6e6e6;
+      }
+      .app-nav-btn.is-active {
+        color: #f07f00 !important;
+        background: rgba(240, 127, 0, 0.1) !important;
+        border-color: #f07f00 !important;
+        font-weight: 600;
+      }
+      .idp-loading {
+        background: #ffffff !important;
+        border: 1px solid #e6e6e6;
+        color: #333;
+      }
+      #idp-app #filter-bar .ff-btn,
+      #idp-app .ff-btn {
+        background: #fff !important;
+        border: 1px solid #8a8a8a !important;
+        color: #333 !important;
+        box-shadow: none !important;
+      }
+      #idp-app .ff-btn .text-slate-200,
+      #idp-app .ff-caret,
+      #idp-app [class~="ff-val"] {
+        color: #333 !important;
+      }
+      #idp-app [class~="ff-panel"] {
+        background: #fff !important;
+        border: 1px solid #e6e6e6 !important;
+        --tw-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.06) !important;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.06) !important;
+      }
+      #idp-app [class~="ff-panel"] [class~="ff-sa"],
+      #idp-app [class~="ff-panel"] label.ff-sa,
+      #idp-app [class~="ff-panel"] .ff-chk-row {
+        color: #333 !important;
+        border-color: #e6e6e6 !important;
+        background: #fff !important;
+      }
+      #idp-app [class~="f-ym"] {
+        color: #333;
+        background: #fff;
+        border: 1px solid #8a8a8a;
+      }
+      #idp-app .ff-search-wrap {
+        border-color: var(--idp-line) !important;
+      }
+      #idp-app .ff-search {
+        box-sizing: border-box;
+        width: 100%;
+        color: #333;
+        background: #fff;
+        border: 1px solid #8a8a8a;
+        border-radius: 0.25rem;
+      }
+      #idp-app .ff-search::placeholder {
+        color: var(--idp-muted);
+      }
+      #idp-app .ff-search:focus {
+        outline: 2px solid rgba(31, 58, 138, 0.35);
+        outline-offset: 1px;
+      }
+      body[data-idp-app-view="harmonization-direct"] #filter-wrap,
+      body[data-idp-app-view="harmonization-indirect"] #filter-wrap {
+        display: none !important;
+      }
+      body[data-idp-app-view="harmonization-direct"] #btn-dl-harm-indirect,
+      body[data-idp-app-view="harmonization-indirect"] #btn-dl-harm-direct {
+        display: none !important;
+      }
+    </style>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+    <script src="harmonization-client.js"></script>
+  </head>
+  <body id="idp-app" class="min-h-screen font-sans antialiased" style="font-family: Inter, system-ui, sans-serif; background: #f2f2f2; color: #333">
+    <div
+      id="loading"
+      class="pointer-events-none fixed inset-0 z-[100] flex items-center justify-center transition bg-white/0 opacity-0"
+    >
+      <div class="idp-loading rounded-lg border px-6 py-4 shadow">Loading…</div>
+    </div>
+    <p id="data-line" class="sr-only" role="status" aria-live="polite"></p>
+
+    <div id="app-layout" class="w-full" role="navigation" aria-label="App layout">
+      <div id="app-layout-inner" class="mx-auto flex w-full max-w-[100vw] items-stretch" style="min-height: min(100vh, 100%)">
+        <aside
+          id="app-sidebar"
+          class="z-[150] flex flex-col"
+          aria-label="Primary navigation"
+        >
+          <div
+            class="flex shrink-0 items-center justify-between gap-1 border-b border-[#E6E6E6] px-2 py-2.5"
+          >
+            <span
+              class="sidebar-when-expanded truncate pl-0.5 text-xs font-semibold uppercase tracking-wider idp-muted"
+              >IDP</span
+            >
+            <button
+              type="button"
+              id="btn-sidebar-toggle"
+              class="shrink-0 rounded-md border border-[#8A8A8A] bg-white p-1.5 text-[#333] hover:bg-[#F2F2F2]"
+              title="Expand or collapse navigation"
+              aria-label="Toggle sidebar"
+            >
+              <span class="icon-expand inline-block" aria-hidden="true">‹</span
+              ><span class="icon-collapse hidden" aria-hidden="true">›</span>
+            </button>
+          </div>
+          <nav class="flex min-h-0 flex-1 flex-col gap-0.5 p-2" id="app-sidebar-nav">
+            <button
+              type="button"
+              class="app-nav-btn is-active"
+              data-app-view="overview"
+              id="nav-overview"
+            >
+              <span class="text-base leading-none" aria-hidden="true">◎</span>
+              <span class="sidebar-when-expanded">Overview</span>
+            </button>
+            <button
+              type="button"
+              class="app-nav-btn"
+              data-app-view="harmonization-direct"
+              id="nav-harmonization-direct"
+            >
+              <span class="text-base leading-none" aria-hidden="true">▦</span>
+              <span class="sidebar-when-expanded">Harmonization — Direct</span>
+            </button>
+            <button
+              type="button"
+              class="app-nav-btn"
+              data-app-view="harmonization-indirect"
+              id="nav-harmonization-indirect"
+            >
+              <span class="text-base leading-none" aria-hidden="true">▤</span>
+              <span class="sidebar-when-expanded">Harmonization — Indirect</span>
+            </button>
+            <button
+              type="button"
+              class="app-nav-btn"
+              data-app-view="cleansheet"
+              id="nav-cleansheet"
+            >
+              <span class="text-base leading-none" aria-hidden="true">◇</span>
+              <span class="sidebar-when-expanded">Cleansheet Analysis</span>
+            </button>
+          </nav>
+        </aside>
+        <div
+          id="app-main-wrap"
+          class="min-w-0 flex-1 overflow-x-visible"
+        >
+    <div class="dash-shell mx-auto max-w-[1920px] w-full min-w-0 overflow-x-visible overflow-y-visible px-3 py-2 sm:px-5 sm:py-3">
+      <header class="site-header relative mb-1 min-h-0 text-left sm:min-h-0">
+        <div style="display: flex; align-items: center; gap: 12px">
+          <img src="logo.png" alt="Logo" style="height: 36px; width: auto" />
+          <h1 class="m-0 pl-0 pr-0 text-left text-lg font-semibold leading-snug tracking-tight sm:text-xl" style="color: #333">
+            Cummins IDP Dashboard — CCS Spend
+          </h1>
+        </div>
+      </header>
+
+      <p id="filter-status" class="sr-only" aria-live="polite">—</p>
+      <div
+        id="filter-wrap"
+        class="w-full min-w-0 border-b border-[#E6E6E6] pb-3"
+      >
+        <div id="filter-scroll" class="w-full min-w-0">
+        <div
+        id="filter-bar"
+        class="ff-root flex w-max min-w-0 max-w-full flex-nowrap items-end gap-1.5"
+      >
+        <!-- bu -->
+        <div class="ff-group relative shrink-0" data-ff="f-bu">
+          <p class="mb-0.5 pl-0.5 text-[0.65rem] font-medium uppercase tracking-wide idp-muted">Business Unit</p>
+          <button type="button" class="ff-btn group flex w-[10.5rem] max-w-[12vw] min-w-[8.5rem] items-stretch overflow-hidden rounded-lg border border-sky-500/50 bg-slate-900/90 text-left shadow" aria-haspopup="listbox" aria-expanded="false">
+            <span class="ff-ic flex w-7 shrink-0 items-center justify-center border-r border-slate-700/80 bg-slate-800/90 text-sky-300" aria-hidden="true"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 21V8l2-1 7-4 7 4 2 1v13H3z"/><path d="M9 9v.01M9 12h.01M9 15h.01M9 18h.01M15 9v.01M15 12h.01M15 15h.01M15 18h.01"/></svg></span>
+            <span class="ff-val min-w-0 flex-1 truncate py-1.5 pl-1.5 pr-0.5 text-xs text-slate-200" data-ff-summ>All BUs</span>
+            <span class="ff-caret flex w-4 shrink-0 items-center text-slate-500">▾</span>
+          </button>
+          <div
+            class="ff-panel pointer-events-auto absolute left-0 top-full z-[9999] mt-1 flex hidden max-h-[20rem] w-64 min-w-0 flex-col overflow-x-visible overflow-y-visible rounded-lg border border-slate-600 bg-slate-900 shadow-2xl ring-1 ring-slate-800"
+            data-ff-for="f-bu"
+            data-ff-kind="str"
+            role="listbox"
+            aria-multiselectable="true"
+          >
+            <div class="ff-search-wrap shrink-0 border-b border-slate-600/80 px-2 pt-2 pb-2">
+              <input type="search" class="ff-search w-full px-2 py-1.5 text-sm" placeholder="Search…" autocomplete="off" aria-label="Search business units" />
+            </div>
+            <label class="ff-sa group flex cursor-pointer select-none items-center gap-2 border-b border-slate-600/80 px-2.5 py-2 text-left text-sm text-slate-200 hover:bg-slate-800/60"
+              ><input type="checkbox" class="ff-cb ff-cb-sa h-3.5 w-3.5 shrink-0 rounded" data-selall="1" /><span class="font-medium">Select all</span></label
+            >
+            <div class="ff-opts min-h-0 max-h-48 min-w-0 flex-1 overflow-y-auto py-0.5"></div>
+            <div class="shrink-0 border-t border-slate-600/80 p-2">
+              <button type="button" class="ff-apply w-full rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-500">Apply</button>
+            </div>
+            <select id="f-bu" class="f-select sr-only" multiple size="0" aria-hidden="true" tabindex="-1"></select>
+          </div>
+        </div>
+        <!-- c1 L1 bakery/warm -->
+        <div class="ff-group relative shrink-0" data-ff="f-c1">
+          <p class="mb-0.5 pl-0.5 text-[0.65rem] font-medium uppercase tracking-wide idp-muted">Category L1</p>
+          <button type="button" class="ff-btn flex w-[10.5rem] max-w-[12vw] min-w-[8.5rem] items-stretch overflow-hidden rounded-lg border border-emerald-500/45 bg-slate-900/90 text-left shadow" aria-haspopup="listbox" aria-expanded="false">
+            <span class="ff-ic flex w-7 shrink-0 items-center justify-center border-r border-slate-700/80 text-emerald-300" aria-hidden="true"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg></span>
+            <span class="ff-val min-w-0 flex-1 truncate py-1.5 pl-1.5 pr-0.5 text-xs text-slate-200" data-ff-summ>All L1</span>
+            <span class="ff-caret flex w-4 shrink-0 items-center text-slate-500">▾</span>
+          </button>
+          <div
+            class="ff-panel pointer-events-auto absolute left-0 top-full z-[9999] mt-1 flex hidden max-h-[20rem] w-64 min-w-0 flex-col overflow-x-visible overflow-y-visible rounded-lg border border-slate-600 bg-slate-900 shadow-2xl"
+            data-ff-for="f-c1"
+            data-ff-kind="str"
+            role="listbox"
+            aria-multiselectable="true"
+          >
+            <div class="ff-search-wrap shrink-0 border-b border-slate-600/80 px-2 pt-2 pb-2">
+              <input type="search" class="ff-search w-full px-2 py-1.5 text-sm" placeholder="Search…" autocomplete="off" aria-label="Search category L1" />
+            </div>
+            <label class="ff-sa group flex cursor-pointer select-none items-center gap-2 border-b border-slate-600/80 px-2.5 py-2 text-left text-sm text-slate-200 hover:bg-slate-800/60"
+              ><input type="checkbox" class="ff-cb ff-cb-sa h-3.5 w-3.5 shrink-0 rounded" data-selall="1" /><span class="font-medium">Select all</span></label
+            >
+            <div class="ff-opts min-h-0 max-h-48 min-w-0 flex-1 overflow-y-auto py-0.5"></div>
+            <div class="shrink-0 border-t border-slate-600/80 p-2">
+              <button type="button" class="ff-apply w-full rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-500">Apply</button>
+            </div>
+            <select id="f-c1" class="f-select sr-only" multiple size="0" aria-hidden="true" tabindex="-1"></select>
+          </div>
+        </div>
+        <div class="ff-group relative shrink-0" data-ff="f-c2">
+          <p class="mb-0.5 pl-0.5 text-[0.65rem] font-medium uppercase tracking-wide idp-muted">Category L2</p>
+          <button type="button" class="ff-btn flex w-[10.5rem] max-w-[12vw] min-w-[8.5rem] items-stretch overflow-hidden rounded-lg border border-amber-400/45 bg-slate-900/90 text-left shadow" aria-haspopup="listbox" aria-expanded="false">
+            <span class="ff-ic flex w-7 shrink-0 items-center justify-center border-r border-slate-700/80 text-amber-200" aria-hidden="true"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 3h6v6H3V3zm12 0h6v6h-6V3zM3 15h6v6H3v-6zm6-6h6v6H9V9z"/></svg></span>
+            <span class="ff-val min-w-0 flex-1 truncate py-1.5 pl-1.5 pr-0.5 text-xs text-slate-200" data-ff-summ>All L2</span>
+            <span class="ff-caret flex w-4 shrink-0 items-center text-slate-500">▾</span>
+          </button>
+          <div
+            class="ff-panel pointer-events-auto absolute left-0 top-full z-[9999] mt-1 flex hidden max-h-[20rem] w-64 min-w-0 flex-col overflow-x-visible overflow-y-visible rounded-lg border border-slate-600 bg-slate-900 shadow-2xl"
+            data-ff-for="f-c2"
+            data-ff-kind="str"
+            role="listbox"
+            aria-multiselectable="true"
+          >
+            <div class="ff-search-wrap shrink-0 border-b border-slate-600/80 px-2 pt-2 pb-2">
+              <input type="search" class="ff-search w-full px-2 py-1.5 text-sm" placeholder="Search…" autocomplete="off" aria-label="Search category L2" />
+            </div>
+            <label class="ff-sa group flex cursor-pointer select-none items-center gap-2 border-b border-slate-600/80 px-2.5 py-2 text-left text-sm text-slate-200 hover:bg-slate-800/60"
+              ><input type="checkbox" class="ff-cb ff-cb-sa h-3.5 w-3.5 shrink-0 rounded" data-selall="1" /><span class="font-medium">Select all</span></label
+            >
+            <div class="ff-opts min-h-0 max-h-48 min-w-0 flex-1 overflow-y-auto py-0.5"></div>
+            <div class="shrink-0 border-t border-slate-600/80 p-2">
+              <button type="button" class="ff-apply w-full rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-500">Apply</button>
+            </div>
+            <select id="f-c2" class="f-select sr-only" multiple size="0" aria-hidden="true" tabindex="-1"></select>
+          </div>
+        </div>
+        <div class="ff-group relative shrink-0" data-ff="f-c3">
+          <p class="mb-0.5 pl-0.5 text-[0.65rem] font-medium uppercase tracking-wide idp-muted">Category L3</p>
+          <button type="button" class="ff-btn flex w-[10.5rem] max-w-[12vw] min-w-[8.5rem] items-stretch overflow-hidden rounded-lg border border-red-500/50 bg-slate-900/90 text-left shadow" aria-haspopup="listbox" aria-expanded="false">
+            <span class="ff-ic flex w-7 shrink-0 items-center justify-center border-r border-slate-700/80 text-red-300" aria-hidden="true"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 3h6v6H3V3zm6 0h6v6H9V3zM3 9h6v6H3V9zm0 6h6v6H3v-6zm6 0h6v6H9v-6z"/></svg></span>
+            <span class="ff-val min-w-0 flex-1 truncate py-1.5 pl-1.5 pr-0.5 text-xs text-slate-200" data-ff-summ>All L3</span>
+            <span class="ff-caret flex w-4 shrink-0 items-center text-slate-500">▾</span>
+          </button>
+          <div
+            class="ff-panel pointer-events-auto absolute left-0 top-full z-[9999] mt-1 flex hidden max-h-[20rem] w-64 min-w-0 flex-col overflow-x-visible overflow-y-visible rounded-lg border border-slate-600 bg-slate-900 shadow-2xl"
+            data-ff-for="f-c3"
+            data-ff-kind="str"
+            role="listbox"
+            aria-multiselectable="true"
+          >
+            <div class="ff-search-wrap shrink-0 border-b border-slate-600/80 px-2 pt-2 pb-2">
+              <input type="search" class="ff-search w-full px-2 py-1.5 text-sm" placeholder="Search…" autocomplete="off" aria-label="Search category L3" />
+            </div>
+            <label class="ff-sa group flex cursor-pointer select-none items-center gap-2 border-b border-slate-600/80 px-2.5 py-2 text-left text-sm text-slate-200 hover:bg-slate-800/60"
+              ><input type="checkbox" class="ff-cb ff-cb-sa h-3.5 w-3.5 shrink-0 rounded" data-selall="1" /><span class="font-medium">Select all</span></label
+            >
+            <div class="ff-opts min-h-0 max-h-48 min-w-0 flex-1 overflow-y-auto py-0.5"></div>
+            <div class="shrink-0 border-t border-slate-600/80 p-2">
+              <button type="button" class="ff-apply w-full rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-500">Apply</button>
+            </div>
+            <select id="f-c3" class="f-select sr-only" multiple size="0" aria-hidden="true" tabindex="-1"></select>
+          </div>
+        </div>
+        <div class="ff-group relative shrink-0" data-ff="f-c4">
+          <p class="mb-0.5 pl-0.5 text-[0.65rem] font-medium uppercase tracking-wide idp-muted">Category L4</p>
+          <button type="button" class="ff-btn flex w-[10.5rem] max-w-[12vw] min-w-[8.5rem] items-stretch overflow-hidden rounded-lg border border-fuchsia-500/45 bg-slate-900/90 text-left shadow" aria-haspopup="listbox" aria-expanded="false">
+            <span class="ff-ic flex w-7 shrink-0 items-center justify-center border-r border-slate-700/80 text-fuchsia-300" aria-hidden="true"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 6h16M4 12h16M4 18h10"/></svg></span>
+            <span class="ff-val min-w-0 flex-1 truncate py-1.5 pl-1.5 pr-0.5 text-xs text-slate-200" data-ff-summ>All L4</span>
+            <span class="ff-caret flex w-4 shrink-0 items-center text-slate-500">▾</span>
+          </button>
+          <div
+            class="ff-panel pointer-events-auto absolute left-0 top-full z-[9999] mt-1 flex hidden max-h-[20rem] w-64 min-w-0 flex-col overflow-x-visible overflow-y-visible rounded-lg border border-slate-600 bg-slate-900 shadow-2xl"
+            data-ff-for="f-c4"
+            data-ff-kind="str"
+            role="listbox"
+            aria-multiselectable="true"
+          >
+            <div class="ff-search-wrap shrink-0 border-b border-slate-600/80 px-2 pt-2 pb-2">
+              <input type="search" class="ff-search w-full px-2 py-1.5 text-sm" placeholder="Search…" autocomplete="off" aria-label="Search category L4" />
+            </div>
+            <label class="ff-sa group flex cursor-pointer select-none items-center gap-2 border-b border-slate-600/80 px-2.5 py-2 text-left text-sm text-slate-200 hover:bg-slate-800/60"
+              ><input type="checkbox" class="ff-cb ff-cb-sa h-3.5 w-3.5 shrink-0 rounded" data-selall="1" /><span class="font-medium">Select all</span></label
+            >
+            <div class="ff-opts min-h-0 max-h-48 min-w-0 flex-1 overflow-y-auto py-0.5"></div>
+            <div class="shrink-0 border-t border-slate-600/80 p-2">
+              <button type="button" class="ff-apply w-full rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-500">Apply</button>
+            </div>
+            <select id="f-c4" class="f-select sr-only" multiple size="0" aria-hidden="true" tabindex="-1"></select>
+          </div>
+        </div>
+        <div class="ff-group relative shrink-0" data-ff="f-site">
+          <p class="mb-0.5 pl-0.5 text-[0.65rem] font-medium uppercase tracking-wide idp-muted">CMI Site</p>
+          <button type="button" class="ff-btn flex w-[10.5rem] max-w-[12vw] min-w-[8.5rem] items-stretch overflow-hidden rounded-lg border border-cyan-500/45 bg-slate-900/90 text-left shadow" aria-haspopup="listbox" aria-expanded="false">
+            <span class="ff-ic flex w-7 shrink-0 items-center justify-center border-r border-slate-700/80 text-cyan-300" aria-hidden="true"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 21c-3-4-6-6.5-6-9.5a6 6 0 1112 0c0 3-3 5.5-6 9.5z"/><circle cx="12" cy="11" r="2" fill="currentColor"/></svg></span>
+            <span class="ff-val min-w-0 flex-1 truncate py-1.5 pl-1.5 pr-0.5 text-xs text-slate-200" data-ff-summ>All sites</span>
+            <span class="ff-caret flex w-4 shrink-0 items-center text-slate-500">▾</span>
+          </button>
+          <div
+            class="ff-panel pointer-events-auto absolute left-0 top-full z-[9999] mt-1 flex hidden max-h-[20rem] w-64 min-w-0 flex-col overflow-x-visible overflow-y-visible rounded-lg border border-slate-600 bg-slate-900 shadow-2xl"
+            data-ff-for="f-site"
+            data-ff-kind="str"
+            role="listbox"
+            aria-multiselectable="true"
+          >
+            <div class="ff-search-wrap shrink-0 border-b border-slate-600/80 px-2 pt-2 pb-2">
+              <input type="search" class="ff-search w-full px-2 py-1.5 text-sm" placeholder="Search…" autocomplete="off" aria-label="Search sites" />
+            </div>
+            <label class="ff-sa group flex cursor-pointer select-none items-center gap-2 border-b border-slate-600/80 px-2.5 py-2 text-left text-sm text-slate-200 hover:bg-slate-800/60"
+              ><input type="checkbox" class="ff-cb ff-cb-sa h-3.5 w-3.5 shrink-0 rounded" data-selall="1" /><span class="font-medium">Select all</span></label
+            >
+            <div class="ff-opts min-h-0 max-h-48 min-w-0 flex-1 overflow-y-auto py-0.5"></div>
+            <div class="shrink-0 border-t border-slate-600/80 p-2">
+              <button type="button" class="ff-apply w-full rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-500">Apply</button>
+            </div>
+            <select id="f-site" class="f-select sr-only" multiple size="0" aria-hidden="true" tabindex="-1"></select>
+          </div>
+        </div>
+        <div class="ff-group relative shrink-0" data-ff="f-co">
+          <p class="mb-0.5 pl-0.5 text-[0.65rem] font-medium uppercase tracking-wide idp-muted">Country</p>
+          <button type="button" class="ff-btn flex w-[10.5rem] max-w-[12vw] min-w-[8.5rem] items-stretch overflow-hidden rounded-lg border border-violet-500/45 bg-slate-900/90 text-left shadow" aria-haspopup="listbox" aria-expanded="false">
+            <span class="ff-ic flex w-7 shrink-0 items-center justify-center border-r border-slate-700/80 text-violet-300" aria-hidden="true"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a12 12 0 00-8 6 8 8 0 000 6 8 8 0 010 0 8 8 0 000-6"/></svg></span>
+            <span class="ff-val min-w-0 flex-1 truncate py-1.5 pl-1.5 pr-0.5 text-xs text-slate-200" data-ff-summ>All countries</span>
+            <span class="ff-caret flex w-4 shrink-0 items-center text-slate-500">▾</span>
+          </button>
+          <div
+            class="ff-panel pointer-events-auto absolute left-0 top-full z-[9999] mt-1 flex hidden max-h-[20rem] w-64 min-w-0 flex-col overflow-x-visible overflow-y-visible rounded-lg border border-slate-600 bg-slate-900 shadow-2xl"
+            data-ff-for="f-co"
+            data-ff-kind="str"
+            role="listbox"
+            aria-multiselectable="true"
+          >
+            <div class="ff-search-wrap shrink-0 border-b border-slate-600/80 px-2 pt-2 pb-2">
+              <input type="search" class="ff-search w-full px-2 py-1.5 text-sm" placeholder="Search…" autocomplete="off" aria-label="Search countries" />
+            </div>
+            <label class="ff-sa group flex cursor-pointer select-none items-center gap-2 border-b border-slate-600/80 px-2.5 py-2 text-left text-sm text-slate-200 hover:bg-slate-800/60"
+              ><input type="checkbox" class="ff-cb ff-cb-sa h-3.5 w-3.5 shrink-0 rounded" data-selall="1" /><span class="font-medium">Select all</span></label
+            >
+            <div class="ff-opts min-h-0 max-h-48 min-w-0 flex-1 overflow-y-auto py-0.5"></div>
+            <div class="shrink-0 border-t border-slate-600/80 p-2">
+              <button type="button" class="ff-apply w-full rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-500">Apply</button>
+            </div>
+            <select id="f-co" class="f-select sr-only" multiple size="0" aria-hidden="true" tabindex="-1"></select>
+          </div>
+        </div>
+        <div class="ff-group relative shrink-0" data-ff="f-su">
+          <p class="mb-0.5 pl-0.5 text-[0.65rem] font-medium uppercase tracking-wide idp-muted">Supplier</p>
+          <button type="button" class="ff-btn flex w-[10.5rem] max-w-[12vw] min-w-[8.5rem] items-stretch overflow-hidden rounded-lg border border-sky-500/45 bg-slate-900/90 text-left shadow" aria-haspopup="listbox" aria-expanded="false">
+            <span class="ff-ic flex w-7 shrink-0 items-center justify-center border-r border-slate-700/80 text-sky-300" aria-hidden="true"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M17 21v-2a4 4 0 00-3-3.87M7 7.12a4 4 0 110 4.5"/><circle cx="12" cy="7" r="4"/></svg></span>
+            <span class="ff-val min-w-0 flex-1 truncate py-1.5 pl-1.5 pr-0.5 text-xs text-slate-200" data-ff-summ>All suppliers</span>
+            <span class="ff-caret flex w-4 shrink-0 items-center text-slate-500">▾</span>
+          </button>
+          <div
+            class="ff-panel pointer-events-auto absolute left-0 top-full z-[9999] mt-1 flex hidden max-h-[20rem] w-64 min-w-0 flex-col overflow-x-visible overflow-y-visible rounded-lg border border-slate-600 bg-slate-900 shadow-2xl"
+            data-ff-for="f-su"
+            data-ff-kind="int"
+            role="listbox"
+            aria-multiselectable="true"
+          >
+            <div class="ff-search-wrap shrink-0 border-b border-slate-600/80 px-2 pt-2 pb-2">
+              <input type="search" class="ff-search w-full px-2 py-1.5 text-sm" placeholder="Search…" autocomplete="off" aria-label="Search suppliers" />
+            </div>
+            <label class="ff-sa group flex cursor-pointer select-none items-center gap-2 border-b border-slate-600/80 px-2.5 py-2 text-left text-sm text-slate-200 hover:bg-slate-800/60"
+              ><input type="checkbox" class="ff-cb ff-cb-sa h-3.5 w-3.5 shrink-0 rounded" data-selall="1" /><span class="font-medium">Select all</span></label
+            >
+            <div class="ff-opts min-h-0 max-h-48 min-w-0 flex-1 overflow-y-auto py-0.5"></div>
+            <div class="shrink-0 border-t border-slate-600/80 p-2">
+              <button type="button" class="ff-apply w-full rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-500">Apply</button>
+            </div>
+            <select id="f-su" class="f-select sr-only" multiple size="0" aria-hidden="true" tabindex="-1"></select>
+          </div>
+        </div>
+        <div class="ff-group relative shrink-0" data-ff="period">
+          <p class="mb-0.5 pl-0.5 text-[0.65rem] font-medium uppercase tracking-wide idp-muted">Time</p>
+          <button type="button" class="ff-btn flex w-[12rem] max-w-[16vw] min-w-[9rem] items-stretch overflow-hidden rounded-lg border border-cyan-500/45 bg-slate-900/90 text-left shadow" aria-haspopup="listbox" aria-expanded="false" id="ff-btn-period">
+            <span class="ff-ic flex w-7 shrink-0 items-center justify-center border-r border-slate-700/80 text-cyan-300" aria-hidden="true"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M8 2v4M16 2v4"/></svg></span>
+            <span class="ff-val min-w-0 flex-1 py-1.5 pl-1.5 pr-0.5 text-xs leading-tight text-slate-200" id="ff-summ-period" data-ff-summ>All time</span>
+            <span class="ff-caret flex w-4 shrink-0 items-center self-center text-slate-500">▾</span>
+          </button>
+          <div class="ff-panel pointer-events-auto absolute left-0 top-full z-[9999] mt-1 hidden w-72 max-h-[20rem] overflow-y-auto rounded-lg border border-slate-600 bg-slate-900 p-3 shadow-2xl" id="ff-panel-period" role="group" aria-label="Time period">
+            <div class="mb-2 text-[0.65rem] font-medium uppercase text-slate-500">From</div>
+            <select id="f-ym0" class="f-ym mb-2 w-full rounded border border-slate-600 bg-slate-800 px-2 py-1.5 text-sm text-slate-200"></select>
+            <div class="mb-1 text-[0.65rem] font-medium uppercase text-slate-500">To</div>
+            <select id="f-ym1" class="f-ym mb-2 w-full rounded border border-slate-600 bg-slate-800 px-2 py-1.5 text-sm text-slate-200"></select>
+            <p class="mb-1 text-[0.65rem] font-medium text-slate-500">Quick</p>
+            <div class="flex flex-wrap gap-1" id="time-quick">
+              <button type="button" data-tq="2024" class="tqb rounded border border-slate-600 bg-slate-800 px-2 py-1 text-[0.7rem] text-slate-300 hover:bg-slate-700">2024</button>
+              <button type="button" data-tq="2025" class="tqb rounded border border-slate-600 bg-slate-800 px-2 py-1 text-[0.7rem] text-slate-300 hover:bg-slate-700">2025</button>
+              <button type="button" data-tq="ytd2026" class="tqb rounded border border-slate-600 bg-slate-800 px-2 py-1 text-[0.7rem] text-slate-300 hover:bg-slate-700">YTD 2026</button>
+              <button type="button" data-tq="all" class="tqb rounded border border-cyan-500/40 bg-cyan-900/30 px-2 py-1 text-[0.7rem] font-medium text-cyan-200">All time</button>
+            </div>
+          </div>
+        </div>
+        <div class="ml-1 flex shrink-0 self-end pl-1">
+          <button type="button" id="btn-reset-filters" class="min-h-[2.45rem] rounded-lg border border-slate-500/60 bg-slate-800 px-3 py-1.5 text-sm font-medium text-slate-100 transition hover:border-slate-500 hover:bg-slate-800/90">Reset all</button>
+        </div>
+        </div>
+        </div>
+      </div>
+      <div id="view-overview">
+      <main id="app-main" class="min-w-0 overflow-visible" style="padding-top: 0.75rem">
+      <div
+        id="kpi-strip"
+        class="mb-4 flex w-full min-w-0 flex-col gap-3 sm:flex-row"
+      >
+        <div class="kpi-exec flex min-h-[4.25rem] min-w-0 flex-1 items-stretch justify-between gap-3 rounded-xl px-4 py-3 shadow-sm idp-card" id="kpi-card-spend" aria-label="Total spend">
+          <div class="min-w-0">
+            <span class="text-[0.65rem] font-medium uppercase tracking-wide idp-muted">Total Spend ($bn)</span>
+            <span class="block text-2xl font-bold leading-tight tabular-nums tracking-tight" id="kpi-spend-bn" style="color: #333">—</span>
+            <span class="mt-0.5 block text-[0.7rem] font-medium tabular-nums idp-ytd" id="kpi-spend-ly" aria-label="YTD vs same period last year">—</span>
+          </div>
+          <div class="h-10 w-[120px] max-w-[32%] shrink-0 self-center" aria-hidden="true">
+            <canvas id="kpi-spark-spend" width="120" height="40" class="!h-10 !w-full max-w-[120px]"></canvas>
+          </div>
+        </div>
+        <div class="kpi-exec flex min-h-[4.25rem] min-w-0 flex-1 items-stretch justify-between gap-3 rounded-xl px-4 py-3 shadow-sm idp-card" id="kpi-card-weight" aria-label="Total quantity (lbs)">
+          <div class="min-w-0">
+            <span class="text-[0.65rem] font-medium uppercase tracking-wide idp-muted">Total Quantity (lbs)</span>
+            <span class="block text-2xl font-bold leading-tight tabular-nums tracking-tight" id="kpi-weight-lbs" style="color: #333">—</span>
+            <span class="mt-0.5 block text-[0.7rem] font-medium tabular-nums idp-ytd" id="kpi-weight-ly" aria-label="YTD vs same period last year">—</span>
+          </div>
+          <div class="h-10 w-[120px] max-w-[32%] shrink-0 self-center" aria-hidden="true">
+            <canvas id="kpi-spark-weight" width="120" height="40" class="!h-10 !w-full max-w-[120px]"></canvas>
+          </div>
+        </div>
+      </div>
+      <div class="mb-4 flex flex-wrap items-center gap-2">
+        <button type="button" id="btn-download-overview-raw" class="rounded border border-[#8A8A8A] bg-white px-3 py-1.5 text-sm font-medium text-[#333] hover:bg-gray-100">
+          Download Raw Data
+        </button>
+      </div>
+
+      <div id="dashboard-charts" class="space-y-4">
+        <div class="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          <section class="card-chart relative flex flex-col overflow-hidden rounded-xl idp-card p-4" data-chart="yoy">
+            <h2 class="mb-2 text-sm font-semibold" style="color: #333">Yearly Spend</h2>
+            <div class="chart-loading pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded bg-white/50 opacity-0 transition" aria-hidden="true"></div>
+            <div class="relative h-[min(24rem,55vw)] w-full min-h-[16rem] flex-1">
+              <canvas id="ch-yoy" class="!h-full !w-full" aria-label="Year over year spend"></canvas>
+            </div>
+          </section>
+          <section class="card-chart relative flex flex-col overflow-hidden rounded-xl idp-card p-4" data-chart="qtr">
+            <h2 class="mb-2 text-sm font-semibold" style="color: #333">Quarterly Spend</h2>
+            <div class="chart-loading pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded bg-white/50 opacity-0 transition" aria-hidden="true"></div>
+            <div class="relative h-[min(24rem,55vw)] w-full min-h-[16rem] flex-1">
+              <canvas id="ch-qtr" class="!h-full !w-full" aria-label="Quarterly spend"></canvas>
+            </div>
+          </section>
+        </div>
+        <div id="idp-legacy-charts" class="space-y-4">
+        <section class="card-chart relative overflow-hidden rounded-xl idp-card p-4" data-chart="mon">
+          <h2 class="mb-2 text-sm font-semibold" style="color: #333">Monthly Spend Trend</h2>
+          <div class="chart-loading pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded bg-white/50 opacity-0 transition" aria-hidden="true"></div>
+          <div class="relative h-[min(20rem,40vw)] w-full min-h-[14rem] sm:h-80">
+            <canvas id="ch-mo" class="!h-full !w-full" aria-label="Monthly spend trend"></canvas>
+          </div>
+        </section>
+
+        <div class="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          <section class="card-chart relative flex flex-col overflow-hidden rounded-xl idp-card p-4" data-chart="c2d">
+            <h2 class="mb-2 text-sm font-semibold" style="color: #333">Top spend by Category (L2)</h2>
+            <div class="chart-loading pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded bg-white/50 opacity-0 transition" aria-hidden="true"></div>
+            <div class="relative h-[min(22rem,50vw)] w-full min-h-[16rem] flex-1">
+              <canvas id="ch-c2d" class="!h-full !w-full"></canvas>
+            </div>
+          </section>
+          <section class="card-chart relative flex flex-col overflow-hidden rounded-xl idp-card p-4" data-chart="c2i">
+            <h2 class="mb-2 text-sm font-semibold" style="color: #333">Top spend by Category (L3)</h2>
+            <div class="chart-loading pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded bg-white/50 opacity-0 transition" aria-hidden="true"></div>
+            <div class="relative h-[min(22rem,50vw)] w-full min-h-[16rem] flex-1">
+              <canvas id="ch-c2i" class="!h-full !w-full"></canvas>
+            </div>
+          </section>
+        </div>
+
+        <div class="grid grid-cols-1 gap-4 lg:grid-cols-2">
+          <section class="card-chart relative flex flex-col overflow-hidden rounded-xl idp-card p-4" data-chart="ctry">
+            <h2 class="mb-2 text-sm font-semibold" style="color: #333">Spend by Country</h2>
+            <div class="chart-loading pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded bg-white/50 opacity-0 transition" aria-hidden="true"></div>
+            <div class="relative h-[min(24rem,55vw)] w-full min-h-[16rem] flex-1">
+              <canvas id="ch-ctry" class="!h-full !w-full"></canvas>
+            </div>
+          </section>
+          <section class="card-chart relative flex flex-col overflow-hidden rounded-xl idp-card p-4" data-chart="site">
+            <h2 class="mb-2 text-sm font-semibold" style="color: #333">Spend by site</h2>
+            <div class="chart-loading pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded bg-white/50 opacity-0 transition" aria-hidden="true"></div>
+            <div class="relative h-[min(24rem,55vw)] w-full min-h-[16rem] flex-1">
+              <canvas id="ch-site" class="!h-full !w-full"></canvas>
+            </div>
+          </section>
+        </div>
+        </div>
+      </div>
+      </main>
+      </div>
+      <section
+        id="view-harmonization"
+        class="hidden w-full"
+        style="padding-top: 1.25rem; padding-bottom: 2.5rem"
+        aria-label="Unit price harmonization"
+      >
+        <div class="mb-5 border-b border-[#E6E6E6] pb-3">
+          <h2 class="m-0 text-base font-semibold" style="color: #333" id="harm-page-title">Harmonization — opportunity</h2>
+          <p class="mt-1 text-sm idp-muted" id="harm-strap">Weighted unit price vs. best observed price, by part (most recent year in data)</p>
+          <div class="mt-3 flex flex-wrap gap-2">
+            <button type="button" id="btn-dl-harm-direct" class="rounded border border-[#8A8A8A] bg-white px-3 py-1.5 text-sm font-medium text-[#333] hover:bg-gray-100">
+              Download Raw Data — Direct
+            </button>
+            <button type="button" id="btn-dl-harm-indirect" class="rounded border border-[#8A8A8A] bg-white px-3 py-1.5 text-sm font-medium text-[#333] hover:bg-gray-100">
+              Download Raw Data — Indirect
+            </button>
+          </div>
+        </div>
+        <p
+          class="mb-3 hidden rounded-lg border border-[#E6E6E6] bg-[#FFF7ED] px-3 py-2 text-sm"
+          id="harm-message"
+          style="color: #333; border-color: #f07f00"
+        ></p>
+        <div class="mb-6 grid w-full min-w-0 grid-cols-1 gap-3 sm:grid-cols-3" id="harm-top-metrics">
+          <div class="min-w-0 rounded-xl idp-card px-4 py-4 shadow-sm" aria-label="Total harmonization opportunity">
+            <p class="mb-1 text-[0.65rem] font-medium uppercase tracking-wide idp-muted">Total opportunity (USD)</p>
+            <p class="text-3xl font-bold tabular-nums" id="harm-metric-opp" style="color: #1f3a8a">—</p>
+            <p class="mt-0.5 text-xs idp-muted" id="harm-opp-hint">Sum of savings across categories</p>
+          </div>
+          <div class="min-w-0 rounded-xl idp-card px-4 py-4 shadow-sm" aria-label="Parts for 80 percent value">
+            <p class="mb-1 text-[0.65rem] font-medium uppercase tracking-wide idp-muted">Parts to capture 80% of total savings</p>
+            <p class="text-3xl font-bold tabular-nums" id="harm-metric-p80" style="color: #1f3a8a">—</p>
+            <p class="mt-0.5 text-xs idp-muted">Ranked by savings (desc.) until 80% of total opportunity</p>
+          </div>
+          <div class="min-w-0 rounded-xl idp-card px-4 py-4 shadow-sm" aria-label="Percent savings vs spend">
+            <p class="mb-1 text-[0.65rem] font-medium uppercase tracking-wide idp-muted">% savings vs current year spend</p>
+            <p class="text-3xl font-bold tabular-nums" id="harm-metric-pct" style="color: #1f3a8a">—</p>
+            <p class="mt-0.5 text-xs idp-muted">Opportunity ÷ base year spend</p>
+          </div>
+        </div>
+        <div id="harm-comparison-grid" class="space-y-10">
+          <p class="text-sm idp-muted" id="harm-empty">Load data from refresh_data.py to see harmonization.</p>
+        </div>
+      </section>
+      <section
+        id="view-cleansheet"
+        class="hidden w-full"
+        style="padding-top: 1.25rem; padding-bottom: 2.5rem"
+        aria-label="Cleansheet analysis"
+      >
+        <div class="mb-4 flex flex-col gap-2 border-b border-[#E6E6E6] pb-3 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <h2 class="m-0 text-base font-semibold" style="color: #333">Cleansheet Analysis</h2>
+            <p class="mt-1 text-sm idp-muted">Section 1 prioritizes SKUs; section 2 simulates cleansheet pricing; section 3 rolls up savings (filtered rows with valid part numbers).</p>
+          </div>
+          <button type="button" id="btn-download-cleansheet-raw" class="shrink-0 rounded border border-[#8A8A8A] bg-white px-3 py-1.5 text-sm font-medium text-[#333] hover:bg-gray-100">
+            Download Cleansheet Data
+          </button>
+        </div>
+
+        <section class="cs-panel mt-2" aria-labelledby="cs-heading-prio">
+          <h3 id="cs-heading-prio" class="mb-3 text-sm font-semibold uppercase tracking-wide idp-muted">1 · Prioritization</h3>
+          <div class="grid w-full min-w-0 grid-cols-1 gap-4 lg:grid-cols-2">
+            <div class="min-w-0 rounded-xl idp-card p-4 shadow-sm">
+              <h4 class="mb-2 text-sm font-semibold" style="color: #333">SKU scatter</h4>
+              <p class="mb-2 text-xs idp-muted">X: total quantity per SKU · Y: total spend (USD). Each point = one SKU.</p>
+              <div class="relative h-[min(22rem,55vw)] w-full min-h-[280px]">
+                <canvas id="ch-cleansheet" class="!h-full !w-full max-w-full" aria-label="SKU scatter quantity vs spend"></canvas>
+              </div>
+            </div>
+            <div class="min-w-0 rounded-xl idp-card p-4 shadow-sm">
+              <h4 class="mb-2 text-sm font-semibold" style="color: #333">SKU recommendations</h4>
+              <p class="mb-2 text-xs idp-muted" id="cs-l3-baseline-note"></p>
+              <div class="overflow-x-auto">
+                <table class="w-full min-w-0 text-left text-xs" style="color: #8a8a8a">
+                  <thead>
+                    <tr class="idp-muted">
+                      <th class="py-1.5 pr-2 font-medium">SKU</th>
+                      <th class="py-1.5 pr-2 text-right font-medium">Total spend</th>
+                      <th class="py-1.5 pr-2 text-right font-medium">Total quantity</th>
+                      <th class="py-1.5 pr-2 font-medium">L3 category</th>
+                      <th class="py-1.5 text-right font-medium">% of L3 baseline</th>
+                    </tr>
+                  </thead>
+                  <tbody id="cs-tbody"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="cs-panel mt-10 border-t border-[#E6E6E6] pt-8" aria-labelledby="cs-heading-sim">
+          <h3 id="cs-heading-sim" class="mb-3 text-sm font-semibold uppercase tracking-wide idp-muted">2 · Potential cleansheets</h3>
+          <p class="mb-5 max-w-3xl text-sm leading-relaxed idp-muted">
+            Upload a cleansheet screenshot or Excel file. The system will compare quoted price vs cleansheet price to estimate savings (file parsing not enabled yet—use the table below to simulate).
+          </p>
+          <div class="rounded-xl border border-[#E6E6E6] bg-white p-5 shadow-sm">
+            <p class="mb-3 text-sm font-semibold" style="color: #333">Upload</p>
+            <div class="flex flex-wrap gap-2">
+              <button type="button" id="btn-cs-upload-excel" class="rounded border border-[#8A8A8A] bg-white px-3 py-1.5 text-sm font-medium text-[#333] hover:bg-[#f7f7f7]">
+                Upload Excel
+              </button>
+              <button type="button" id="btn-cs-upload-image" class="rounded border border-[#8A8A8A] bg-white px-3 py-1.5 text-sm font-medium text-[#333] hover:bg-[#f7f7f7]">
+                Upload Screenshot
+              </button>
+            </div>
+            <input type="file" id="cs-input-excel" class="hidden" accept=".xlsx,.xls,.csv,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" tabindex="-1" aria-hidden="true" />
+            <input type="file" id="cs-input-image" class="hidden" accept="image/*" tabindex="-1" aria-hidden="true" />
+            <p id="cs-upload-excel-name" class="mt-3 text-sm font-medium" style="color: #333" role="status" aria-live="polite"></p>
+            <p id="cs-upload-image-name" class="mt-1 text-sm font-medium" style="color: #333" role="status" aria-live="polite"></p>
+          </div>
+
+          <div class="mt-6 rounded-xl border border-[#E6E6E6] bg-white p-4 shadow-sm">
+            <h4 class="mb-2 text-sm font-semibold" style="color: #333">Cleansheet pricing (simulated)</h4>
+            <p class="mb-3 text-xs idp-muted">Quoted price = average unit price (total spend ÷ qty). Edit cleansheet price to update savings.</p>
+            <div class="overflow-x-auto">
+              <table class="w-full min-w-[720px] text-left text-xs" style="color: #8a8a8a">
+                <thead>
+                  <tr class="idp-muted">
+                    <th class="py-1.5 pr-2 font-medium">SKU</th>
+                    <th class="py-1.5 pr-2 font-medium">L3 category</th>
+                    <th class="py-1.5 pr-2 text-right font-medium">Quoted price (baseline)</th>
+                    <th class="py-1.5 pr-2 text-right font-medium">Cleansheet price</th>
+                    <th class="py-1.5 pr-2 text-right font-medium">% savings</th>
+                    <th class="py-1.5 text-right font-medium">$ savings</th>
+                  </tr>
+                </thead>
+                <tbody id="cs-sim-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <section class="cs-panel mt-10 border-t border-[#E6E6E6] pt-8" aria-labelledby="cs-heading-out">
+          <h3 id="cs-heading-out" class="mb-3 text-sm font-semibold uppercase tracking-wide idp-muted">3 · Outputs (results)</h3>
+          <div class="mb-4 grid w-full min-w-0 grid-cols-1 gap-3 sm:grid-cols-3" id="cs-out-metrics">
+            <div class="min-w-0 rounded-xl idp-card px-4 py-4 shadow-sm">
+              <p class="mb-1 text-[0.65rem] font-medium uppercase tracking-wide idp-muted">Total savings</p>
+              <p class="text-3xl font-bold tabular-nums" id="cs-out-total-savings" style="color: #1f3a8a">—</p>
+              <p class="mt-0.5 text-xs idp-muted">Sum of $ savings (simulated)</p>
+            </div>
+            <div class="min-w-0 rounded-xl idp-card px-4 py-4 shadow-sm">
+              <p class="mb-1 text-[0.65rem] font-medium uppercase tracking-wide idp-muted">Total savings vs baseline</p>
+              <p class="text-3xl font-bold tabular-nums" id="cs-out-pct-baseline" style="color: #1f3a8a">—</p>
+              <p class="mt-0.5 text-xs idp-muted" id="cs-out-baseline-hint">vs spend in baseline year (filtered)</p>
+            </div>
+            <div class="min-w-0 rounded-xl idp-card px-4 py-4 shadow-sm">
+              <p class="mb-1 text-[0.65rem] font-medium uppercase tracking-wide idp-muted">Total SKUs cleansheeted</p>
+              <p class="text-3xl font-bold tabular-nums" id="cs-out-n-skus" style="color: #1f3a8a">—</p>
+              <p class="mt-0.5 text-xs idp-muted">Rows in simulated table</p>
+            </div>
+          </div>
+          <div class="rounded-xl border border-[#E6E6E6] bg-white p-4 shadow-sm">
+            <h4 class="mb-3 text-sm font-semibold" style="color: #333">Output detail</h4>
+            <div class="overflow-x-auto">
+              <table class="w-full min-w-[720px] text-left text-xs" style="color: #8a8a8a">
+                <thead>
+                  <tr class="idp-muted">
+                    <th class="py-1.5 pr-2 font-medium">SKU</th>
+                    <th class="py-1.5 pr-2 font-medium">L3 category</th>
+                    <th class="py-1.5 pr-2 text-right font-medium">Quoted avg price</th>
+                    <th class="py-1.5 pr-2 text-right font-medium">Cleansheet price</th>
+                    <th class="py-1.5 pr-2 text-right font-medium">% savings</th>
+                    <th class="py-1.5 text-right font-medium">$ savings</th>
+                  </tr>
+                </thead>
+                <tbody id="cs-out-tbody"></tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+      </section>
+    </div>
+        </div>
+      </div>
+    </div>
+
+    <script>
+      var D = {
+        v: 1,
+        sourceFile: "",
+        n: 0,
+        rows: null,
+        harmonization_results: null,
+        ytd_comparison: null,
+        monthly_spend_by_type: null,
+        dicts: {
+          ym: [""], d: [""], supplier: [""], erp: [""], erpn: [""], business_unit: [""], category_l1: [""], category_l2: [""], category_l3: [""], category_l4: [""],
+          noun: [""], part: [""], ccode: [""], cname: [""], billy: [""], billc: [""], shpy: [""], shpc: [""], country: [""], comp: [""], site: [""], spend_type: ["Direct", "Indirect"]
+        },
+        iYm: [], iD: [], iSu: [], iErp: [], iErpN: [], iBu: [],
+        iC1: [], iC2: [], iC3: [], iC4: [], iNoun: [], iPart: [],
+        iCcode: [], iCname: [], iBilly: [], iBillc: [], iShpy: [], iShpc: [],
+        iCo: [], iComp: [], iSite: [], iSpendType: [],
+        spend: [], Weight_Lbs: [], qty: [], qc: [], price: []
+      };
+    </script>
+    <script>
+      (function () {
+        function idpShellToggleWire() {
+          var t, a, e, c;
+          t = document.getElementById("app-layout");
+          a = document.getElementById("btn-sidebar-toggle");
+          if (!a || a.getAttribute("data-wu") === "1") return;
+          a.setAttribute("data-wu", "1");
+          a.addEventListener("click", function (ev) {
+            ev.stopPropagation();
+            if (t) t.classList.toggle("sidebar--collapsed");
+            e = t && t.querySelector(".icon-expand");
+            c = t && t.querySelector(".icon-collapse");
+            if (e && c) {
+              if (t && t.classList.contains("sidebar--collapsed")) {
+                e.classList.add("hidden");
+                c.classList.remove("hidden");
+              } else {
+                e.classList.remove("hidden");
+                c.classList.add("hidden");
+              }
+            }
+          });
+        }
+        function idpNavBarWire() {
+          if (!document.querySelectorAll) return;
+          document.querySelectorAll("#app-sidebar [data-app-view]").forEach(function (b) {
+            if (b.getAttribute("data-idp-nav-wu") === "1") return;
+            b.setAttribute("data-idp-nav-wu", "1");
+            b.addEventListener("click", function (ev) {
+              var n, fn;
+              ev.stopPropagation();
+              n = b.getAttribute("data-app-view");
+              if (!n) return;
+              fn = window._idpSetAppView;
+              if (typeof fn === "function") { fn(n); } else { window._idpPendingView = n; }
+            });
+          });
+        }
+        function idpShellAllWire() {
+          idpShellToggleWire();
+          idpNavBarWire();
+        }
+        if (document.readyState === "loading") {
+          document.addEventListener("DOMContentLoaded", idpShellAllWire);
+        } else {
+          idpShellAllWire();
+        }
+      })();
+    </script>
+    <script>
+  function startProcurementDashboard() {
+  "use strict";
+  if (typeof ChartDataLabels !== "undefined") { try { Chart.register(ChartDataLabels); } catch (e) { } }
+  if (typeof Chart !== "undefined") {
+    Chart.defaults.color = "#333333";
+    Chart.defaults.borderColor = "rgba(138, 138, 138, 0.3)";
+    Chart.defaults.font.family = "'Inter', system-ui, sans-serif";
+  }
+  var n, dicts, sortedYms, ymStrRank, fState, charts, kpiSparks, harmCharts, csChart, currentAppView, csBaselineSpendCached, csBaselineYearCached;
+  harmCharts = [];
+  csChart = null;
+  csBaselineSpendCached = 0;
+  csBaselineYearCached = 0;
+  currentAppView = document.body && document.body.getAttribute("data-idp-app-view") ? String(document.body.getAttribute("data-idp-app-view")) : "overview";
+  if (currentAppView === "harmonization") { currentAppView = "harmonization-direct"; }
+  if (currentAppView !== "overview" && currentAppView !== "harmonization-direct" && currentAppView !== "harmonization-indirect" && currentAppView !== "cleansheet") { currentAppView = "overview"; }
+  if (document.body) { document.body.setAttribute("data-idp-app-view", currentAppView); }
+  var mnames = { Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5, Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11 };
+  var C_DIRECT = "#A7B1CE", C_INDIRECT = "#F07F00", C_OTHER = "#6FBF73", C_TREND_PRIMARY = "#1F3A8A", C_TREND_SECOND = "#2E5CB8", C_ACTION = "#F07F00", C_POS = "#6FBF73", SPK_SPEND = "#1F3A8A", SPK_WGT = "#2E5CB8";
+  function chartScalesD() { return { x: { ticks: { color: "#8A8A8A" }, grid: { color: "rgba(138, 138, 138, 0.25)" } }, y: { ticks: { color: "#8A8A8A" }, grid: { color: "rgba(138, 138, 138, 0.25)" } } }; }
+  function chartLegendD() { return { color: "#333333", usePointStyle: true, boxWidth: 8, padding: 10, font: { size: 11 } }; }
+  /** Title-case words for display only (does not change stored data). */
+  function formatLabel(str) {
+    if (str == null || str === "") return "";
+    return String(str).toLowerCase().replace(/\b\w/g, function (c) { return c.toUpperCase(); });
+  }
+  function ffDisplayFilterOption(ffId, raw) {
+    var f = String(raw);
+    if (ffId === "f-bu" || ffId === "f-c1" || ffId === "f-c2" || ffId === "f-c3" || ffId === "f-c4" || ffId === "f-co" || ffId === "f-site" || ffId === "f-su") return formatLabel(f);
+    return f;
+  }
+  function harmSumExportSavings(p) {
+    var er, i, x, s;
+    er = p && p.export_rows;
+    if (!er || !er.length) return null;
+    s = 0;
+    for (i = 0; i < er.length; i++) {
+      x = er[i] && er[i]["Savings"];
+      if (x != null && !isNaN(+x)) s += +x;
+    }
+    return s;
+  }
+  function chartTt() { return { backgroundColor: "rgba(255, 255, 255, 0.98)", titleColor: "#333333", bodyColor: "#333333", borderColor: "#E6E6E6", borderWidth: 1 }; }
+  function monthNum(s) { var t = (s + "").toLowerCase(), k = t.match(/(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\w*/i); if (!k) return 0; return mnames[k[1].charAt(0).toUpperCase() + k[1].slice(1, 3)]; }
+  function ymKey(str) { if (!str) return 0; var a = (str + "").match(/(\d{4})/), y = a ? parseInt(a[1], 10) : 0; return y * 12 + monthNum(str); }
+  function getYear(s) { var a = (s + "").match(/(\d{4})/); return a ? parseInt(a[1], 10) : 0; }
+  function getMonthFromKey(str) { return monthNum(str); }
+  function quarterIndex(y, m) { if (m <= 2) return 1; if (m <= 5) return 2; if (m <= 8) return 3; return 4; }
+  function refYm(i) { return (dicts && dicts.ym && D.iYm && D.iYm[i] != null) ? (dicts.ym[D.iYm[i]] || "") : ""; }
+  function rowWeight(i) { var a = D.Weight_Lbs, q = D.qty; if (a && a[i] != null && !isNaN(a[i])) return a[i]; if (q && q[i] != null && !isNaN(q[i])) return q[i]; return 0; }
+  function fmtBnSpend(x) { if (x == null || isNaN(x)) return "—"; return "$" + (x / 1e9).toFixed(2) + "bn"; }
+  function fmtLbsUnit(x) { if (x == null || isNaN(x)) return "—"; var ax = Math.abs(x); if (ax >= 1e9) return (x / 1e9).toFixed(2) + "bn lbs"; if (ax >= 1e6) return (x / 1e6).toFixed(2) + "M lbs"; return (x / 1e3).toFixed(2) + "K lbs"; }
+  function quarterFromM0(m) { if (m <= 2) return 1; if (m <= 5) return 2; if (m <= 8) return 3; return 4; }
+  function yqSortKey(y, q) { return (y != null && !isNaN(+y) && q) ? +y * 4 + (q - 1) : -1; }
+  function rowYqFromIdx(ix) { var s, y, m0, q; s = refYm(ix) || ""; y = +getYear(s); m0 = getMonthFromKey(s); if (!y || y < 1990) { return null; } q = quarterFromM0(m0); return { y: y, q: q }; }
+  function rowCalendarKey(ix) { var s, y, m0; s = refYm(ix) || ""; y = +getYear(s); m0 = +getMonthFromKey(s); if (isNaN(m0) || m0 < 0) m0 = 0; if (!y || y < 1990) { return null; } return y * 12 + m0; }
+  function kpiPtdPctsFromIdx(iArr) { var w, ix, rq, bst, cS, pS, cW, pW, py, cur, sk; if (!iArr || !iArr.length) { return { sp: null, wp: null }; } bst = -1; rq = null; for (w = 0; w < iArr.length; w++) { ix = iArr[w]; cur = rowYqFromIdx(ix); if (!cur) { continue; } sk = yqSortKey(cur.y, cur.q); if (sk > bst) { bst = sk; rq = cur; } } if (!rq) { return { sp: null, wp: null }; } py = rq.y - 1; cS = 0; pS = 0; cW = 0; pW = 0; for (w = 0; w < iArr.length; w++) { ix = iArr[w]; cur = rowYqFromIdx(ix); if (!cur || cur.q !== rq.q) { continue; } if (cur.y === rq.y) { cS += D.spend[ix]; cW += rowWeight(ix); } else if (cur.y === py) { pS += D.spend[ix]; pW += rowWeight(ix); } } return { sp: pS > 0 ? (cS - pS) / pS * 100 : null, wp: pW > 0 ? (cW - pW) / pW * 100 : null }; }
+  function kpiYtdPctsFromIdx(iArr) { var w, ix, ckey, y, m0, maxY, mMax, ytdC, ytdP, py, p, wgt, ytdCw, ytdPw; if (!iArr || !iArr.length) { return { sp: null, wp: null }; } maxY = 0; mMax = 0; for (w = 0; w < iArr.length; w++) { ckey = rowCalendarKey(iArr[w]); if (ckey == null) { continue; } y = (ckey - ckey % 12) / 12; m0 = ckey - y * 12; if (y > maxY) { maxY = y; } } for (w = 0; w < iArr.length; w++) { ckey = rowCalendarKey(iArr[w]); if (ckey == null) { continue; } y = (ckey - ckey % 12) / 12; m0 = ckey - y * 12; if (y === maxY && m0 > mMax) { mMax = m0; } } if (!maxY) { return { sp: null, wp: null }; } py = maxY - 1; ytdC = 0; ytdP = 0; ytdCw = 0; ytdPw = 0; for (w = 0; w < iArr.length; w++) { ix = iArr[w]; ckey = rowCalendarKey(ix); if (ckey == null) { continue; } y = (ckey - ckey % 12) / 12; m0 = ckey - y * 12; p = D.spend[ix]; wgt = rowWeight(ix); if (y === maxY && m0 <= mMax) { ytdC += p; ytdCw += wgt; } if (y === py && m0 <= mMax) { ytdP += p; ytdPw += wgt; } } return { sp: ytdP > 0 ? (ytdC - ytdP) / ytdP * 100 : null, wp: ytdPw > 0 ? (ytdCw - ytdPw) / ytdPw * 100 : null }; }
+  function fmtPtd(p) { if (p == null || isNaN(p)) return "—"; return (p > 0 ? "+" : "") + Math.round(p) + "% vs same quarter prior year"; }
+  function fmtYtdKpi(p) { if (p == null || isNaN(p)) return "—"; return (p > 0 ? "+" : "") + Math.round(p) + "% YTD vs same period last year"; }
+  function last12MonthSeries(iArr) {
+    var w, t, aS, aW, z, r1, r0, i0, j, mx;
+    if (!sortedYms || !sortedYms.length) return { serS: [], serW: [] };
+    r1 = fState && fState.r1 != null ? fState.r1 : sortedYms.length - 1;
+    r0 = fState && fState.r0 != null ? fState.r0 : 0;
+    i0 = Math.max(r0, r1 - 11);
+    aS = [];
+    aW = [];
+    mx = r1 - i0 + 1;
+    for (z = 0; z < mx; z++) { aS.push(0); aW.push(0); }
+    for (w = 0; w < iArr.length; w++) { j = ymStrRank.get(refYm(iArr[w])); if (j == null || j < i0 || j > r1) continue; t = j - i0; aS[t] += D.spend[iArr[w]]; aW[t] += rowWeight(iArr[w]); }
+    return { serS: aS, serW: aW };
+  }
+  function kpiLineGradient(cnvEl, cTop, cBot) { var g, h, ctx2; h = cnvEl && cnvEl.height || 40; ctx2 = cnvEl && cnvEl.getContext("2d"); if (!ctx2) return cTop; g = ctx2.createLinearGradient(0, 0, 0, h); g.addColorStop(0, cTop); g.addColorStop(1, cBot != null ? cBot : "rgba(31, 58, 138, 0)"); return g; }
+  function wgtLineGradient(cnv) { return kpiLineGradient(cnv, "rgba(46, 92, 184, 0.3)", "rgba(46, 92, 184, 0)"); }
+  function spendTypeSegForRow(i) { var t = dicts.spend_type && D.iSpendType && D.iSpendType[i] != null ? (dicts.spend_type[D.iSpendType[i]] || "") : ""; t = (t + "").toLowerCase(); if (t === "direct") return "D"; return "I"; }
+  function quarterLabelFromYmStr(s) { if (!s) return ""; var y = getYear(s); var m = getMonthFromKey(s); if (!y) return ""; return "Q" + quarterIndex(0, m) + " " + y; }
+  function quarterToSortKey(y, q) { return y * 4 + (q - 1); }
+  function parseYmToYQ(ym) { return { y: getYear(ym), q: quarterIndex(0, getMonthFromKey(ym)) }; }
+
+  function refreshDState() {
+    n = D.n;
+    dicts = D.dicts;
+    charts = { yoy: null, qtr: null, mon: null, c2d: null, c2i: null, ctry: null, site: null };
+    var s = new Set();
+    for (var e = 0; e < dicts.ym.length; e++) { if (dicts.ym[e]) s.add(dicts.ym[e]); }
+    sortedYms = Array.from(s).sort(function (a, b) { return ymKey(a) - ymKey(b); });
+    ymStrRank = new Map();
+    sortedYms.forEach(function (st, r) { ymStrRank.set(st, r); });
+    fState = { bu: new Set(), c1: new Set(), c2: new Set(), c3: new Set(), c4: new Set(), co: new Set(), site: new Set(), suSet: new Set(), r0: 0, r1: Math.max(0, Math.max(0, sortedYms.length - 1)), timeMode: "all" };
+  }
+  refreshDState();
+  function inYm(i) {
+    var s0, r2;
+    if (!sortedYms.length) { return true; }
+    s0 = dicts.ym[D.iYm[i]] || "";
+    r2 = ymStrRank.get(s0);
+    if (r2 == null) { r2 = 0; }
+    return r2 >= fState.r0 && r2 <= fState.r1;
+  }
+  function sel(set, arr, idx) { var v; if (!set || set.size === 0) { return true; } v = (arr && arr[idx] != null) ? arr[idx] : ""; v = (v + "").trim(); return set.has((v + "") || ""); }
+  function rowOk(i) { if (!inYm(i)) return false; if (fState.suSet && fState.suSet.size > 0 && !fState.suSet.has(D.iSu[i])) return false; if (!sel(fState.bu, dicts.business_unit, D.iBu[i])) return false; if (!sel(fState.c1, dicts.category_l1, D.iC1[i])) return false; if (!sel(fState.c2, dicts.category_l2, D.iC2[i])) return false; if (!sel(fState.c3, dicts.category_l3, D.iC3[i])) return false; if (!sel(fState.c4, dicts.category_l4, D.iC4[i])) return false; if (!sel(fState.co, dicts.country, D.iCo[i])) return false; if (!sel(fState.site, dicts.site, D.iSite[i])) return false; return true; }
+  /** Harmonization runs at SKU × supplier × site across categories — do not apply L1–L4 facet filters (they often zero out Indirect vs Direct). */
+  function rowOkHarmonization(i) {
+    if (!inYm(i)) return false;
+    if (fState.suSet && fState.suSet.size > 0 && !fState.suSet.has(D.iSu[i])) return false;
+    if (!sel(fState.bu, dicts.business_unit, D.iBu[i])) return false;
+    if (!sel(fState.co, dicts.country, D.iCo[i])) return false;
+    if (!sel(fState.site, dicts.site, D.iSite[i])) return false;
+    return true;
+  }
+  function getFiltered() { var a = []; for (var i = 0; i < n; i++) { if (rowOk(i)) a.push(i); } return a; }
+  function getFilteredHarmonization() { var a = []; for (var i = 0; i < n; i++) { if (rowOkHarmonization(i)) a.push(i); } return a; }
+  function aggrBy(idx, getK) { var m = new Map(); for (var p = 0; p < idx.length; p++) { var i = idx[p], k = getK(i); m.set(k, (m.get(k) || 0) + D.spend[i]); } return m; }
+  function aggrBySplit(idx, getK) { var m = new Map(), w, k, t2, p, o, i, ix; for (i = 0; i < idx.length; i++) { ix = idx[i]; k = getK(ix); t2 = spendTypeSegForRow(ix); p = D.spend[ix]; o = m.get(k); if (!o) { o = { D: 0, I: 0 }; m.set(k, o); } if (t2 === "D") { o.D += p; } else { o.I += p; } } return m; }
+  function topNFromMap(m, dictArr, nmax) {
+    return Array.from(m.entries())
+      .filter(function (x) { return dictArr == null || (x[0] >= 0 && x[0] < dictArr.length); })
+      .sort(function (a, b) { return b[1] - a[1]; })
+      .slice(0, nmax)
+      .map(function (p) { return { id: p[0], sp: p[1], name: (dictArr ? dictArr[p[0]] : p[0]) || "—" }; });
+  }
+  function topNFromSplit(m, dictArr, nmax) {
+    return Array.from(m.entries())
+      .filter(function (x) { return dictArr == null || (x[0] >= 0 && x[0] < dictArr.length); })
+      .map(function (e) { return { id: e[0], o: e[1], name: (dictArr ? dictArr[e[0]] : e[0]) || "—", t: (e[1].D + e[1].I) || 0 }; })
+      .filter(function (r) { return r.t > 0; })
+      .sort(function (a, b) { return b.t - a.t; })
+      .slice(0, nmax);
+  }
+  function fmtCur(x) { if (x == null || isNaN(x)) return "—"; if (Math.abs(x) >= 1e6) return "$" + (x / 1e6).toFixed(2) + "M"; if (Math.abs(x) >= 1e3) return "$" + (x / 1e3).toFixed(1) + "K"; return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(x); }
+  function fmtM(x) { if (x == null || isNaN(x)) return "—"; return "$" + (x).toFixed(2) + "M"; }
+  /** Stacked Direct/Indirect tooltips: series lines + "Total" in footer (hover only). useX: horizontal bars use parsed.x. */
+  function ttStackedSpend(useX) {
+    return {
+      label: function (c) {
+        var v = useX ? (c.parsed && c.parsed.x) : (c.parsed && c.parsed.y);
+        return (c.dataset && c.dataset.label ? c.dataset.label + ": " : "") + (v != null ? fmtM(v) : "—");
+      },
+      footer: function (items) {
+        if (!items || !items.length) return "";
+        var chart = items[0].chart, di = items[0].dataIndex, ds = chart.data.datasets, d, sum = 0, x;
+        for (d = 0; d < ds.length; d++) {
+          x = ds[d].data[di];
+          sum += (x != null && !isNaN(x)) ? +x : 0;
+        }
+        return sum > 0 ? "Total: " + fmtM(sum) : "";
+      }
+    };
+  }
+  /** Y min/max for harmonization unit-price bars: fit range to data so % differences are visible (not squashed from 0). */
+  function harmUnitPriceYScale(vals) {
+    var wmin = Infinity, wmax = -Infinity, i, v, span, pad, lo, hi;
+    if (!vals || !vals.length) return null;
+    for (i = 0; i < vals.length; i++) {
+      v = +vals[i];
+      if (!isFinite(v)) continue;
+      if (v < wmin) wmin = v;
+      if (v > wmax) wmax = v;
+    }
+    if (!isFinite(wmin) || !isFinite(wmax)) return null;
+    span = wmax - wmin;
+    if (span <= 1e-15 * (1 + Math.abs(wmax))) {
+      pad = Math.max(1e-6 * (1 + Math.abs(wmax)), Math.abs(wmax) * 0.03 || 0.01);
+      lo = wmax - pad;
+      hi = wmax + pad;
+    } else {
+      pad = Math.max(span * 0.12, 1e-9 * (1 + Math.abs(wmax)));
+      lo = wmin - pad;
+      hi = wmax + pad;
+    }
+    if (wmin >= 0 && lo < 0) lo = 0;
+    if (lo >= hi) hi = lo + 1e-6 * (1 + Math.abs(lo));
+    return { min: lo, max: hi };
+  }
+  function fmtHarmUnitPrice(v) {
+    if (v == null || !isFinite(v)) return "—";
+    var a = Math.abs(v);
+    if (a >= 1000) return "$" + v.toLocaleString("en-US", { maximumFractionDigits: 0, minimumFractionDigits: 0 });
+    if (a >= 1) return "$" + v.toLocaleString("en-US", { maximumFractionDigits: 2, minimumFractionDigits: 0 });
+    return "$" + v.toLocaleString("en-US", { maximumFractionDigits: 4, minimumFractionDigits: 0 });
+  }
+  function esc(s) { return (s + "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;"); }
+  function fmtYm(s) { if (!s) return "—"; var m2 = (s + "").match(/(\d{4})[\/\-](\w+)/i); if (m2) { var mth = m2[2].length > 3 ? m2[2].slice(0, 3) : m2[2]; return mth + " " + m2[1]; } return s + ""; }
+  function getMulti2(sel, arr) { var S = new Set(), a = arr || [""]; if (!sel) return S; for (var o = 0; o < sel.options.length; o++) { if (sel.options[o].selected) S.add(a[parseInt(sel.options[o].value, 10)] || ""); } return S; }
+  function ffGetPanel(sid) { return document.querySelector('.ff-panel[data-ff-for="' + sid + '"]'); }
+  function ffChkStyle(inp) { var r = inp && inp.closest && inp.closest(".ff-chk-row"), saL = inp && inp.closest && inp.closest(".ff-sa"); if (r) { r.classList.toggle("ff-chk-sel", !!inp.checked); } if (saL && (inp.getAttribute("data-selall") != null)) { saL.classList.toggle("ff-sa-sel", !!inp.checked); } }
+  function ffSyncSelectAll(panel) { var cbs, sa, n, tot, j, sL; if (!panel) return; cbs = panel.querySelectorAll(".ff-opts .ff-cb"); sa = panel.querySelector(".ff-cb-sa"); if (!sa) return; if (!cbs || !cbs.length) { sa.checked = false; sa.indeterminate = false; sL = sa.closest(".ff-sa"); if (sL) sL.classList.remove("ff-sa-sel"); return; } n = 0; tot = cbs.length; for (j = 0; j < cbs.length; j++) { if (cbs[j].checked) { n++; } } if (n === 0) { sa.checked = false; sa.indeterminate = false; } else if (n === tot) { sa.checked = true; sa.indeterminate = false; } else { sa.checked = false; sa.indeterminate = true; } sL = sa.closest(".ff-sa"); if (sL) { sL.classList.toggle("ff-sa-sel", !!(sa.checked || sa.indeterminate)); } }
+  function getStrSetFromChk(sid, dkey) { var p = ffGetPanel(sid), d = dicts && dicts[dkey], cbs, i, ix, v, S, n, tot; S = new Set(); if (!p) return S; cbs = p.querySelectorAll(".ff-opts .ff-cb"); tot = cbs.length; n = 0; for (i = 0; i < tot; i++) { if (cbs[i].checked) n++; } if (tot === 0 || n === 0 || n === tot) return S; for (i = 0; i < tot; i++) { if (!cbs[i].checked) { continue; } ix = +cbs[i].getAttribute("data-ix"); v = d && d[ix] != null ? d[ix] : ""; v = (v + "").trim(); S.add((v + "") || ""); } return S; }
+  function getSuSetFromChk() { var p = ffGetPanel("f-su"), cbs, S, i, n, tot; S = new Set(); if (!p) return S; cbs = p.querySelectorAll(".ff-opts .ff-cb"); tot = cbs.length; n = 0; for (i = 0; i < tot; i++) { if (cbs[i].checked) n++; } if (tot === 0 || n === 0 || n === tot) return S; for (i = 0; i < tot; i++) { if (cbs[i].checked) { S.add(+cbs[i].getAttribute("data-ix")); } } return S; }
+  function ffApplyPanelSearch(panel) {
+    var inp, q, rows, r, sp, txt, k;
+    if (!panel) return;
+    inp = panel.querySelector(".ff-search");
+    q = (inp && inp.value ? inp.value : "").trim().toLowerCase();
+    rows = panel.querySelectorAll(".ff-opts .ff-chk-row");
+    for (k = 0; k < rows.length; k++) {
+      r = rows[k];
+      sp = r.querySelector("span");
+      txt = (sp && sp.textContent ? sp.textContent : r.textContent || "").trim().toLowerCase();
+      r.style.display = !q || txt.indexOf(q) !== -1 ? "" : "none";
+    }
+  }
+  function closeAllFilterPanels() { var btns, i; document.querySelectorAll("#filter-bar .ff-panel").forEach(function (p) { p.classList.add("hidden"); }); document.querySelectorAll("#filter-bar .ff-btn").forEach(function (b) { b.setAttribute("aria-expanded", "false"); }); }
+  function onFfApply() { readFiltersFromForm(); updateFilterButtonLabels(); withLoad(function () { runWithCharts(); }); }
+  function setFilterSt(f, tot, spendFilt, wFilt, iArr) { var y0; if ($("filter-status")) $("filter-status").textContent = f === tot ? "All data" : "Filter applied"; if ($("kpi-spend-bn") && spendFilt != null) $("kpi-spend-bn").textContent = fmtBnSpend(spendFilt); if ($("kpi-weight-lbs") && wFilt != null) $("kpi-weight-lbs").textContent = fmtLbsUnit(wFilt); y0 = iArr && iArr.length ? kpiYtdPctsFromIdx(iArr) : { sp: null, wp: null }; if ($("kpi-spend-ly")) $("kpi-spend-ly").textContent = fmtYtdKpi(y0.sp); if ($("kpi-weight-ly")) $("kpi-weight-ly").textContent = fmtYtdKpi(y0.wp); }
+  function destroySparkKpis() { if (!kpiSparks) { kpiSparks = { s: null, w: null }; } if (kpiSparks.s) { try { kpiSparks.s.destroy(); } catch (e) { /* */ } kpiSparks.s = null; } if (kpiSparks.w) { try { kpiSparks.w.destroy(); } catch (e) { /* */ } kpiSparks.w = null; } }
+  function renderKpiSparkCanvases(serS, serW) {
+    var cS, cW, o, gSpend, gWgt;
+    if (!kpiSparks) { kpiSparks = { s: null, w: null }; }
+    destroySparkKpis();
+    o = { maintainAspectRatio: false, layout: { padding: 0 }, animation: { duration: 0 }, interaction: { intersect: false, mode: "index" }, plugins: { legend: { display: false }, tooltip: { enabled: false }, datalabels: { display: false } }, elements: { line: { borderWidth: 2, tension: 0.2 }, point: { radius: 0, hoverRadius: 0 } }, scales: { x: { display: false, grid: { display: false } }, y: { display: false, beginAtZero: true, grid: { display: false } } } };
+    cS = $("kpi-spark-spend");
+    cW = $("kpi-spark-weight");
+    gSpend = function (ctx) { return kpiLineGradient(ctx.chart && ctx.chart.canvas, "rgba(31, 58, 138, 0.32)", "rgba(31, 58, 138, 0)"); };
+    gWgt = function (ctx) { return wgtLineGradient(ctx.chart && ctx.chart.canvas); };
+    if (cS && serS && serS.length) { kpiSparks.s = new Chart(cS, { type: "line", data: { labels: serS.map(function (_a, h) { return h + ""; }), datasets: [{ data: serS, borderColor: SPK_SPEND, backgroundColor: gSpend, fill: true, pointRadius: 0, borderWidth: 2, tension: 0.2 }] }, options: o }); }
+    if (cW && serW && serW.length) { kpiSparks.w = new Chart(cW, { type: "line", data: { labels: serW.map(function (_a, h) { return h + ""; }), datasets: [{ data: serW, borderColor: SPK_WGT, backgroundColor: gWgt, fill: true, pointRadius: 0, borderWidth: 2, tension: 0.2 }] }, options: o }); }
+  }
+  function fmtOppUSD(n) { if (n == null || isNaN(n)) return "—"; return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }).format(Math.round(n)); }
+  function fmtIntPlain(n) { if (n == null || isNaN(n)) return "—"; return new Intl.NumberFormat("en-US", { maximumFractionDigits: 0 }).format(Math.round(n)); }
+  function shortHarmLab(s, m) { s = (s + "").trim(); m = m || 36; if (s.length <= m) return s; return s.slice(0, m - 1) + "…"; }
+  function destroyHarmonizationCharts() { var hi; if (!harmCharts || !harmCharts.length) { harmCharts = []; return; } for (hi = 0; hi < harmCharts.length; hi++) { try { if (harmCharts[hi]) harmCharts[hi].destroy(); } catch (e) { } } harmCharts = []; }
+  function destroyCleansheetChart() { if (csChart) { try { csChart.destroy(); } catch (e) { /* */ } csChart = null; } }
+  function rowYearFromIx(ix) { var yR; yR = getYear(refYm(ix)); if (isNaN(yR) || yR < 1990) { if (D.rows && D.rows[ix] && D.rows[ix].year != null) { yR = +D.rows[ix].year; } } return (yR && yR >= 1990 && !isNaN(yR)) ? yR : 0; }
+  function cleansheetPartStringValid(partStr) { var p; p = (partStr == null ? "" : String(partStr)).trim(); return p !== "" && /\d/.test(p); }
+  function cleansheetRowPartValid(ix) { var p, r; r = D.rows && D.rows[ix]; p = (r != null && r.part != null) ? r.part : (dicts && dicts.part && D.iPart && D.iPart[ix] != null ? dicts.part[D.iPart[ix]] : ""); return cleansheetPartStringValid(p); }
+  /** Include rows with digit part numbers or a harmonization grain (e.g. commodity code for indirect). */
+  function cleansheetGrainIncluded(ix) {
+    if (cleansheetRowPartValid(ix)) return true;
+    var r = D.rows && D.rows[ix];
+    if (!r || typeof idpHarmonizationItemKey !== "function") return false;
+    return !!idpHarmonizationItemKey(r);
+  }
+  function cleansheetGrainKey(ix) {
+    var r = D.rows && D.rows[ix];
+    var k = "";
+    if (r && typeof idpHarmonizationItemKey === "function") k = idpHarmonizationItemKey(r) || "";
+    if (k) return k;
+    return "partIx:" + String(D.iPart[ix]);
+  }
+  function getCleansheetFiltered() { var base, out, i, n; base = getFiltered(); out = []; for (i = 0, n = base.length; i < n; i++) { if (cleansheetGrainIncluded(base[i])) { out.push(base[i]); } } return out; }
+  function cleansheetResolveBaselineYear() { var hbar, y, idx, w, mx; hbar = D && D.harmonization_results != null ? D.harmonization_results : null; y = hbar && (hbar.analysis_year != null ? +hbar.analysis_year : (hbar.year != null ? +hbar.year : NaN)); if (!isNaN(y) && y >= 1990) { return y; } idx = getCleansheetFiltered(); mx = 0; for (w = 0; w < idx.length; w++) { y = rowYearFromIx(idx[w]); if (y > mx) { mx = y; } } return mx; }
+  function cleansheetSkuLabelFromIx(ix) {
+    var raw, p, m, n;
+    if (ix == null || !D.rows || !D.rows[ix]) return "—";
+    raw = D.rows[ix];
+    p = raw.part != null ? String(raw.part).trim() : "";
+    if (p) return p;
+    m = raw.material != null ? String(raw.material).trim() : "";
+    if (m) return m;
+    n = raw.noun != null ? String(raw.noun).trim() : "";
+    if (n) return n;
+    return "—";
+  }
+  function cleansheetSkuForAggregatedPart(grainKey, sampleIx) {
+    var fromDict, pid, pk;
+    var lbl = cleansheetSkuLabelFromIx(sampleIx);
+    if (lbl && lbl !== "—") return lbl;
+    if (grainKey != null && String(grainKey).trim() !== "") {
+      pk = String(grainKey);
+      if (pk.indexOf("partIx:") === 0) {
+        pid = parseInt(pk.slice(7), 10);
+        if (!isNaN(pid) && dicts.part && dicts.part[pid] != null) return String(dicts.part[pid]).trim();
+      } else {
+        return pk;
+      }
+    }
+    fromDict = typeof grainKey === "number" && dicts.part && dicts.part[grainKey] != null ? String(dicts.part[grainKey]).trim() : "";
+    return fromDict || "—";
+  }
+  function baselineSpendForAnalysisYear(year, idx) { var w, s, y; s = 0; if (!year || year < 1990) { return 0; } for (w = 0; w < idx.length; w++) { y = rowYearFromIx(idx[w]); if (y === year) { s += D.spend[idx[w]]; } } return s; }
+  function csL3SpendInBaselineYear(l3Ix, year, idx) { var w, y, s; s = 0; if (!year || year < 1990) { return 0; } for (w = 0; w < idx.length; w++) { if (D.iC3[idx[w]] !== l3Ix) { continue; } y = rowYearFromIx(idx[w]); if (y === year) { s += D.spend[idx[w]]; } } return s; }
+  /** One pass over idx — use in cleansheet instead of calling csL3SpendInBaselineYear per SKU (avoids O(skus × rows) freeze/crash). */
+  function csL3BaselineTotalsMap(year, idx) {
+    var m = Object.create(null), w, ix, y, l3, sp;
+    if (!year || year < 1990 || !idx || !idx.length) return m;
+    for (w = 0; w < idx.length; w++) {
+      ix = idx[w];
+      y = rowYearFromIx(ix);
+      if (y !== year) continue;
+      l3 = D.iC3[ix];
+      if (l3 == null) continue;
+      sp = D.spend[ix];
+      m[l3] = (m[l3] || 0) + sp;
+    }
+    return m;
+  }
+  var CS_MAX_ROWS = 10000;
+  var CS_SCATTER_MAX_POINTS = 5000;
+  function fmtCsUnitPrice(n) { if (n == null || !isFinite(n) || n < 0) { return "—"; } return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 4, minimumFractionDigits: 2 }).format(n); }
+  function csWireSimOnce() { if (window._csSimDelegated) { return; } window._csSimDelegated = 1; document.addEventListener("input", function (e) { var t = e.target; if (t && t.classList && t.classList.contains("cs-cleansheet-price") && t.closest && t.closest("#cs-sim-tbody")) { csRefreshCleansheetOutputs(); } }); document.addEventListener("change", function (e) { var t = e.target; if (t && t.classList && t.classList.contains("cs-cleansheet-price") && t.closest && t.closest("#cs-sim-tbody")) { csRefreshCleansheetOutputs(); } }); }
+  function csRefreshCleansheetOutputs() {
+    var rows, i, tr, spend, quoted, inp, csP, pctSav, dollarSav, tot, elTot, elPct, elN, rOut, nSku;
+    rows = document.querySelectorAll("#cs-sim-tbody tr[data-cs-quoted]");
+    tot = 0;
+    nSku = 0;
+    rOut = $("cs-out-tbody");
+    if (rOut) { rOut.innerHTML = ""; }
+    for (i = 0; i < rows.length; i++) {
+      tr = rows[i];
+      spend = +tr.getAttribute("data-cs-spend");
+      quoted = +tr.getAttribute("data-cs-quoted");
+      inp = tr.querySelector(".cs-cleansheet-price");
+      csP = inp ? parseFloat(String(inp.value).replace(/,/g, "")) : NaN;
+      if (isNaN(csP)) { csP = NaN; }
+      if (!isFinite(spend) || !isFinite(quoted) || quoted <= 0 || !isFinite(csP) || csP < 0) {
+        pctSav = null;
+        dollarSav = 0;
+      } else {
+        pctSav = (quoted - csP) / quoted;
+        dollarSav = pctSav * spend;
+        if (isFinite(dollarSav)) { tot += dollarSav; }
+        nSku += 1;
+      }
+      if (tr.querySelector(".cs-sim-pct")) { tr.querySelector(".cs-sim-pct").textContent = pctSav != null && isFinite(pctSav) ? (100 * pctSav).toFixed(1) + "%" : "—"; }
+      if (tr.querySelector(".cs-sim-dollar")) { tr.querySelector(".cs-sim-dollar").textContent = isFinite(dollarSav) ? fmtOppUSD(dollarSav) : "—"; }
+      if (rOut && isFinite(quoted) && quoted > 0 && isFinite(csP) && csP >= 0) {
+        var cSku = document.createElement("tr"); cSku.className = "border-t border-[#E6E6E6]";
+        cSku.innerHTML = "<td class=\"max-w-[10rem] py-1.5 pr-2\" style=\"color:#333\">" + esc(tr.getAttribute("data-cs-sku") || "—") + "</td>" +
+          "<td class=\"max-w-[10rem] py-1.5 pr-2\" style=\"color:#333\">" + esc(tr.getAttribute("data-cs-l3") || "—") + "</td>" +
+          "<td class=\"py-1.5 pr-2 text-right tabular-nums\" style=\"color:#333\">" + fmtCsUnitPrice(quoted) + "</td>" +
+          "<td class=\"py-1.5 pr-2 text-right tabular-nums\" style=\"color:#333\">" + fmtCsUnitPrice(csP) + "</td>" +
+          "<td class=\"py-1.5 pr-2 text-right tabular-nums\" style=\"color:#333\">" + (pctSav != null && isFinite(pctSav) ? (100 * pctSav).toFixed(1) + "%" : "—") + "</td>" +
+          "<td class=\"py-1.5 text-right tabular-nums\" style=\"color:#1f3a8a\">" + (isFinite(dollarSav) ? fmtOppUSD(dollarSav) : "—") + "</td>";
+        rOut.appendChild(cSku);
+      }
+    }
+    elTot = $("cs-out-total-savings");
+    elPct = $("cs-out-pct-baseline");
+    elN = $("cs-out-n-skus");
+    if (elTot) { elTot.textContent = nSku ? fmtOppUSD(tot) : "—"; }
+    if (elPct) {
+      if (csBaselineSpendCached > 0 && nSku) { elPct.textContent = ((tot / csBaselineSpendCached) * 100).toFixed(1) + "%"; }
+      else { elPct.textContent = "—"; }
+    }
+    if (elN) { elN.textContent = nSku ? String(nSku) : "—"; }
+  }
+  function renderCleansheet() {
+    var idx, map, wi, ix, k, rec, sp, arr, r, scatterPts, top, baselineY, baselineS, cnv, tbody, simTb, outTb, tr, td, sku, labX, o, noteEl, partId, l3Ix, skuYB, l3Tot, pctL3, quoted, csDefault, l3TotMap, capNote, noteBase, nScat;
+    if (currentAppView !== "cleansheet") { return; }
+    try {
+    if (typeof console !== "undefined" && console.log) { try { console.log("=== CLEANSHEET renderCleansheet ==="); } catch (eL) {} }
+    destroyCleansheetChart();
+    csWireSimOnce();
+    idx = getCleansheetFiltered();
+    capNote = "";
+    if (idx.length > CS_MAX_ROWS) {
+      capNote = " Showing first " + CS_MAX_ROWS + " matching rows (dataset capped for performance).";
+      idx = idx.slice(0, CS_MAX_ROWS);
+    }
+    if (typeof console !== "undefined" && console.log) { try { console.log("Cleansheet row indices:", idx.length); } catch (eL2) {} }
+    baselineY = cleansheetResolveBaselineYear();
+    baselineS = baselineSpendForAnalysisYear(baselineY, idx);
+    csBaselineSpendCached = baselineS;
+    csBaselineYearCached = baselineY;
+    noteEl = $("cs-l3-baseline-note");
+    if (noteEl) {
+      noteBase = baselineY
+        ? ("Total L3 spend is for " + baselineY + " (full year, same logic as harmonization analysis year). % of L3 = SKU total spend (filtered) ÷ that L3 total in " + baselineY + ".")
+        : "Add harmonization results or calendar years on rows to define the baseline year.";
+      noteEl.textContent = noteBase + capNote;
+      noteEl.style.color = "";
+    }
+    var bh = $("cs-out-baseline-hint");
+    if (bh) { bh.textContent = baselineY ? ("vs total spend in " + baselineY + " (filtered)") : "vs baseline year spend (filtered)"; }
+    map = new Map();
+    for (wi = 0; wi < idx.length; wi++) {
+      ix = idx[wi];
+      k = cleansheetGrainKey(ix);
+      sp = D.spend[ix];
+      rec = map.get(k);
+      if (!rec) {
+        map.set(k, { spend: sp, qty: D.qty[ix], l3Ix: D.iC3[ix], l3Win: sp, sampleIx: ix });
+      } else {
+        rec.spend += sp;
+        rec.qty += D.qty[ix];
+        if (sp > rec.l3Win) { rec.l3Win = sp; rec.l3Ix = D.iC3[ix]; }
+      }
+    }
+    l3TotMap = csL3BaselineTotalsMap(baselineY, idx);
+    arr = [];
+    map.forEach(function (v, pid) {
+      l3Ix = v.l3Ix != null ? v.l3Ix : -1;
+      l3Tot = l3TotMap[l3Ix] != null ? l3TotMap[l3Ix] : 0;
+      pctL3 = l3Tot > 0 ? v.spend / l3Tot : null;
+      arr.push({ partId: pid, spend: v.spend, qty: v.qty, l3Ix: l3Ix, pctL3: pctL3, sampleIx: v.sampleIx });
+    });
+    arr.sort(function (a, b) { return b.spend - a.spend; });
+    top = arr.slice(0, 10);
+    scatterPts = [];
+    nScat = Math.min(arr.length, CS_SCATTER_MAX_POINTS);
+    for (r = 0; r < nScat; r++) {
+      scatterPts.push({ x: arr[r].qty, y: arr[r].spend, label: cleansheetSkuForAggregatedPart(arr[r].partId, arr[r].sampleIx) });
+    }
+    cnv = $("ch-cleansheet");
+    if (cnv && typeof Chart !== "undefined" && scatterPts.length) {
+      labX = "Total quantity (per SKU)";
+      o = { type: "scatter", data: { datasets: [{ label: "SKUs", data: scatterPts, backgroundColor: "rgba(31, 58, 138, 0.5)", borderColor: "rgba(31, 58, 138, 0.85)", pointRadius: 3, pointHoverRadius: 6 }] }, options: { maintainAspectRatio: false, color: "#333", plugins: { legend: { display: false }, datalabels: { display: false }, tooltip: Object.assign({}, chartTt(), { callbacks: { label: function (ctx) { var p2, raw; raw = ctx.raw; p2 = raw || {}; return (p2.label || "SKU") + ": qty " + (p2.x != null ? fmtIntPlain(p2.x) : "—") + " · spend " + (p2.y != null ? fmtOppUSD(p2.y) : "—"); } } }) }, scales: { x: Object.assign({}, chartScalesD().x, { title: { display: true, text: labX, color: "#8A8A8A" } }), y: Object.assign({}, chartScalesD().y, { beginAtZero: true, title: { display: true, text: "Total spend (USD)", color: "#8A8A8A" }, ticks: { color: "#8A8A8A", callback: function (v) { return typeof v === "number" && isFinite(v) ? (Math.abs(v) >= 1e6 ? "$" + (v / 1e6).toFixed(1) + "M" : fmtCur(v)) : ""; } } }) } } };
+      try { csChart = new Chart(cnv, o); } catch (e) { if (typeof console !== "undefined" && console.error) { console.error(e); } }
+    }
+    tbody = $("cs-tbody");
+    if (tbody) {
+      tbody.innerHTML = "";
+      for (r = 0; r < top.length; r++) {
+        partId = top[r].partId;
+        sku = cleansheetSkuForAggregatedPart(partId, top[r].sampleIx);
+        l3Ix = top[r].l3Ix;
+        tr = document.createElement("tr");
+        tr.className = "border-t border-[#E6E6E6]";
+        td = document.createElement("td"); td.className = "max-w-0 py-1.5 pr-2"; td.style.color = "#333"; td.textContent = sku; tr.appendChild(td);
+        td = document.createElement("td"); td.className = "py-1.5 pr-2 text-right tabular-nums"; td.style.color = "#333"; td.textContent = fmtOppUSD(top[r].spend); tr.appendChild(td);
+        td = document.createElement("td"); td.className = "py-1.5 pr-2 text-right tabular-nums"; td.style.color = "#333"; td.textContent = fmtIntPlain(top[r].qty); tr.appendChild(td);
+        td = document.createElement("td"); td.className = "max-w-[8rem] py-1.5 pr-2"; td.style.color = "#333"; td.textContent = (dicts.category_l3 && l3Ix != null && dicts.category_l3[l3Ix] != null) ? formatLabel(dicts.category_l3[l3Ix]) : "—"; tr.appendChild(td);
+        td = document.createElement("td"); td.className = "py-1.5 text-right tabular-nums"; td.style.color = "#333"; td.textContent = top[r].pctL3 != null && isFinite(top[r].pctL3) ? ((100 * top[r].pctL3).toFixed(1) + "%") : "—"; tr.appendChild(td);
+        tbody.appendChild(tr);
+      }
+    }
+    simTb = $("cs-sim-tbody");
+    outTb = $("cs-out-tbody");
+    if (simTb) {
+      simTb.innerHTML = "";
+      for (r = 0; r < top.length; r++) {
+        partId = top[r].partId;
+        sku = cleansheetSkuForAggregatedPart(partId, top[r].sampleIx);
+        l3Ix = top[r].l3Ix;
+        quoted = top[r].qty > 0 ? top[r].spend / top[r].qty : 0;
+        csDefault = quoted > 0 ? quoted * 0.95 : 0;
+        tr = document.createElement("tr");
+        tr.className = "border-t border-[#E6E6E6]";
+        tr.setAttribute("data-cs-spend", String(top[r].spend));
+        tr.setAttribute("data-cs-quoted", String(quoted));
+        tr.setAttribute("data-cs-sku", sku);
+        tr.setAttribute("data-cs-l3", (dicts.category_l3 && l3Ix != null && dicts.category_l3[l3Ix] != null) ? String(dicts.category_l3[l3Ix]) : "—");
+        tr.innerHTML = "<td class=\"max-w-[9rem] py-1.5 pr-2\" style=\"color:#333\">" + esc(sku) + "</td>" +
+          "<td class=\"max-w-[9rem] py-1.5 pr-2\" style=\"color:#333\">" + esc((dicts.category_l3 && l3Ix != null && dicts.category_l3[l3Ix] != null) ? formatLabel(dicts.category_l3[l3Ix]) : "—") + "</td>" +
+          "<td class=\"py-1.5 pr-2 text-right tabular-nums\" style=\"color:#333\">" + fmtCsUnitPrice(quoted) + "</td>" +
+          "<td class=\"py-1.5 pr-2 text-right\"><input type=\"number\" step=\"any\" min=\"0\" class=\"cs-cleansheet-price w-28 rounded border border-[#E6E6E6] px-1.5 py-1 text-right text-xs tabular-nums\" value=\"" + (csDefault > 0 ? csDefault.toFixed(4) : "0") + "\" aria-label=\"Cleansheet price for " + esc(sku) + "\" /></td>" +
+          "<td class=\"cs-sim-pct py-1.5 pr-2 text-right tabular-nums\" style=\"color:#333\">—</td>" +
+          "<td class=\"cs-sim-dollar py-1.5 text-right tabular-nums\" style=\"color:#1f3a8a\">—</td>";
+        simTb.appendChild(tr);
+      }
+    }
+    if (outTb) { outTb.innerHTML = ""; }
+    csRefreshCleansheetOutputs();
+    } catch (csErr) {
+      if (typeof console !== "undefined" && console.error) {
+        try { console.error("Cleansheet tab error:", csErr); } catch (eCe) {}
+      }
+      noteEl = $("cs-l3-baseline-note");
+      if (noteEl) {
+        noteEl.textContent = "Error loading Cleansheet: " + (csErr && csErr.message ? String(csErr.message) : String(csErr)) + " — check browser console.";
+        noteEl.style.color = "#b45309";
+      }
+      destroyCleansheetChart();
+    }
+  }
+  function fmtPctOne(x) { if (x == null || isNaN(x)) return "—"; return (Math.round(10 * x) / 10).toFixed(1) + "%"; }
+  function harmDownloadCsv(filename, content) { var bl, u, a, s; if (content == null || content === "") return; s = typeof content === "string" ? content : content.join("\n"); bl = new Blob([s], { type: "text/csv;charset=utf-8" }); u = URL.createObjectURL(bl); a = document.createElement("a"); a.href = u; a.download = filename; a.click(); URL.revokeObjectURL(u); }
+  function harmCsvCell(v) { v = v == null ? "" : String(v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }
+  /** Part number for matching D.rows (harmonization top5 item title is often "PART · site"). */
+  function harmHarmonizationPartKey(p) {
+    var it, ix;
+    if (!p) return "";
+    if (p.item_number != null && String(p.item_number).trim() !== "") return String(p.item_number).trim();
+    it = (p.item != null ? String(p.item) : "").trim();
+    ix = it.indexOf(" · ");
+    if (ix > 0) return it.slice(0, ix).trim();
+    return it;
+  }
+  function harmRawRowsForPart(partKey) {
+    var rows, pk, fn;
+    rows = D.rows;
+    if (!rows || !rows.length || !partKey) return [];
+    pk = String(partKey).trim();
+    fn = typeof idpHarmonizationItemKey === "function" ? idpHarmonizationItemKey : null;
+    return rows.filter(function (r) {
+      if (!r) return false;
+      if (fn) return fn(r) === pk;
+      return r.part != null && String(r.part).trim() === pk;
+    });
+  }
+  function harmRawRowsForPartKeys(partKeys) {
+    var set, rows, i, k, fn;
+    set = {};
+    for (i = 0; i < (partKeys ? partKeys.length : 0); i++) {
+      k = partKeys[i] != null ? String(partKeys[i]).trim() : "";
+      if (k) set[k] = 1;
+    }
+    rows = D.rows;
+    if (!rows || !rows.length) return [];
+    fn = typeof idpHarmonizationItemKey === "function" ? idpHarmonizationItemKey : null;
+    return rows.filter(function (r) {
+      var kk;
+      if (!r) return false;
+      kk = fn ? fn(r) : (r.part != null ? String(r.part).trim() : "");
+      return kk && set[kk];
+    });
+  }
+  function harmSortRawCubeRows(arr) {
+    var a = arr.slice();
+    a.sort(function (x, y) {
+      var sx, sy, tx, ty;
+      sx = String((x.supplier != null ? x.supplier : x.su) || "").toLowerCase();
+      sy = String((y.supplier != null ? y.supplier : y.su) || "").toLowerCase();
+      if (sx !== sy) return sx < sy ? -1 : 1;
+      tx = String(x.site || "").toLowerCase();
+      ty = String(y.site || "").toLowerCase();
+      if (tx !== ty) return tx < ty ? -1 : 1;
+      return 0;
+    });
+    return a;
+  }
+  /** Raw spend cube export for Excel rebuild: source columns only (no unit_price, savings, or MECE category). Rows matched by harmonization item key via harmRawRowsForPart (SKU may equal part or ccode:-prefixed key). */
+  function harmBuildRawCubeCsv(arr) {
+    var h, o, b, r, qv;
+    h = "part,supplier,site,spend,quantity,year,ym,spend_type,category_l1,category_l2,category_l3";
+    o = [h];
+    if (!arr || !arr.length) return o.join("\n");
+    for (b = 0; b < arr.length; b++) {
+      r = arr[b] || {};
+      qv = r.quantity != null ? r.quantity : r.qty;
+      o.push([
+        harmCsvCell(r.part),
+        harmCsvCell(r.supplier != null ? r.supplier : r.su),
+        harmCsvCell(r.site),
+        harmCsvCell(r.spend),
+        harmCsvCell(qv),
+        harmCsvCell(r.year),
+        harmCsvCell(r.ym),
+        harmCsvCell(r.spend_type),
+        harmCsvCell(r.category_l1 != null ? r.category_l1 : r.c1),
+        harmCsvCell(r.category_l2 != null ? r.category_l2 : r.c2),
+        harmCsvCell(r.category_l3 != null ? r.category_l3 : r.c3)
+      ].join(","));
+    }
+    return o.join("\n");
+  }
+  function harmSafeSkuFilename(s) {
+    var t = (s == null ? "SKU" : String(s)).trim();
+    if (!t) t = "SKU";
+    return t.replace(/[\s]+/g, "_").replace(/[^A-Za-z0-9._\-]/g, "").slice(0, 64) || "SKU";
+  }
+  /** Item keys aligned with harmonization-client idpHarmonizationItemKey (part / ccode / …). */
+  function harmSpendKindKeySetFromRows(rowsSlice) {
+    var set = Object.create(null), i, k, r, fn;
+    fn = typeof idpHarmonizationItemKey === "function" ? idpHarmonizationItemKey : null;
+    if (!rowsSlice || !fn) return set;
+    for (i = 0; i < rowsSlice.length; i++) {
+      r = rowsSlice[i];
+      if (!r) continue;
+      k = fn(r);
+      if (k) set[k] = 1;
+    }
+    return set;
+  }
+  function harmTop5BelongsToKeySet(p, keySet) {
+    var pk = harmHarmonizationPartKey(p);
+    return !!(pk && keySet && keySet[pk]);
+  }
+  /**
+   * Use refresh_data.py harmonization_results (no browser MECE recompute — avoids stack overflow on large slices).
+   * Restrict top5 cards to MECE items that appear in rowsSlice for Direct vs Indirect.
+   */
+  function harmBackendPayloadForSpendKind(hr, rowsSlice) {
+    var clone, cats, i, j, cat, top5, origTop, p, savSum, totalOpp, spendKindSpend, pctSpend, p80tot;
+    if (!hr || String(hr.message || "") !== "ok" || !hr.categories || !hr.categories.length) return null;
+    try {
+      clone = JSON.parse(JSON.stringify(hr));
+    } catch (e0) {
+      return null;
+    }
+    cats = clone.categories;
+    totalOpp = 0;
+    spendKindSpend = 0;
+    for (i = 0; i < rowsSlice.length; i++) {
+      if (rowsSlice[i] && rowsSlice[i].spend != null && !isNaN(+rowsSlice[i].spend)) spendKindSpend += +rowsSlice[i].spend;
+    }
+    var keySet = harmSpendKindKeySetFromRows(rowsSlice);
+    for (i = 0; i < cats.length; i++) {
+      cat = cats[i];
+      top5 = cat.top5 || [];
+      origTop = top5.length;
+      cat.top5 = [];
+      for (j = 0; j < top5.length; j++) {
+        p = top5[j];
+        if (harmTop5BelongsToKeySet(p, keySet)) cat.top5.push(p);
+      }
+      savSum = 0;
+      for (j = 0; j < cat.top5.length; j++) {
+        p = cat.top5[j];
+        var hs = harmSumExportSavings(p);
+        if (hs != null && !isNaN(hs)) savSum += hs;
+      }
+      cat.savings_usd = Math.round(savSum * 100) / 100;
+      if (origTop > 0 && cat.parts_for_80_pct_value != null && !isNaN(+cat.parts_for_80_pct_value)) {
+        cat.parts_for_80_pct_value = Math.max(0, Math.round(+cat.parts_for_80_pct_value * (cat.top5.length / origTop)));
+      } else if (!cat.top5.length) {
+        cat.parts_for_80_pct_value = 0;
+      }
+      totalOpp += savSum;
+    }
+    clone.total_opportunity_usd = Math.round(Math.max(0, totalOpp));
+    clone.total_opportunity_float = clone.total_opportunity_usd;
+    pctSpend = spendKindSpend > 0 ? Math.round(10 * ((100 * totalOpp) / spendKindSpend)) / 10 : null;
+    clone.pct_savings_vs_spend = pctSpend == null ? null : pctSpend;
+    p80tot = 0;
+    for (i = 0; i < cats.length; i++) {
+      if (cats[i].parts_for_80_pct_value != null && !isNaN(+cats[i].parts_for_80_pct_value)) p80tot += +cats[i].parts_for_80_pct_value;
+    }
+    clone.parts_for_80_pct_value = Math.round(p80tot / Math.max(1, cats.length));
+    clone.message = "ok";
+    return clone;
+  }
+  function downloadCSV(data, filename) {
+    var rows = Array.isArray(data) ? data : [];
+    if (typeof console !== "undefined" && console.log) { try { console.log("Download rows:", rows.length); } catch (e1) { } }
+    if (!rows.length) return;
+    var headers = Object.keys(rows[0]);
+    var csv = [headers.join(",")].concat(rows.map(function (row) {
+      return headers.map(function (h) { return JSON.stringify(row[h] != null ? row[h] : ""); }).join(",");
+    }));
+    var blob = new Blob([csv.join("\n")], { type: "text/csv;charset=utf-8" });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+  function idpRowSpendTypeString(r) {
+    var s, low, l1;
+    if (!r) return "Indirect";
+    s = r.spend_type != null ? String(r.spend_type).trim() : "";
+    if (s === "Direct") return "Direct";
+    if (s === "Indirect") return "Indirect";
+    low = s.toLowerCase();
+    if (low === "direct") return "Direct";
+    if (low === "indirect") return "Indirect";
+    l1 = r.category_l1 != null ? String(r.category_l1).toLowerCase() : (r.c1 != null ? String(r.c1).toLowerCase() : "");
+    if (l1.indexOf("indirect") >= 0) return "Indirect";
+    if (l1.indexOf("direct") >= 0) return "Direct";
+    return "Indirect";
+  }
+  function getFilteredRowObjects() {
+    var idx = getFiltered(), out = [], i, r;
+    for (i = 0; i < idx.length; i++) {
+      r = D.rows && D.rows[idx[i]];
+      if (r) out.push(r);
+    }
+    return out;
+  }
+  function getRowsForHarmonizationSpendKind(kind) {
+    readFiltersFromForm();
+    var idx = getFilteredHarmonization(), out = [], i, r;
+    for (i = 0; i < idx.length; i++) {
+      r = D.rows && D.rows[idx[i]];
+      if (!r) continue;
+      if (idpRowSpendTypeString(r) === kind) out.push(r);
+    }
+    return out;
+  }
+  function renderHarmonization(spendKind) {
+    var hbar, fGrid, mEl, tRow, yYear, v, chIx, t5Idx, cat, sec, hdr, expl, mRow, m3, p, art, g, b, s, cnv, chEl, o, tRow2, w, dlab, dlH, gapTxt, slug, yM, cEl, cTitle, cStrap, categories, barBg, wmin, wix, ts, tq, supT, hsav, rowsSlice, idxAll, spendAll, sd, si, z, r0, yRng, rd, rx;
+    spendKind = spendKind === "Indirect" ? "Indirect" : "Direct";
+    rowsSlice = getRowsForHarmonizationSpendKind(spendKind);
+    if (typeof console !== "undefined" && console.log && D && D.rows) {
+      try {
+        if (spendKind === "Direct") {
+          rd = [];
+          for (z = 0; z < D.rows.length; z++) {
+            rx = D.rows[z];
+            if (rx && String(rx.spend_type != null ? rx.spend_type : "").trim() === "Direct") rd.push(rx);
+          }
+          console.log("Direct tab — dataset rows with spend_type=== \"Direct\":", rd.length);
+          if (rd[0]) console.log("Direct tab — first such row:", rd[0]);
+          console.log("Direct tab — harmonization input rows (time/BU/geo/supplier filters; L1–L4 not applied):", rowsSlice.length);
+        }
+        if (spendKind === "Indirect") {
+          console.log("=== INDIRECT TAB DEBUG ===");
+          console.log("Total rows D.rows.length:", D.rows.length);
+          if (D.rows[0]) console.log("First row spend_type:", D.rows[0].spend_type);
+          rd = [];
+          for (z = 0; z < D.rows.length; z++) {
+            rx = D.rows[z];
+            if (rx && idpRowSpendTypeString(rx) === "Indirect") rd.push(rx);
+          }
+          console.log("Rows classified Indirect (idpRowSpendTypeString):", rd.length);
+          if (rd[0]) console.log("First Indirect row:", rd[0]);
+          console.log("Harmonization input rows after filters (slice):", rowsSlice.length);
+        }
+      } catch (eHarmDbg) {}
+    }
+    readFiltersFromForm();
+    idxAll = getFiltered();
+    spendAll = 0;
+    sd = 0;
+    si = 0;
+    for (z = 0; z < idxAll.length; z++) {
+      r0 = D.rows && D.rows[idxAll[z]];
+      if (!r0) continue;
+      spendAll += +r0.spend || 0;
+      if (idpRowSpendTypeString(r0) === "Direct") sd += +r0.spend || 0;
+      else si += +r0.spend || 0;
+    }
+    if (typeof console !== "undefined" && console.log) { try { console.log("Check totals:", sd + si, spendAll); } catch (e2) { } }
+    hbar = null;
+    if (D && D.harmonization_results && String(D.harmonization_results.message || "") === "ok" && D.harmonization_results.categories && D.harmonization_results.categories.length) {
+      hbar = harmBackendPayloadForSpendKind(D.harmonization_results, rowsSlice);
+      if (typeof console !== "undefined" && console.log) {
+        try { console.log("Harmonization — using data.harmonization_results filtered by " + spendKind + " row keys; top cards:", hbar && hbar.categories ? hbar.categories.map(function (c) { return c && c.top5 ? c.top5.length : 0; }) : []); } catch (eBk) {}
+      }
+    }
+    if (!hbar && typeof idpCalculateHarmonizationFromRows === "function") {
+      try {
+        hbar = idpCalculateHarmonizationFromRows(rowsSlice);
+        if (typeof console !== "undefined" && console.log) {
+          try { console.log("Harmonization — fallback: client idpCalculateHarmonizationFromRows (no valid harmonization_results in JSON)"); } catch (eFb) {}
+        }
+      } catch (eHarmCalc) {
+        if (typeof console !== "undefined" && console.error) {
+          try { console.error("Harmonization calculation failed:", eHarmCalc); } catch (eH2) {}
+        }
+        hbar = null;
+      }
+    }
+    try { window._idpLastHarmPayload = hbar; } catch (e3) { }
+    categories = hbar && Object.prototype.toString.call(hbar.categories) === "[object Array]" ? hbar.categories : [];
+    v = categories.length;
+    if (typeof console !== "undefined" && console.log) { try { console.log("FULL HARM DATA (" + spendKind + "):", hbar); console.log("CATEGORIES:", categories); console.log("Categories length:", v); } catch (e4) { } }
+    if (hbar && v === 0 && typeof console !== "undefined" && console.error) { try { console.error("No harmonization categories for " + spendKind + ".", hbar); } catch (e5) { } }
+    fGrid = document.getElementById("harm-comparison-grid");
+    mEl = document.getElementById("harm-message");
+    cTitle = document.getElementById("harm-page-title");
+    cStrap = document.getElementById("harm-strap");
+    (function (el) { if (el) { el.textContent = hbar ? fmtOppUSD(hbar.total_opportunity_usd) : "—"; } }(document.getElementById("harm-metric-opp")));
+    (function (el) { if (el) { el.textContent = hbar && hbar.parts_for_80_pct_value != null ? String(Math.round(hbar.parts_for_80_pct_value)) : "—"; } }(document.getElementById("harm-metric-p80")));
+    (function (el) { if (el) { el.textContent = hbar && hbar.pct_savings_vs_spend != null && !isNaN(hbar.pct_savings_vs_spend) ? fmtPctOne(hbar.pct_savings_vs_spend) : "—"; } }(document.getElementById("harm-metric-pct")));
+    yYear = hbar && (hbar.analysis_year != null ? hbar.analysis_year : hbar.year);
+    if (cTitle) { cTitle.textContent = (spendKind === "Indirect" ? "Harmonization — Indirect" : "Harmonization — Direct") + (yYear ? (" — " + yYear + " opportunity") : " — opportunity"); }
+    if (cStrap) { cStrap.textContent = "Weighted unit price vs. best observed price (" + spendKind + "), by part (most recent year in data" + (yYear ? (" — " + yYear) : "") + ")."; }
+    if (mEl) {
+      if (!hbar && rowsSlice.length > 0) {
+        mEl.classList.remove("hidden");
+        mEl.textContent = "Harmonization could not be computed (see browser console).";
+      } else if (hbar && hbar.message && String(hbar.message) !== "ok" && hbar.message !== "") {
+        mEl.classList.remove("hidden");
+        mEl.textContent = String(hbar.message);
+      } else {
+        mEl.classList.add("hidden");
+        mEl.textContent = "";
+      }
+    }
+    destroyHarmonizationCharts();
+    if (!fGrid) { return; }
+    fGrid.innerHTML = "";
+    if (!categories.length) { tRow = document.createElement("p"); tRow.id = "harm-empty"; tRow.className = "text-sm idp-muted mb-4"; tRow.textContent = rowsSlice.length === 0 ? ("No rows match filters for " + spendKind + " spend.") : ("No harmonization categories to display for " + spendKind + "."); fGrid.appendChild(tRow); return; }
+    chIx = 0;
+    categories.forEach(function (cat, cIdx) {
+      if (!cat) { return; }
+      sec = document.createElement("section");
+      sec.className = "space-y-4";
+      hdr = document.createElement("h3");
+      hdr.className = "m-0 border-b border-[#E6E6E6] pb-2 text-sm font-semibold";
+      hdr.style.color = "#333";
+      hdr.textContent = "Category " + (cat.id != null ? cat.id : cIdx + 1) + ": " + (cat.title || "—");
+      sec.appendChild(hdr);
+      expl = document.createElement("p");
+      expl.className = "mt-1 mb-3 max-w-4xl text-sm leading-relaxed idp-muted";
+      if (+cat.id === 1) {
+        expl.textContent = "This shows where we buy the same part at the same plant from multiple suppliers at different prices. Savings = switching all volume to the cheapest supplier at that plant.";
+      } else if (+cat.id === 3) {
+        expl.textContent = "This shows where the same supplier charges different prices for the same part across plants. Savings = aligning all plants to the lowest price that supplier offers.";
+      } else {
+        expl.textContent = "";
+      }
+      if (expl.textContent) sec.appendChild(expl);
+      mRow = document.createElement("div");
+      mRow.className = "grid grid-cols-1 gap-2 sm:grid-cols-2";
+      m3 = [
+        { k: "Category " + (cIdx + 1) + " savings (USD)", v: cat.savings_usd != null && !isNaN(+cat.savings_usd) ? fmtOppUSD(+cat.savings_usd) : "—" },
+        { k: "Parts to capture 80% of category savings", v: cat.parts_for_80_pct_value != null && !isNaN(+cat.parts_for_80_pct_value) ? String(Math.round(+cat.parts_for_80_pct_value)) : "—" }
+      ];
+      for (yM = 0; yM < m3.length; yM++) {
+        cEl = document.createElement("div");
+        cEl.className = "rounded-lg border border-[#E6E6E6] bg-white px-3 py-2";
+        cEl.innerHTML = "<p class=\"m-0 text-[0.65rem] font-medium uppercase tracking-wide idp-muted\">" + esc(m3[yM].k) + "</p><p class=\"m-0 mt-1 text-lg font-bold tabular-nums\" style=\"color:#1f3a8a\">" + m3[yM].v + "</p>";
+        mRow.appendChild(cEl);
+      }
+      sec.appendChild(mRow);
+      cEl = document.createElement("h4");
+      cEl.className = "text-sm font-semibold";
+      cEl.style.color = "#333";
+      cEl.textContent = "Top 5 by potential savings";
+      sec.appendChild(cEl);
+      cEl = document.createElement("p");
+      cEl.className = "mb-2";
+      cEl.innerHTML = "<button type=\"button\" class=\"rounded border border-[#8A8A8A] bg-white px-3 py-1.5 text-sm font-medium text-[#333] hover:bg-gray-100\" data-harm-cat-csv-idx=\"" + cIdx + "\">Download all top 5 (this category)</button>";
+      sec.appendChild(cEl);
+      if (!cat.top5 || !cat.top5.length) { cEl = document.createElement("p"); cEl.className = "text-sm idp-muted"; cEl.textContent = "No items to display in this category."; sec.appendChild(cEl); fGrid.appendChild(sec); return; }
+      for (t5Idx = 0; t5Idx < cat.top5.length; t5Idx++) {
+        p = cat.top5[t5Idx];
+        if (!p) { continue; }
+        var harmPartKey = harmHarmonizationPartKey(p);
+        art = document.createElement("article");
+        art.className = "overflow-hidden rounded-xl idp-card p-4";
+        g = p.groups && p.groups.length ? p.groups : (p.chart && p.chart.labels ? p.chart.labels.map(function (L, h) { return { label: L, qty: 0 }; }) : []);
+        supT = p.suppliers && p.suppliers.length;
+        gapTxt = p.savings_subtitle || "";
+        b = document.createElement("div");
+        b.className = "mb-2 flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-2 sm:border-b sm:border-[#E6E6E6] sm:pb-2";
+        s = document.createElement("div");
+        s.className = "min-w-0 flex-1";
+        ts = p.total_spend;
+        tq = p.total_quantity;
+        hsav = harmSumExportSavings(p);
+        s.innerHTML = "<h4 class=\"m-0 break-all text-sm font-semibold\" style=\"color: #333\">" + esc(p.item != null && p.item !== "" ? p.item : (p.item_number != null ? p.item_number : "—")) + "</h4><p class=\"mt-1 text-xs idp-muted\">Part spend <span class=\"font-medium\" style=\"color: #333\">" + (ts != null && !isNaN(+ts) ? fmtOppUSD(+ts) : "—") + "</span> · Total qty <span class=\"tabular-nums font-medium\" style=\"color: #333\">" + (tq != null && !isNaN(+tq) ? fmtIntPlain(+tq) : "—") + "</span></p><p class=\"mt-1 text-xs font-semibold tabular-nums\" style=\"color:#1f3a8a\">Total savings: " + (hsav != null && !isNaN(hsav) ? fmtOppUSD(hsav) : "—") + "</p>";
+        cEl = document.createElement("div");
+        cEl.className = "flex min-w-0 max-w-full items-center gap-2 self-start sm:max-w-[24rem] sm:shrink-0";
+        cEl.innerHTML = "<div class=\"min-w-0 flex-1 rounded border border-[#E6E6E6] bg-[#FFF7ED] px-2 py-1.5 text-[0.7rem] leading-snug\" style=\"color: #333\">" + esc(gapTxt || "—") + "</div>";
+        b.appendChild(s);
+        b.appendChild(cEl);
+        art.appendChild(b);
+        w = p.chart && p.chart.unit_prices ? p.chart.unit_prices.map(function (u2) { return +u2; }) : (g && g.length ? g.map(function (r) { return (r && r.wavg != null) ? +r.wavg : 0; }) : []);
+        dlab = p.chart && p.chart.labels ? p.chart.labels.map(function (L) { return shortHarmLab(formatLabel(L), 32); }) : g.map(function (r) { return shortHarmLab(formatLabel(r.label), 32); });
+        if (w && w.length) { if (!dlab || dlab.length < w.length) { dlab = dlab ? dlab.slice(0) : []; while (dlab.length < w.length) { dlab.push("·"); } } else if (dlab.length > w.length) { dlab = dlab.slice(0, w.length); } }
+        cnv = document.createElement("div");
+        cnv.className = "relative h-[14rem] w-full min-w-0";
+        if (!w || !w.length || (+cat.id === 3 && w.length < 2) || (+cat.id === 1 && w.length < 2)) { cEl = document.createElement("p"); cEl.className = "m-0 py-6 text-center text-sm idp-muted"; cEl.textContent = !w || !w.length ? "No data available for this chart." : (+cat.id === 3 ? "Multiple sites are required to show this comparison." : "Multiple suppliers are required to show this comparison."); cnv.appendChild(cEl); } else { chEl = document.createElement("canvas"); chEl.id = "ch-harm-canvas-" + chIx; chEl.className = "!h-full !w-full max-w-full"; cnv.appendChild(chEl); }
+        art.appendChild(cnv);
+        tRow2 = document.createElement("div");
+        tRow2.className = "mt-2 overflow-x-auto";
+        tRow2.innerHTML = supT
+          ? (
+              "<table class=\"w-full min-w-0 text-left text-xs\" style=\"color: #8A8A8A\">" +
+              "<thead><tr class=\"idp-muted\">" +
+              "<th class=\"pr-2 font-medium\" style=\"color: #8A8A8A\">Supplier</th><th class=\"pr-2 font-medium\" style=\"color: #8A8A8A\">Site</th>" +
+              "<th class=\"w-24 font-medium text-right\" style=\"color: #8A8A8A\">Quantity</th><th class=\"w-28 font-medium text-right\" style=\"color: #8A8A8A\">Unit price</th></tr></thead><tbody>" +
+              p.suppliers.map(function (sr) {
+                var u = sr && sr.unit_price, qu = (sr && sr.quantity != null) ? sr.quantity : (sr && sr.qty);
+                return "<tr class=\"border-t border-[#E6E6E6]\">" +
+                  "<td class=\"max-w-0 pr-2 py-0.5\" style=\"color: #333\">" + esc(formatLabel(sr && sr.supplier != null ? String(sr.supplier) : "—")) + "</td>" +
+                  "<td class=\"max-w-0 pr-2 py-0.5\" style=\"color: #333\">" + esc(formatLabel(sr && sr.site != null ? String(sr.site) : "—")) + "</td>" +
+                  "<td class=\"w-24 py-0.5 text-right tabular-nums\" style=\"color: #333\">" + (qu != null && !isNaN(+qu) ? fmtIntPlain(+qu) : "—") + "</td>" +
+                  "<td class=\"w-28 py-0.5 text-right tabular-nums\" style=\"color: #333\">" + (u != null && !isNaN(+u) ? ("$" + Number(u).toLocaleString("en-US", { maximumFractionDigits: 4, minimumFractionDigits: 0 })) : "—") + "</td></tr>";
+              }).join("") +
+              "</tbody></table>"
+            )
+          : (
+              "<table class=\"w-full min-w-0 text-left text-xs\" style=\"color: #8A8A8A\"><thead><tr class=\"idp-muted\"><th class=\"pr-2 font-medium\" style=\"color: #8A8A8A\">Supplier</th><th class=\"pr-2 font-medium\" style=\"color: #8A8A8A\">Site</th><th class=\"w-24 font-medium text-right\" style=\"color: #8A8A8A\">Quantity</th><th class=\"w-28 font-medium text-right\" style=\"color: #8A8A8A\">Unit price</th></tr></thead><tbody>" + (g && g.length ? g.map(function (gr) {
+                var ix, supS, siteS, lab;
+                lab = gr && gr.label != null ? String(gr.label) : "";
+                ix = lab.lastIndexOf(" - ");
+                supS = ix >= 0 ? lab.slice(0, ix).trim() : (lab || "—");
+                siteS = ix >= 0 ? lab.slice(ix + 3).trim() : "—";
+                return "<tr class=\"border-t border-[#E6E6E6]\"><td class=\"max-w-0 pr-2 py-0.5\" style=\"color: #333\">" + esc(supS) + "</td><td class=\"max-w-0 pr-2 py-0.5\" style=\"color: #333\">" + esc(siteS) + "</td><td class=\"w-24 py-0.5 text-right tabular-nums\" style=\"color: #333\">" + (gr.qty != null ? fmtIntPlain(gr.qty) : "—") + "</td><td class=\"w-28 py-0.5 text-right tabular-nums\" style=\"color: #333\">—</td></tr>";
+              }).join("") : "") + "</tbody></table>"
+            );
+        art.appendChild(tRow2);
+        slug = "Category_" + (cat.id != null ? cat.id : cIdx + 1);
+        tRow2 = document.createElement("div");
+        tRow2.className = "mt-3";
+        tRow2.innerHTML = "<button type=\"button\" class=\"rounded border border-[#8A8A8A] bg-white px-3 py-1.5 text-sm font-medium text-[#333] hover:bg-gray-100\" data-harm-csv-slug=\"" + esc(slug) + "\" data-harm-cat-idx=\"" + cIdx + "\" data-harm-t5-idx=\"" + t5Idx + "\" data-harm-part=\"" + esc(harmPartKey) + "\">Download Data</button>";
+        art.appendChild(tRow2);
+        sec.appendChild(art);
+        if (w && w.length && chEl) {
+          if (p.chart && p.chart.bar_colors && p.chart.bar_colors.length === w.length) { barBg = p.chart.bar_colors; } else { wmin = Math.min.apply(null, w); barBg = []; for (wix = 0; wix < w.length; wix++) { barBg.push((Math.abs(w[wix] - wmin) < 1e-6 * (1 + Math.abs(wmin))) ? "#4CAF50" : "#7986CB"); } }
+          yRng = harmUnitPriceYScale(w);
+          dlH = typeof ChartDataLabels !== "undefined" ? { color: "#333", font: { size: 9, weight: "600" }, anchor: "end", align: "end", offset: 2, clip: true, formatter: function (c2) { return c2.parsed && c2.parsed.y != null && isFinite(c2.parsed.y) ? fmtHarmUnitPrice(c2.parsed.y) : ""; } } : { display: false };
+          o = { type: "bar", data: { labels: dlab, datasets: [{ label: "Unit price (USD / unit)", data: w, backgroundColor: barBg, borderColor: w.map(function () { return "#E6E6E6" }), borderWidth: 0, borderRadius: 4 }] },
+            options: { maintainAspectRatio: false, color: "#333", indexAxis: "x", categoryPercentage: 0.62, barPercentage: 0.72, plugins: { legend: { display: false },
+              datalabels: dlH, tooltip: Object.assign({}, chartTt(), { callbacks: { label: function (c2) { return "Unit price: " + (c2.parsed && c2.parsed.y != null && isFinite(c2.parsed.y) ? fmtHarmUnitPrice(c2.parsed.y) : "—"); } } }) },
+              scales: { x: { ticks: { color: "#8A8A8A", maxRotation: 50, minRotation: 0, autoSkip: true }, grid: { color: "rgba(138, 138, 138, 0.2)" } },
+                y: Object.assign({ title: { display: true, text: (p.chart && p.chart.y_axis_label) ? p.chart.y_axis_label : "Unit price (USD / unit)", color: "#8A8A8A" }, ticks: { color: "#8A8A8A", callback: function (val) { return typeof val === "number" && isFinite(val) ? fmtHarmUnitPrice(val) : val; } }, grid: { color: "rgba(138, 138, 138, 0.22)" } }, yRng ? { beginAtZero: false, min: yRng.min, max: yRng.max } : { beginAtZero: true }) } } };
+          try { harmCharts.push(new Chart(chEl, o)); chIx += 1; } catch (e) { if (typeof console !== "undefined" && console.error) { console.error(e); } }
+        }
+      }
+      fGrid.appendChild(sec);
+    });
+    if (fGrid.getAttribute("data-dl-wu") !== "1") {
+      fGrid.setAttribute("data-dl-wu", "1");
+      fGrid.addEventListener("click", function (ev) {
+        var t = ev.target, cix, csv, c, t5, a, keys, h2, hList, partKey, raw, nm;
+        if (!t || !t.getAttribute) return;
+        h2 = (typeof window !== "undefined" && window._idpLastHarmPayload != null) ? window._idpLastHarmPayload : (D && D.harmonization_results);
+        hList = h2 && Object.prototype.toString.call(h2.categories) === "[object Array]" ? h2.categories : [];
+        if (t.getAttribute("data-harm-cat-csv-idx") != null) {
+          cix = +t.getAttribute("data-harm-cat-csv-idx");
+          c = hList && hList[cix];
+          t5 = c && c.top5;
+          if (!t5 || !t5.length) return;
+          keys = [];
+          for (a = 0; a < t5.length; a++) {
+            keys.push(harmHarmonizationPartKey(t5[a]));
+          }
+          raw = harmSortRawCubeRows(harmRawRowsForPartKeys(keys));
+          csv = harmBuildRawCubeCsv(raw);
+          nm = "Harmonization_Top5_Category_" + (c && c.id != null ? c.id : cix + 1) + "_raw_" + new Date().toISOString().slice(0, 10) + ".csv";
+          harmDownloadCsv(nm, csv);
+          return;
+        }
+        if (t.getAttribute("data-harm-csv-slug") == null) return;
+        partKey = t.getAttribute("data-harm-part");
+        if (!partKey) return;
+        raw = harmSortRawCubeRows(harmRawRowsForPart(partKey));
+        csv = harmBuildRawCubeCsv(raw);
+        nm = "harmonization_raw_" + harmSafeSkuFilename(partKey) + ".csv";
+        harmDownloadCsv(nm, csv);
+      });
+    }
+  }
+  function setAppView(name) { var o, h, c, bO, bHD, bHI, bC, fw, harmKind; if (name === "harmonization") { name = "harmonization-direct"; } if (name !== "overview" && name !== "harmonization-direct" && name !== "harmonization-indirect" && name !== "cleansheet") { name = "overview"; } currentAppView = name; if (document.body) { document.body.setAttribute("data-idp-app-view", name); } o = document.getElementById("view-overview"); h = document.getElementById("view-harmonization"); c = document.getElementById("view-cleansheet"); bO = document.getElementById("nav-overview"); bHD = document.getElementById("nav-harmonization-direct"); bHI = document.getElementById("nav-harmonization-indirect"); bC = document.getElementById("nav-cleansheet"); fw = document.getElementById("filter-wrap");
+    if (fw) { if (name === "harmonization-direct" || name === "harmonization-indirect") { fw.setAttribute("aria-hidden", "true"); closeAllFilterPanels(); } else { fw.removeAttribute("aria-hidden"); } }
+    if (name === "overview") { destroyHarmonizationCharts(); destroyCleansheetChart(); if (o) { o.classList.remove("hidden"); o.removeAttribute("aria-hidden"); } if (h) { h.classList.add("hidden"); h.setAttribute("aria-hidden", "true"); } if (c) { c.classList.add("hidden"); c.setAttribute("aria-hidden", "true"); } if (bO) { bO.classList.add("is-active"); } if (bHD) { bHD.classList.remove("is-active"); } if (bHI) { bHI.classList.remove("is-active"); } if (bC) { bC.classList.remove("is-active"); }
+      setTimeout(function () { var k2; for (k2 in charts) { if (Object.prototype.hasOwnProperty.call(charts, k2) && charts[k2] && typeof charts[k2].resize === "function") { try { charts[k2].resize(); } catch (e) { } } } try { if (kpiSparks && kpiSparks.s && kpiSparks.s.resize) { kpiSparks.s.resize(); } } catch (e) { } try { if (kpiSparks && kpiSparks.w && kpiSparks.w.resize) { kpiSparks.w.resize(); } } catch (e) { } }, 100);
+    } else if (name === "harmonization-direct" || name === "harmonization-indirect") { destroyCleansheetChart(); harmKind = name === "harmonization-indirect" ? "Indirect" : "Direct"; if (o) { o.classList.add("hidden"); o.setAttribute("aria-hidden", "true"); } if (h) { h.classList.remove("hidden"); h.removeAttribute("aria-hidden"); } if (c) { c.classList.add("hidden"); c.setAttribute("aria-hidden", "true"); } if (bO) { bO.classList.remove("is-active"); } if (bHD) { bHD.classList.toggle("is-active", name === "harmonization-direct"); } if (bHI) { bHI.classList.toggle("is-active", name === "harmonization-indirect"); } if (bC) { bC.classList.remove("is-active"); } renderHarmonization(harmKind);
+      setTimeout(function () { var k2; for (k2 = 0; k2 < harmCharts.length; k2++) { try { if (harmCharts[k2] && harmCharts[k2].resize) { harmCharts[k2].resize(); } } catch (e) { } } }, 120);
+    } else { destroyHarmonizationCharts(); if (o) { o.classList.add("hidden"); o.setAttribute("aria-hidden", "true"); } if (h) { h.classList.add("hidden"); h.setAttribute("aria-hidden", "true"); } if (c) { c.classList.remove("hidden"); c.removeAttribute("aria-hidden"); } if (bO) { bO.classList.remove("is-active"); } if (bHD) { bHD.classList.remove("is-active"); } if (bHI) { bHI.classList.remove("is-active"); } if (bC) { bC.classList.add("is-active"); }
+      try {
+        if (typeof console !== "undefined" && console.log) { try { console.log("=== CLEANSHEET tab activated ==="); } catch (eCsN) {} }
+        renderCleansheet();
+      } catch (eCsView) {
+        if (typeof console !== "undefined" && console.error) { try { console.error("Cleansheet render failed:", eCsView); } catch (eCv2) {} }
+      }
+      setTimeout(function () { try { if (csChart && csChart.resize) { csChart.resize(); } } catch (e) { } }, 120); }
+  }
+  function wireAppShell() { var t, a, e, c; a = document.getElementById("btn-sidebar-toggle");
+    if (a && a.getAttribute("data-wu") !== "1") { t = document.getElementById("app-layout");
+      a.setAttribute("data-wu", "1"); a.addEventListener("click", function () { if (t) t.classList.toggle("sidebar--collapsed");
+        e = t && t.querySelector(".icon-expand"); c = t && t.querySelector(".icon-collapse");
+        if (e && c) { if (t && t.classList.contains("sidebar--collapsed")) { e.classList.add("hidden"); c.classList.remove("hidden"); } else { e.classList.remove("hidden"); c.classList.add("hidden"); } } }); }
+  }
+  function $(id) { return document.getElementById(id); }
+  function withLoad(fn) { var el = $("loading"); if (!el) { fn(); return; } el.className = el.className.replace(/bg-white\/0|opacity-0|pointer-events-none/g, "").trim() + " bg-white/50 opacity-100 pointer-events-auto"; setTimeout(function () { try { fn(); } finally { el.className = "pointer-events-none fixed inset-0 z-[100] flex items-center justify-center transition bg-white/0 opacity-0"; } }, 20); }
+  function rowCsv(i) { var c = D.dicts; return [c.ym[D.iYm[i]], c.d[D.iD[i]], c.supplier[D.iSu[i]], c.erp[D.iErp[i]], c.erpn[D.iErpN[i]], c.business_unit[D.iBu[i]], c.category_l1[D.iC1[i]], c.category_l2[D.iC2[i]], c.category_l3[D.iC3[i]], c.category_l4[D.iC4[i]], c.noun[D.iNoun[i]], c.part[D.iPart[i]], c.ccode[D.iCcode[i]], c.cname[D.iCname[i]], c.billy[D.iBilly[i]], c.billc[D.iBillc[i]], c.shpy[D.iShpy[i]], c.shpc[D.iShpc[i]], c.country[D.iCo[i]], c.comp[D.iComp[i]], c.site[D.iSite[i]], c.spend_type[D.iSpendType[i]], D.spend[i], D.qty[i], D.qc[i], D.price[i]].map(function (v) { v = v == null ? "" : String(v); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; }).join(","); }
+  function ex() { var f = getFiltered().slice(0, 5000), h, a, bl, u, x; h = "YearMonth,Date,Supplier,ERP vendor,ERP no,business_unit,category_l1,category_l2,category_l3,category_l4,Noun,Part,Commodity code,Commodity name,Billing country,Billing city,Shipping country,Shipping city,country,Company,site,spend_type,Spend (USD),Quantity,Quantity Cleaned,Price\n"; for (a = 0; a < f.length; a++) h += rowCsv(f[a]) + "\n"; bl = new Blob([h], { type: "text/csv" }), u = URL.createObjectURL(bl), x = document.createElement("a"); x.href = u; x.download = "cummins-filtered.csv"; x.click(); URL.revokeObjectURL(u); }
+
+  function readFiltersFromForm() {
+    var a0, a1, t0, mx;
+    fState.bu = getStrSetFromChk("f-bu", "business_unit");
+    fState.c1 = getStrSetFromChk("f-c1", "category_l1");
+    fState.c2 = getStrSetFromChk("f-c2", "category_l2");
+    fState.c3 = getStrSetFromChk("f-c3", "category_l3");
+    fState.c4 = getStrSetFromChk("f-c4", "category_l4");
+    fState.co = getStrSetFromChk("f-co", "country");
+    fState.site = getStrSetFromChk("f-site", "site");
+    fState.suSet = getSuSetFromChk();
+    a0 = $("f-ym0") ? +$("f-ym0").value : 0; a1 = $("f-ym1") ? +$("f-ym1").value : 0;
+    fState.r0 = isNaN(a0) ? 0 : a0; fState.r1 = isNaN(a1) ? 0 : a1;
+    if (fState.r0 > fState.r1) { t0 = fState.r0; fState.r0 = fState.r1; fState.r1 = t0; }
+    mx = Math.max(0, (sortedYms && sortedYms.length) ? sortedYms.length - 1 : 0);
+    if (fState.r0 < 0) fState.r0 = 0; if (fState.r0 > mx) fState.r0 = mx; if (fState.r1 < 0) fState.r1 = 0; if (fState.r1 > mx) fState.r1 = mx; if (fState.r0 > fState.r1) { t0 = fState.r0; fState.r0 = fState.r1; fState.r1 = t0; }
+  }
+  function isFullTimeRange() { return fState.r0 === 0 && fState.r1 === Math.max(0, sortedYms.length - 1) && fState.timeMode === "all"; }
+  function activeFilterCount() { var c = 0, add = 0, z; c += fState.bu ? fState.bu.size : 0; c += fState.c1 ? fState.c1.size : 0; c += fState.c2 ? fState.c2.size : 0; c += fState.c3 ? fState.c3.size : 0; c += fState.c4 ? fState.c4.size : 0; c += fState.co ? fState.co.size : 0; c += fState.site ? fState.site.size : 0; c += fState.suSet ? fState.suSet.size : 0; if (!isFullTimeRange()) c++; if (c > 0) return c; return 0; }
+  function markTimeQuick() { var btns = document.querySelectorAll(".tqb"), i, b, m, mode = fState.timeMode || "all"; for (i = 0; i < btns.length; i++) { b = btns[i]; m = b.getAttribute("data-tq"); b.className = m === mode ? "tqb rounded border border-[#F07F00] bg-white px-2 py-1 text-[0.7rem] font-semibold text-[#F07F00]" : "tqb rounded border border-[#8A8A8A] bg-white px-2 py-1 text-[0.7rem] text-[#333] hover:bg-gray-100"; } }
+  function timeQuick() {
+    var a, b, i, y, yw;
+    if (!sortedYms.length) return;
+    if (fState.timeMode === "all") { fState.r0 = 0; fState.r1 = Math.max(0, sortedYms.length - 1); if ($("f-ym0")) { $("f-ym0").value = fState.r0; $("f-ym1").value = fState.r1; } updatePeriodButtonLabel(); return; }
+    if (fState.timeMode === "ytd2026") { a = b = -1; for (i = 0; i < sortedYms.length; i++) { y = getYear(sortedYms[i]); if (y === 2026) { if (a < 0) a = i; b = i; } } if (a < 0) { a = 0; b = Math.max(0, sortedYms.length - 1); } fState.r0 = a; fState.r1 = b; if ($("f-ym0")) { $("f-ym0").value = a; $("f-ym1").value = b; } updatePeriodButtonLabel(); return; }
+    if (fState.timeMode === "2024" || fState.timeMode === "2025") { yw = parseInt(fState.timeMode, 10); a = b = -1; for (i = 0; i < sortedYms.length; i++) { y = getYear(sortedYms[i]); if (y === yw) { if (a < 0) a = i; b = i; } } if (a < 0) { fState.r0 = 0; fState.r1 = Math.max(0, sortedYms.length - 1); } else { fState.r0 = a; fState.r1 = b; } if ($("f-ym0")) { $("f-ym0").value = fState.r0; $("f-ym1").value = fState.r1; } }
+    updatePeriodButtonLabel();
+  }
+  function timeQuickSet(mode) { fState.timeMode = mode; if (mode === "all" || !sortedYms.length) { fState.r0 = 0; fState.r1 = Math.max(0, sortedYms.length - 1); if ($("f-ym0") && fState.r0 != null) $("f-ym0").value = fState.r0; if ($("f-ym1") && fState.r1 != null) $("f-ym1").value = fState.r1; } else { timeQuick(); } markTimeQuick(); if ($("f-ym0") && fState.r0 != null) $("f-ym0").value = fState.r0; if ($("f-ym1") && fState.r1 != null) $("f-ym1").value = fState.r1; updateFilterButtonLabels(); }
+  function onYmManualChange() { fState.r0 = +$("f-ym0").value; fState.r1 = +$("f-ym1").value; fState.timeMode = "custom"; }
+  function shortFiltLab(s, m) { s = (s + "").trim(); if (!s) return "—"; if (s.length > m) return s.slice(0, m - 1) + "…"; return s; }
+  function updatePeriodButtonLabel() {
+    var el = $("ff-summ-period"), mx, a0, a1, r0, r1;
+    if (!el) return;
+    if (!sortedYms || !sortedYms.length) { el.textContent = "All time"; return; }
+    mx = Math.max(0, sortedYms.length - 1);
+    a0 = $("f-ym0") ? +$("f-ym0").value : 0; a1 = $("f-ym1") ? +$("f-ym1").value : 0; if (isNaN(a0)) a0 = 0; if (isNaN(a1)) a1 = mx; r0 = a0; r1 = a1; if (r0 > r1) { a0 = r1; a1 = r0; } else { a0 = r0; a1 = r1; }
+    if (fState && fState.timeMode === "all" && a0 === 0 && a1 === mx) { el.textContent = "All time"; return; }
+    if (fState && fState.timeMode === "ytd2026") { el.textContent = "YTD 2026"; return; }
+    if (fState && fState.timeMode === "2024") { el.textContent = "2024"; return; }
+    if (fState && fState.timeMode === "2025") { el.textContent = "2025"; return; }
+    el.textContent = (fmtYm(sortedYms[a0]) || "—") + " → " + (fmtYm(sortedYms[a1]) || "—");
+  }
+  function updateFilterButtonLabels() {
+    var cfg = [
+      { id: "f-bu", d: "business_unit", def: "All BUs", unit: "BUs" },
+      { id: "f-c1", d: "category_l1", def: "All L1", unit: "L1" },
+      { id: "f-c2", d: "category_l2", def: "All L2", unit: "L2" },
+      { id: "f-c3", d: "category_l3", def: "All L3", unit: "L3" },
+      { id: "f-c4", d: "category_l4", def: "All L4", unit: "L4" },
+      { id: "f-site", d: "site", def: "All sites", unit: "sites" },
+      { id: "f-co", d: "country", def: "All countries", unit: "Countries" },
+      { id: "f-su", d: "supplier", def: "All suppliers", unit: "suppliers" }
+    ];
+    var k, s, p, g, grp, btn, cbs, j, c, nOpt, d, v, oneIx;
+    for (k = 0; k < cfg.length; k++) {
+      s = $(cfg[k].id);
+      p = ffGetPanel(cfg[k].id);
+      grp = s && s.closest && s.closest(".ff-group");
+      g = grp && grp.querySelector(".ff-val");
+      btn = grp && grp.querySelector(".ff-btn");
+      if (!g) continue;
+      c = 0; nOpt = 0; oneIx = -1;
+      if (p) {
+        cbs = p.querySelectorAll(".ff-opts .ff-cb");
+        nOpt = cbs.length;
+        for (j = 0; j < cbs.length; j++) { if (cbs[j].checked) { c++; if (c === 1) { oneIx = +cbs[j].getAttribute("data-ix"); } } }
+      }
+      if (c === 0 || (nOpt > 0 && c === nOpt)) { g.textContent = cfg[k].def; if (btn) btn.classList.remove("ff-filter-active"); continue; }
+      if (c === 1) {
+        d = dicts && dicts[cfg[k].d];
+        v = d && oneIx >= 0 && d[oneIx] != null ? d[oneIx] : "—";
+        g.textContent = shortFiltLab(formatLabel((v + "").trim()) || "—", 20);
+        if (btn) btn.classList.add("ff-filter-active");
+        continue;
+      }
+      g.textContent = c + " " + cfg[k].unit;
+      if (btn) btn.classList.add("ff-filter-active");
+    }
+    updatePeriodButtonLabel();
+    (function () {
+      var bper = document.getElementById("ff-btn-period"), vper = document.getElementById("ff-summ-period");
+      if (!bper || !vper) return;
+      if ((vper.textContent || "").trim() === "All time") bper.classList.remove("ff-filter-active"); else bper.classList.add("ff-filter-active");
+    })();
+  }
+  function initFfDropdowns() {
+    var bar;
+    if (document.body.getAttribute("data-ff-inited") === "1") return;
+    document.body.setAttribute("data-ff-inited", "1");
+    bar = document.getElementById("filter-bar");
+    document.querySelectorAll("#filter-bar .ff-group .ff-btn").forEach(function (btn) {
+      btn.addEventListener("click", function (e) {
+        e.stopPropagation();
+        var g = btn.closest && btn.closest(".ff-group"), panel = g && g.querySelector(".ff-panel"), isOpen, srch;
+        if (!panel) return;
+        isOpen = !panel.classList.contains("hidden");
+        document.querySelectorAll("#filter-bar .ff-panel").forEach(function (p) { p.classList.add("hidden"); });
+        document.querySelectorAll("#filter-bar .ff-btn").forEach(function (b) { b.setAttribute("aria-expanded", "false"); });
+        if (isOpen) return;
+        panel.classList.remove("hidden");
+        btn.setAttribute("aria-expanded", "true");
+        srch = panel.querySelector(".ff-search");
+        if (srch) { srch.value = ""; ffApplyPanelSearch(panel); setTimeout(function () { try { srch.focus(); } catch (e2) { } }, 0); }
+      });
+    });
+    if (bar) {
+      document.querySelectorAll("#filter-bar .ff-apply").forEach(function (btn) {
+        btn.addEventListener("click", function (e) { e.stopPropagation(); e.preventDefault(); closeAllFilterPanels(); onFfApply(); });
+      });
+      bar.addEventListener("input", function (e) {
+        var t = e.target, p;
+        if (!t || !t.classList || !t.classList.contains("ff-search")) return;
+        p = t.closest && t.closest(".ff-panel");
+        if (p) ffApplyPanelSearch(p);
+      });
+      bar.addEventListener("change", function (e) {
+        var t = e.target, p, a, cbs, k;
+        if (!t) return;
+        p = t.closest && t.closest(".ff-panel");
+        e.stopPropagation();
+        if (t.getAttribute("data-selall") != null) {
+          cbs = p && p.querySelectorAll(".ff-opts .ff-cb");
+          for (k = 0; cbs && k < cbs.length; k++) { cbs[k].checked = t.checked; ffChkStyle(cbs[k]); }
+          if (p) ffSyncSelectAll(p);
+          return;
+        }
+        if (t.classList && t.classList.contains("ff-cb") && p) { ffChkStyle(t); ffSyncSelectAll(p); }
+      });
+    }
+    document.querySelectorAll("#filter-bar .ff-panel").forEach(function (panel) { panel.addEventListener("click", function (e) { e.stopPropagation(); }); });
+    document.addEventListener("click", function () { closeAllFilterPanels(); });
+  }
+
+  function fillF() {
+    var a, t, s, i, j, names, o0, o1, mx, col, p, opts, row, lab, sp, cbx;
+    t = [dicts && dicts.business_unit, dicts && dicts.category_l1, dicts && dicts.category_l2, dicts && dicts.category_l3, dicts && dicts.category_l4, dicts && dicts.country, dicts && dicts.site, dicts && dicts.supplier];
+    names = ["f-bu", "f-c1", "f-c2", "f-c3", "f-c4", "f-co", "f-site", "f-su"];
+    for (a = 0; a < names.length; a++) {
+      s = $(names[a]); if (!s) continue; col = t[a] || [""]; s.innerHTML = "";
+      p = ffGetPanel(names[a]); opts = p && p.querySelector(".ff-opts"); if (opts) { opts.innerHTML = ""; }
+      for (i = 0; i < col.length; i++) { if (col[i] == null || String(col[i]).trim() === "") { continue; } j = document.createElement("option"); j.value = i; j.textContent = ffDisplayFilterOption(names[a], col[i]); s.appendChild(j); }
+      if (opts) {
+        for (i = 0; i < col.length; i++) { if (col[i] == null || String(col[i]).trim() === "") { continue; }
+          row = document.createElement("label");
+          row.className = "ff-chk-row group flex w-full cursor-pointer select-none items-center gap-2.5 border-b border-[#E6E6E6] px-2.5 py-1.5 text-left text-sm hover:bg-gray-100";
+          row.style.color = "#333";
+          cbx = document.createElement("input");
+          cbx.setAttribute("type", "checkbox");
+          cbx.className = "ff-cb h-3.5 w-3.5 shrink-0 rounded";
+          cbx.setAttribute("data-ix", String(i));
+          cbx.setAttribute("data-ffid", names[a]);
+          cbx.setAttribute("aria-label", ffDisplayFilterOption(names[a], col[i]).slice(0, 50));
+          sp = document.createElement("span");
+          sp.className = "min-w-0 flex-1";
+          sp.textContent = ffDisplayFilterOption(names[a], col[i]);
+          row.appendChild(cbx);
+          row.appendChild(sp);
+          opts.appendChild(row);
+        }
+        ffSyncSelectAll(p);
+        if (p) { var si = p.querySelector(".ff-search"); if (si) { si.value = ""; } ffApplyPanelSearch(p); }
+      }
+    }
+    s = $("f-ym0"); t = $("f-ym1");
+    if (s && t) { s.innerHTML = ""; t.innerHTML = "";
+      for (i = 0; i < sortedYms.length; i++) { mx = fmtYm(sortedYms[i]) || sortedYms[i]; o0 = document.createElement("option"); o0.value = i; o0.textContent = mx; s.appendChild(o0); o1 = document.createElement("option"); o1.value = i; o1.textContent = mx; t.appendChild(o1); } }
+    if (typeof fState === "undefined" || fState == null) return;
+    mx = Math.max(0, sortedYms.length - 1);
+    if (fState.r1 == null || fState.r0 == null) { fState.r0 = 0; fState.r1 = mx; }
+    if (fState.r0 > fState.r1) { a = fState.r0; fState.r0 = fState.r1; fState.r1 = a; }
+    fState.r0 = Math.max(0, Math.min(mx, fState.r0));
+    fState.r1 = Math.max(0, Math.min(mx, fState.r1));
+    if ($("f-ym0")) { $("f-ym0").value = String(fState.r0); $("f-ym1").value = String(fState.r1); } markTimeQuick();
+    updateFilterButtonLabels();
+  }
+  /** Scans D.dicts and unique financial months, injects <option> into all filter <select> elements. */
+  function populateFilterSelectsFromData() { fillF(); }
+  function resetForm() { allDestroy(); refreshDState(); populateFilterSelectsFromData(); }
+  function destroyCh(k) { if (charts[k]) { try { charts[k].destroy(); } catch (e) { /* */ } charts[k] = null; } }
+  function allDestroy() { for (var k in charts) destroyCh(k); destroySparkKpis(); destroyCleansheetChart(); }
+  function showChartLoad(vis) { var els = document.querySelectorAll(".card-chart .chart-loading"), i; for (i = 0; i < els.length; i++) { els[i].classList.toggle("opacity-100", !!vis); els[i].classList.toggle("pointer-events-auto", !!vis); } }
+  function updateBadge() { }
+  function renderAllCharts() {
+    var idx, a, w, p, t, t2, i, j, m, s0, o, y, yc, tlab0, tlab1, tlab2, tlab3, tlab4, tlab, tlab7, tlab8, yR, yD, yI, tSpendD, yoyLab, ctryM, ctryList, sM, siteL, wF, wSum, l12, yoySec, yoyEmpty, leg, monKeys, monLab, monIdx, mk, rck, rng, wi, mi0;
+    leg = document.getElementById("idp-legacy-charts");
+    if (leg) { leg.classList.remove("hidden"); }
+    readFiltersFromForm();
+    idx = getFiltered(); a = 0; wSum = 0; for (w = 0; w < idx.length; w++) { wF = idx[w]; a += D.spend[wF]; wSum += rowWeight(wF); } setFilterSt(idx.length, n, a, wSum, idx);
+    allDestroy();
+    if (!D.n) { if ($("kpi-spend-bn")) $("kpi-spend-bn").textContent = "—"; if ($("kpi-weight-lbs")) $("kpi-weight-lbs").textContent = "—"; if ($("kpi-spend-ly")) $("kpi-spend-ly").textContent = "—"; if ($("kpi-weight-ly")) $("kpi-weight-ly").textContent = "—"; if (currentAppView === "cleansheet") { renderCleansheet(); } return; }
+    yD = {}; yI = {};
+    for (a = 0; a < idx.length; a++) {
+      w = idx[a];
+      yR = getYear(refYm(w));
+      if (isNaN(yR) || yR < 1990) { if (D.rows && D.rows[w] && D.rows[w].year != null) { yR = +D.rows[w].year; } }
+      if (isNaN(yR) || yR < 1990) { yR = 0; }
+      if (yR < 1990) { continue; }
+      t2 = spendTypeSegForRow(w);
+      if (t2 === "D") { yD[yR] = (yD[yR] || 0) + D.spend[w]; } else { yI[yR] = (yI[yR] || 0) + D.spend[w]; }
+    }
+    tSpendD = new Set();
+    (function (o) { var k; for (k in o) { if (Object.prototype.hasOwnProperty.call(o, k) && o[k] > 0) tSpendD.add(+k); } }(yD));
+    (function (o) { var k; for (k in o) { if (Object.prototype.hasOwnProperty.call(o, k) && o[k] > 0) tSpendD.add(+k); } }(yI));
+    yoyLab = Array.from(tSpendD).sort(function (A, b) { return A - b; });
+    tlab7 = yoyLab.map(function (ky) { return (yD[ky] || 0) / 1e6; });
+    tlab8 = yoyLab.map(function (ky) { return (yI[ky] || 0) / 1e6; });
+    yoyEmpty = yoyLab.length === 0;
+    yoySec = document.querySelector("section.card-chart[data-chart='yoy']");
+    if (yoySec) yoySec.style.display = yoyEmpty ? "none" : "";
+    if (!yoyEmpty && $("ch-yoy")) {
+      charts.yoy = new Chart($("ch-yoy"), { type: "bar", data: { labels: yoyLab.map(String), datasets: [{ label: "Direct", data: tlab7, backgroundColor: C_DIRECT, borderWidth: 0, borderRadius: 2, stack: "a" }, { label: "Indirect", data: tlab8, backgroundColor: C_INDIRECT, borderWidth: 0, borderRadius: 2, stack: "a" }] }, options: { maintainAspectRatio: false, color: "#333", interaction: { mode: "index", intersect: false }, plugins: { legend: { position: "bottom", align: "center", labels: chartLegendD() }, datalabels: { display: false }, tooltip: Object.assign({}, chartTt(), { callbacks: ttStackedSpend(false) }) }, scales: { x: { stacked: true, ticks: { color: "#8A8A8A" }, title: { display: true, text: "Year (invoice / date)", color: "#8A8A8A" } }, y: { stacked: true, beginAtZero: true, title: { display: true, text: "US$M", color: "#8A8A8A" }, ticks: { color: "#8A8A8A" }, grid: { color: "rgba(138, 138, 138, 0.2)" } } } } });
+    }
+    tlab2 = { map: new Map() };
+    m = tlab2.map;
+    for (a = 0; a < idx.length; a++) { w = idx[a]; s0 = refYm(w); yc = parseYmToYQ(s0); if (!yc || !yc.y) { continue; } tlab0 = yc.y; t = yc.q; tlab1 = tlab0 * 4 + t - 1; if (!m.get(tlab1)) m.set(tlab1, { y: tlab0, q: t, D: 0, I: 0, lab: "Q" + t + " " + tlab0 }); o = m.get(tlab1); t2 = spendTypeSegForRow(w); o[t2] = (o[t2] || 0) + D.spend[w]; }
+    tlab0 = Array.from(m.keys()).sort(function (A, b) { return A - b; });
+    tlab1 = tlab0.map(function (k) { return m.get(k).lab; });
+    tlab3 = tlab0.map(function (k) { var b0 = m.get(k); return b0 ? b0.D / 1e6 : 0; });
+    tlab4 = tlab0.map(function (k) { var b0 = m.get(k); return b0 ? b0.I / 1e6 : 0; });
+    if (tlab1 && tlab1.length && $("ch-qtr")) { charts.qtr = new Chart($("ch-qtr"), { type: "bar", data: { labels: tlab1, datasets: [ { label: "Direct", data: tlab3, backgroundColor: C_DIRECT, borderWidth: 0, borderRadius: 2, stack: "a" }, { label: "Indirect", data: tlab4, backgroundColor: C_INDIRECT, borderWidth: 0, borderRadius: 2, stack: "a" } ] }, options: { maintainAspectRatio: false, color: "#333", categoryPercentage: 0.65, barPercentage: 0.75, interaction: { mode: "index", intersect: false }, plugins: { legend: { position: "bottom", align: "center", labels: chartLegendD() }, datalabels: { display: false }, tooltip: Object.assign({}, chartTt(), { callbacks: ttStackedSpend(false) }) }, scales: { x: { stacked: true, ticks: { color: "#8A8A8A" }, grid: { color: "rgba(138, 138, 138, 0.2)" } }, y: { stacked: true, beginAtZero: true, title: { display: true, text: "US$M", color: "#8A8A8A" }, ticks: { color: "#8A8A8A" }, grid: { color: "rgba(138, 138, 138, 0.25)" } } } } }); }
+    monKeys = [];
+    monLab = [];
+    (function () { var mnames, t, y, m0, rng, wi, rck; mnames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]; rng = { min: null, max: null }; for (wi = 0; wi < idx.length; wi++) { rck = rowCalendarKey(idx[wi]); if (rck == null) { continue; } if (rng.min == null || rck < rng.min) { rng.min = rck; } if (rng.max == null || rck > rng.max) { rng.max = rck; } } if (rng.min == null) { rng.min = 2024 * 12 + 0; rng.max = 2026 * 12 + 3; } t = rng.min; for (;;) { y = (t - (t % 12)) / 12; m0 = t - y * 12; monKeys.push(t); monLab.push(mnames[m0] + " " + y); if (t >= rng.max) { break; } t++; } }());
+    mk = new Map();
+    for (i = 0; i < monKeys.length; i++) { mk.set(monKeys[i], i); }
+    tlab1 = { D: [], I: [] };
+    for (i = 0; i < monKeys.length; i++) { tlab1.D.push(0); tlab1.I.push(0); }
+    for (a = 0; a < idx.length; a++) { w = idx[a]; rck = rowCalendarKey(w); if (rck == null) { continue; } monIdx = mk.get(rck); if (monIdx == null) { continue; } t2 = spendTypeSegForRow(w); p = D.spend[w]; if (t2 === "D") tlab1.D[monIdx] += p; else tlab1.I[monIdx] += p; }
+    tlab1.D = tlab1.D.map(function (v) { return v / 1e6; }); tlab1.I = tlab1.I.map(function (v) { return v / 1e6; });
+    l12 = last12MonthSeries(idx);
+    if (l12.serS && l12.serS.length) { renderKpiSparkCanvases(l12.serS, l12.serW || []); } else { destroySparkKpis(); }
+    if (monLab.length && $("ch-mo")) {
+      charts.mon = new Chart($("ch-mo"), {
+        type: "line",
+        data: {
+          labels: monLab,
+          datasets: [
+            { label: "Direct", data: tlab1.D, borderColor: C_DIRECT, backgroundColor: C_DIRECT, fill: false, pointRadius: 0, pointHoverRadius: 4, borderWidth: 2, spanGaps: false, tension: 0.3 },
+            { label: "Indirect", data: tlab1.I, borderColor: C_INDIRECT, backgroundColor: C_INDIRECT, fill: false, pointRadius: 0, pointHoverRadius: 4, borderWidth: 2, spanGaps: false, tension: 0.3 }
+          ]
+        },
+        options: {
+          maintainAspectRatio: false, color: "#333", interaction: { mode: "index", intersect: false },
+          plugins: { legend: { position: "bottom", align: "center", labels: chartLegendD() }, datalabels: { display: false }, tooltip: Object.assign({}, chartTt(), { callbacks: ttStackedSpend(false) }) },
+          scales: { y: { stacked: false, beginAtZero: true, title: { display: true, text: "US$M", color: "#8A8A8A" }, ticks: { color: "#8A8A8A" }, grid: { color: "rgba(138, 138, 138, 0.25)" } },
+            x: { stacked: false, ticks: { maxRotation: 60, minRotation: 50, autoSkip: false, color: "#8A8A8A", font: { size: 9 } }, grid: { color: "rgba(138, 138, 138, 0.2)" } } }
+        }
+      });
+    }
+    m = aggrBySplit(idx, function (ix) { return D.iC2[ix]; });
+    tlab0 = topNFromSplit(m, dicts.category_l2, 10);
+    tlab1 = tlab0.map(function (r) { s0 = formatLabel(r.name || "—"); return s0.length > 36 ? s0.slice(0, 34) + "…" : s0; });
+    tlab2 = tlab0.map(function (r) { return (r.o.D) / 1e6; });
+    tlab3 = tlab0.map(function (r) { return (r.o.I) / 1e6; });
+    if (tlab0.length && $("ch-c2d")) {
+      charts.c2d = new Chart($("ch-c2d"), { type: "bar", data: { labels: tlab1, datasets: [ { label: "Direct", data: tlab2, backgroundColor: C_DIRECT, borderRadius: 3, borderWidth: 0, stack: "a" }, { label: "Indirect", data: tlab3, backgroundColor: C_INDIRECT, borderRadius: 3, borderWidth: 0, stack: "a" } ] }, options: { indexAxis: "y", maintainAspectRatio: false, color: "#333", interaction: { mode: "index", intersect: false }, plugins: { legend: { position: "bottom", align: "center", labels: chartLegendD() }, datalabels: { display: false }, tooltip: Object.assign({}, chartTt(), { callbacks: ttStackedSpend(true) }) }, scales: { x: { stacked: true, beginAtZero: true, title: { display: true, text: "US$M", color: "#8A8A8A" }, ticks: { color: "#8A8A8A" }, grid: { color: "rgba(138, 138, 138, 0.25)" } }, y: { stacked: true, ticks: { color: "#8A8A8A" }, grid: { color: "rgba(138, 138, 138, 0.18)" } } } } }); }
+    m = aggrBySplit(idx, function (ix) { return D.iC3[ix]; });
+    tlab0 = topNFromSplit(m, dicts.category_l3, 10);
+    tlab1 = tlab0.map(function (r) { s0 = formatLabel(r.name || "—"); return s0.length > 36 ? s0.slice(0, 34) + "…" : s0; });
+    tlab2 = tlab0.map(function (r) { return (r.o.D) / 1e6; });
+    tlab3 = tlab0.map(function (r) { return (r.o.I) / 1e6; });
+    if (tlab0.length && $("ch-c2i")) {
+      charts.c2i = new Chart($("ch-c2i"), { type: "bar", data: { labels: tlab1, datasets: [ { label: "Direct", data: tlab2, backgroundColor: C_DIRECT, borderRadius: 3, borderWidth: 0, stack: "a" }, { label: "Indirect", data: tlab3, backgroundColor: C_INDIRECT, borderRadius: 3, borderWidth: 0, stack: "a" } ] }, options: { indexAxis: "y", maintainAspectRatio: false, color: "#333", interaction: { mode: "index", intersect: false }, plugins: { legend: { position: "bottom", align: "center", labels: chartLegendD() }, datalabels: { display: false }, tooltip: Object.assign({}, chartTt(), { callbacks: ttStackedSpend(true) }) }, scales: { x: { stacked: true, beginAtZero: true, title: { display: true, text: "US$M", color: "#8A8A8A" }, ticks: { color: "#8A8A8A" }, grid: { color: "rgba(138, 138, 138, 0.25)" } }, y: { stacked: true, ticks: { color: "#8A8A8A" }, grid: { color: "rgba(138, 138, 138, 0.18)" } } } } }); }
+    ctryM = aggrBySplit(idx, function (i) { return D.iCo[i]; }); ctryList = topNFromSplit(ctryM, dicts.country, 15);
+    tlab0 = ctryList.map(function (r) { var nm = formatLabel(r.name || "—"); return nm.length > 32 ? nm.slice(0, 30) + "…" : nm; });
+    tlab1 = ctryList.map(function (r) { return (r.o.D) / 1e6; });
+    tlab2 = ctryList.map(function (r) { return (r.o.I) / 1e6; });
+    if (ctryList.length && $("ch-ctry")) { charts.ctry = new Chart($("ch-ctry"), { type: "bar", data: { labels: tlab0, datasets: [ { label: "Direct", data: tlab1, backgroundColor: C_DIRECT, stack: "a" }, { label: "Indirect", data: tlab2, backgroundColor: C_INDIRECT, stack: "a" } ] }, options: { indexAxis: "y", maintainAspectRatio: false, color: "#333", interaction: { mode: "index", intersect: false }, plugins: { legend: { position: "bottom", align: "center", labels: chartLegendD() }, datalabels: { display: false }, tooltip: Object.assign({}, chartTt(), { callbacks: ttStackedSpend(true) }) }, scales: { x: { stacked: true, beginAtZero: true, title: { display: true, text: "US$M", color: "#8A8A8A" }, ticks: { color: "#8A8A8A" }, grid: { color: "rgba(138, 138, 138, 0.25)" } }, y: { stacked: true, ticks: { color: "#8A8A8A" }, grid: { color: "rgba(138, 138, 138, 0.18)" } } } } }); }
+    sM = aggrBySplit(idx, function (i) { return D.iSite[i]; }); siteL = topNFromSplit(sM, dicts.site, 15);
+    tlab0 = siteL.map(function (r) { var nm = formatLabel(r.name || "—"); return nm.length > 32 ? nm.slice(0, 30) + "…" : nm; });
+    tlab1 = siteL.map(function (r) { return (r.o.D) / 1e6; });
+    tlab2 = siteL.map(function (r) { return (r.o.I) / 1e6; });
+    if (siteL.length && $("ch-site")) { charts.site = new Chart($("ch-site"), { type: "bar", data: { labels: tlab0, datasets: [ { label: "Direct", data: tlab1, backgroundColor: C_DIRECT, stack: "a" }, { label: "Indirect", data: tlab2, backgroundColor: C_INDIRECT, stack: "a" } ] }, options: { indexAxis: "y", maintainAspectRatio: false, color: "#333", interaction: { mode: "index", intersect: false }, plugins: { legend: { position: "bottom", align: "center", labels: chartLegendD() }, datalabels: { display: false }, tooltip: Object.assign({}, chartTt(), { callbacks: ttStackedSpend(true) }) }, scales: { x: { stacked: true, beginAtZero: true, title: { display: true, text: "US$M", color: "#8A8A8A" }, ticks: { color: "#8A8A8A" }, grid: { color: "rgba(138, 138, 138, 0.25)" } }, y: { stacked: true, ticks: { color: "#8A8A8A" }, grid: { color: "rgba(138, 138, 138, 0.18)" } } } } }); }
+    if (currentAppView === "cleansheet") { renderCleansheet(); }
+    if (currentAppView === "harmonization-direct") { renderHarmonization("Direct"); }
+    if (currentAppView === "harmonization-indirect") { renderHarmonization("Indirect"); }
+    updateBadge();
+  }
+  function runWithCharts() { showChartLoad(true); try { renderAllCharts(); } catch (e) { if (typeof console !== "undefined" && console.error) { console.error(e); } } finally { showChartLoad(false); } }
+
+  function onReady() {
+    initFfDropdowns();
+    populateFilterSelectsFromData();
+    (function () {
+      var dln = $("data-line");
+      if (dln) dln.textContent = D.n ? "" : (location.protocol !== "file:" ? "No dataset. Open this page from a local web server after building spend data." : "");
+    })();
+    if (!document.body.getAttribute("data-dash-wired")) {
+      document.body.setAttribute("data-dash-wired", "1");
+      document.addEventListener("change", function (e) {
+        var t = e.target; if (!t || !t.classList) return;
+        if (t.classList.contains("f-ym")) {
+          if (t.id === "f-ym0" || t.id === "f-ym1") fState.timeMode = "custom";
+          readFiltersFromForm();
+          updateFilterButtonLabels();
+          withLoad(function () { runWithCharts(); });
+        }
+      });
+      (function () {
+        var tq = document.getElementById("time-quick");
+        if (tq) tq.addEventListener("click", function (e) { var b = e.target.closest && e.target.closest(".tqb"); if (!b) return; e.preventDefault(); timeQuickSet(b.getAttribute("data-tq") || "all"); withLoad(function () { runWithCharts(); }); });
+      })();
+      if ($("btn-reset-filters")) $("btn-reset-filters").addEventListener("click", function () { withLoad(function () { resetForm(); runWithCharts(); }); });
+      (function () {
+        var bo, bd, bi, bc, z, ix, rows;
+        bo = $("btn-download-overview-raw");
+        if (bo && bo.getAttribute("data-dl-wu") !== "1") {
+          bo.setAttribute("data-dl-wu", "1");
+          bo.addEventListener("click", function () {
+            readFiltersFromForm();
+            downloadCSV(getFilteredRowObjects(), "overview_raw_data.csv");
+          });
+        }
+        bd = $("btn-dl-harm-direct");
+        if (bd && bd.getAttribute("data-dl-wu") !== "1") {
+          bd.setAttribute("data-dl-wu", "1");
+          bd.addEventListener("click", function () {
+            readFiltersFromForm();
+            downloadCSV(getRowsForHarmonizationSpendKind("Direct"), "harmonization_direct_raw.csv");
+          });
+        }
+        bi = $("btn-dl-harm-indirect");
+        if (bi && bi.getAttribute("data-dl-wu") !== "1") {
+          bi.setAttribute("data-dl-wu", "1");
+          bi.addEventListener("click", function () {
+            readFiltersFromForm();
+            downloadCSV(getRowsForHarmonizationSpendKind("Indirect"), "harmonization_indirect_raw.csv");
+          });
+        }
+        bc = $("btn-download-cleansheet-raw");
+        if (bc && bc.getAttribute("data-dl-wu") !== "1") {
+          bc.setAttribute("data-dl-wu", "1");
+          bc.addEventListener("click", function () {
+            readFiltersFromForm();
+            ix = getCleansheetFiltered();
+            rows = [];
+            for (z = 0; z < ix.length; z++) {
+              if (D.rows && D.rows[ix[z]]) rows.push(D.rows[ix[z]]);
+            }
+            downloadCSV(rows, "cleansheet_raw_data.csv");
+          });
+        }
+      })();
+      (function () {
+        var bx, bimg, ixEl, imEl, stEx, stIm;
+        bx = $("btn-cs-upload-excel");
+        bimg = $("btn-cs-upload-image");
+        ixEl = $("cs-input-excel");
+        imEl = $("cs-input-image");
+        stEx = $("cs-upload-excel-name");
+        stIm = $("cs-upload-image-name");
+        function showExcelName() {
+          var f = ixEl && ixEl.files && ixEl.files[0];
+          if (stEx) stEx.textContent = f ? ("Uploaded: " + f.name) : "";
+        }
+        function showImageName() {
+          var f = imEl && imEl.files && imEl.files[0];
+          if (stIm) stIm.textContent = f ? ("Uploaded: " + f.name) : "";
+        }
+        if (bx && ixEl && bx.getAttribute("data-cs-wu") !== "1") {
+          bx.setAttribute("data-cs-wu", "1");
+          bx.addEventListener("click", function () { ixEl.click(); });
+        }
+        if (bimg && imEl && bimg.getAttribute("data-cs-wu") !== "1") {
+          bimg.setAttribute("data-cs-wu", "1");
+          bimg.addEventListener("click", function () { imEl.click(); });
+        }
+        if (ixEl && ixEl.getAttribute("data-cs-wu") !== "1") {
+          ixEl.setAttribute("data-cs-wu", "1");
+          ixEl.addEventListener("change", showExcelName);
+        }
+        if (imEl && imEl.getAttribute("data-cs-wu") !== "1") {
+          imEl.setAttribute("data-cs-wu", "1");
+          imEl.addEventListener("change", showImageName);
+        }
+      })();
+    }
+    if (document.body && !document.body.getAttribute("data-app-shell-wired")) { document.body.setAttribute("data-app-shell-wired", "1"); wireAppShell(); }
+    withLoad(function () { runWithCharts(); setTimeout(function () { setAppView(currentAppView); }, 0); });
+  }
+  try { window._idpSetAppView = setAppView; } catch (e) { }
+  if (window._idpPendingView) { var pvb2 = window._idpPendingView; window._idpPendingView = void 0; try { if (pvb2) { setAppView(pvb2); } } catch (e) { } }
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", onReady); else onReady();
+  } /* end startProcurementDashboard */
+  function idpMainRowCount(d) { if (d == null) { return 0; } if (d.rows && Object.prototype.toString.call(d.rows) === "[object Array]" && d.rows.length) { return d.rows.length; } if (Array.isArray(d) && d.length) { return d.length; } return 0; }
+  /** Map Excel / alternate keys and legacy rows to the same fields as refresh_data.py (build_enriched_rows). */
+  function _idpStr(r, keys) { var ki, v, u; for (ki = 0; ki < keys.length; ki++) { u = keys[ki]; if (r[u] == null) { continue; } v = ("" + r[u]).trim(); if (v) { return v; } } return ""; }
+  function _idpNum(r, keys) { var ki, v; for (ki = 0; ki < keys.length; ki++) { if (r[keys[ki]] == null || r[keys[ki]] === "") { continue; } v = +r[keys[ki]]; if (v === v && isFinite(v)) { return v; } } return NaN; }
+  function _idpYFromStr(s) { var a = (s + "").match(/(19|20)\d{2}/); return a ? parseInt(a[0], 10) : 0; }
+  function _idpSpendTypeFromL1(l1) {
+    var s = (l1 + "").toLowerCase();
+    if (s.indexOf("indirect") >= 0) { return "Indirect"; }
+    if (s.indexOf("direct") >= 0) { return "Direct"; }
+    return "Indirect";
+  }
+  function normalizeRowForD(r) {
+    var yv, out, yms, qv, pr, sp, bunit, l1, l2, l3, l4, st, sup, ctry, site, buk;
+    if (r == null) { r = {}; }
+    bunit = _idpStr(r, ["business_unit", "bu", "Business_Unit", "Business Unit", "B_U", "B_U_Name"]);
+    l1 = _idpStr(r, ["category_l1", "c1", "L1_Category", "Category L1", "Category_1", "Category 1", "L1", "CATEGORY_1", "Mapped_Category_L1"]);
+    l2 = (function (x) { return x ? x.toLowerCase() : ""; })(_idpStr(r, ["category_l2", "c2", "L2_Category", "Category L2", "Category_2", "L2", "CATEGORY_2", "Mapped_Category_L2"]));
+    l3 = (function (x) { return x ? x.toLowerCase() : ""; })(_idpStr(r, ["category_l3", "c3", "L3_Category", "Category L3", "Category_3", "L3", "CATEGORY_3", "Mapped_Category_L3"]));
+    l4 = _idpStr(r, ["category_l4", "c4", "L4_Category", "Category L4", "Category_4", "L4", "CATEGORY_4", "Mapped_Category_L4"]);
+    sup = _idpStr(r, ["supplier", "su", "Supplier Name", "Supplier_Name", "Bucketed Supplier Name", "Bucketed_Supplier", "Erp_Supplier"]);
+    buk = _idpStr(r, ["Bucketed_Supplier", "Bucketed_Supplier_Name", "CR_Supplier", "cr_supplier"]);
+    if (!sup) { sup = buk; }
+    site = (function (x) { return x ? x.toLowerCase() : ""; })(_idpStr(r, ["site", "CMI_Location_Name", "CMI Location", "CMI_Site", "CMI_Site_Name", "CMI Location Name"]));
+    ctry = (function (x) { return x ? x.toLowerCase() : ""; })(_idpStr(r, ["country", "Shipping Country", "Shipping_Country", "shpy", "Cummins_Country", "Cummins Country", "CMI Country", "co", "CMI_Country"]));
+    st = _idpStr(r, ["spend_type", "Spend Type", "spendType"]);
+    if (!st) { st = _idpSpendTypeFromL1(l1); }
+    yms = _idpStr(r, ["ym", "Financial_Month_Year", "Fin_Year_Month", "Fiscal_Month", "Fiscal Month Year", "Financial Month Year", "Month", "Year_Month"]);
+    yv = _idpNum(r, ["year", "Year", "Fiscal_Year", "Calendar_Year"]);
+    if (isNaN(yv) && yms) { yv = _idpYFromStr(yms); }
+    if (isNaN(yv) || yv < 1990) { yv = 0; }
+    if (!yms && yv > 0) { yms = "Jan " + yv; }
+    sp = _idpNum(r, ["spend", "Spend (USD)"]);
+    if (isNaN(sp) || !isFinite(sp)) { sp = 0; }
+    qv = _idpNum(r, ["quantity", "qty", "Invoice Quantity", "Quantity"]);
+    if (isNaN(qv) || !isFinite(qv)) { qv = 0; }
+    pr = _idpNum(r, ["price", "Invoice Price (USD)", "Unit_Price"]);
+    if (isNaN(pr) || !isFinite(pr)) { pr = 0; }
+    out = {
+      ym: yms,
+      d: _idpStr(r, ["d", "Date", "Invoice Date", "Invoice_Date", "Billing Date", "Trans_Date", "Pst_dt"]),
+      supplier: sup, su: sup, erp: _idpStr(r, ["erp", "Supplier_Name", "Erp_Supplier", "Supplier Name"]),
+      erpn: _idpStr(r, ["erpn", "Supplier_Number", "Supplier No", "Vendor ID"]),
+      business_unit: bunit, category_l1: l1, category_l2: l2, category_l3: l3, category_l4: l4,
+      spend_type: st, bu: bunit, c1: l1, c2: l2, c3: l3, c4: l4, co: ctry, country: ctry,
+      noun: _idpStr(r, ["noun", "Part_Description", "Part Description", "Noun", "Noun name"]),
+      part: _idpStr(r, ["part", "Part Number", "Part_Number", "Material Number", "Item_Number"]),
+      ccode: _idpStr(r, ["ccode", "Commodity Code", "Commodity_Code", "com_code"]),
+      cname: _idpStr(r, ["cname", "Commodity_Desc", "Commodity Description", "Commodity_Description", "comm_name"]),
+      billy: _idpStr(r, ["billy", "Billing_Country", "Billing Country"]),
+      billc: _idpStr(r, ["billc", "Billing_City", "Billing City"]),
+      shpy: _idpStr(r, ["shpy", "Shipping_Country", "Shipping Country", "ship_country", "shipCountry"]),
+      shpc: _idpStr(r, ["shpc", "Shipping_City", "Shipping City", "ship_city", "shipCity"]),
+      cummins_country: _idpStr(r, ["Cummins_Country", "Cummins Country", "CMI Country", "CMI_Country", "CMI country"]),
+      comp: _idpStr(r, ["comp", "Company", "Comp", "Payer"]),
+      site: site, material: _idpStr(r, ["material", "Material_Description", "Material", "Item_Description"]),
+      spend: +sp, quantity: +qv, qty: +qv, year: yv, price: +pr
+    };
+    return out;
+  }
+  function _internStringColumn(rows, key) {
+    var m, a, n, r, s, j, k, out, he, ri;
+    n = rows.length;
+    m = { "": 0 };
+    a = [""];
+    out = new Array(n);
+    for (r = 0; r < n; r++) {
+      k = rows[r];
+      s = k == null || k[key] == null ? "" : String(k[key]).trim();
+      if (s === "") { out[r] = 0; continue; }
+      j = m[s];
+      if (j === void 0) { j = a.length; a.push(s); m[s] = j; }
+      out[r] = j;
+    }
+    return { d: a, i: out };
+  }
+  function _internSpendTypeColumn(rows) {
+    var n, r, out, s, low;
+    n = rows.length;
+    out = new Array(n);
+    for (r = 0; r < n; r++) {
+      s = rows[r] == null || rows[r].spend_type == null ? "" : String(rows[r].spend_type).trim();
+      low = s.toLowerCase();
+      if (low === "") {
+        s = rows[r] && rows[r].category_l1 != null ? String(rows[r].category_l1) : (rows[r] && rows[r].c1 != null ? String(rows[r].c1) : "");
+        low = s.toLowerCase();
+        if (low.indexOf("indirect") >= 0) { out[r] = 1; } else { out[r] = low.indexOf("direct") >= 0 ? 0 : 1; }
+        continue;
+      }
+      if (low.indexOf("indirect") >= 0) { out[r] = 1; } else { out[r] = low.indexOf("direct") >= 0 ? 0 : 1; }
+    }
+    return { d: ["Direct", "Indirect"], i: out };
+  }
+  function internEnrichedBundleToD(rows, harm) {
+    var n, I, dct, r, s, y0;
+    n = rows.length;
+    I = {
+      ym: _internStringColumn(rows, "ym"), d: _internStringColumn(rows, "d"), su: _internStringColumn(rows, "supplier"), erp: _internStringColumn(rows, "erp"), erpn: _internStringColumn(rows, "erpn"), bu: _internStringColumn(rows, "business_unit"), c1: _internStringColumn(rows, "category_l1"), c2: _internStringColumn(rows, "category_l2"), c3: _internStringColumn(rows, "category_l3"), c4: _internStringColumn(rows, "category_l4"), noun: _internStringColumn(rows, "noun"), part: _internStringColumn(rows, "part"), ccode: _internStringColumn(rows, "ccode"), cname: _internStringColumn(rows, "cname"), billy: _internStringColumn(rows, "billy"), billc: _internStringColumn(rows, "billc"), shpy: _internStringColumn(rows, "shpy"), shpc: _internStringColumn(rows, "shpc"), co: _internStringColumn(rows, "country"), comp: _internStringColumn(rows, "comp"), site: _internStringColumn(rows, "site"), st: _internSpendTypeColumn(rows)
+    };
+    dct = { ym: I.ym.d, d: I.d.d, supplier: I.su.d, erp: I.erp.d, erpn: I.erpn.d, business_unit: I.bu.d, category_l1: I.c1.d, category_l2: I.c2.d, category_l3: I.c3.d, category_l4: I.c4.d, noun: I.noun.d, part: I.part.d, ccode: I.ccode.d, cname: I.cname.d, billy: I.billy.d, billc: I.billc.d, shpy: I.shpy.d, shpc: I.shpc.d, country: I.co.d, comp: I.comp.d, site: I.site.d, spend_type: I.st.d };
+    D.n = n;
+    D.v = 1;
+    D.sourceFile = "data.json";
+    D.rows = rows;
+    D.harmonization_results = harm;
+    D.dicts = dct;
+    D.iYm = I.ym.i; D.iD = I.d.i; D.iSu = I.su.i; D.iErp = I.erp.i; D.iErpN = I.erpn.i; D.iBu = I.bu.i; D.iC1 = I.c1.i; D.iC2 = I.c2.i; D.iC3 = I.c3.i; D.iC4 = I.c4.i; D.iNoun = I.noun.i; D.iPart = I.part.i; D.iCcode = I.ccode.i; D.iCname = I.cname.i; D.iBilly = I.billy.i; D.iBillc = I.billc.i; D.iShpy = I.shpy.i; D.iShpc = I.shpc.i; D.iCo = I.co.i; D.iComp = I.comp.i; D.iSite = I.site.i; D.iSpendType = I.st.i;
+    D.spend = new Array(n);
+    D.qty = new Array(n);
+    D.qc = new Array(n);
+    D.Weight_Lbs = new Array(n);
+    D.price = new Array(n);
+    for (r = 0; r < n; r++) {
+      y0 = rows[r];
+      s = y0.spend; D.spend[r] = s != null && !isNaN(+s) ? +s : 0;
+      s = y0.quantity != null ? y0.quantity : y0.qty; D.qty[r] = s != null && !isNaN(+s) ? +s : 0; D.Weight_Lbs[r] = D.qty[r]; D.qc[r] = D.qty[r];
+      s = y0.price; D.price[r] = s != null && !isNaN(+s) ? +s : 0;
+    }
+  }
+  function applyPayloadToD(data) {
+    var h, i, nrows;
+    if (data && !Array.isArray(data) && data.rows && Object.prototype.toString.call(data.rows) === "[object Array]" && data.rows.length) {
+      h = data.harmonization_results != null ? data.harmonization_results : (data.harmonization_data != null ? data.harmonization_data : null);
+      nrows = new Array(data.rows.length);
+      for (i = 0; i < data.rows.length; i++) { nrows[i] = normalizeRowForD(data.rows[i]); }
+      internEnrichedBundleToD(nrows, h);
+      D.ytd_comparison = data.ytd_comparison != null ? data.ytd_comparison : null;
+      D.monthly_spend_by_type = data.monthly_spend_by_type != null ? data.monthly_spend_by_type : null;
+      if (typeof window !== "undefined") { try { window.__idp_payload = data; } catch (e) { } }
+      return;
+    }
+    if (Array.isArray(data)) {
+      h = data.harmonization_results;
+      nrows = new Array(data.length);
+      for (i = 0; i < data.length; i++) { nrows[i] = normalizeRowForD(data[i]); }
+      internEnrichedBundleToD(nrows, h == null ? null : h);
+      D.ytd_comparison = null;
+      D.monthly_spend_by_type = null;
+      return;
+    }
+    D.rows = null; D.harmonization_results = null; D.n = 0; D.spend = []; D.qty = []; D.Weight_Lbs = []; D.iYm = [];
+    D.ytd_comparison = null;
+    D.monthly_spend_by_type = null;
+  }
+  function handleSpendFileInput(ev) { var f = ev.target && ev.target.files && ev.target.files[0], el = document.getElementById("loading"), dln = document.getElementById("data-line"); if (ev.target) ev.target.value = ""; if (!f) return; if (el) { el.className = el.className.replace(/bg-white\/0|opacity-0|pointer-events-none/g, "").trim() + " bg-white/40 opacity-100 pointer-events-auto"; } f.arrayBuffer().then(function (ab) { var b, t, data; b = new Uint8Array(ab); t = f.name && f.name.toLowerCase().endsWith(".gz") && typeof pako !== "undefined" ? pako.ungzip(b, { to: "string" }) : new TextDecoder("utf-8").decode(b); data = JSON.parse(t); if (typeof console !== "undefined" && console.log) { try { console.log("Data Loaded:", data); } catch (e) { } } if (!data || !idpMainRowCount(data)) { if (dln) dln.textContent = "File must be {rows:[…]} or a flat array from refresh_data.py."; if (startProcurementDashboard) startProcurementDashboard(); return; } applyPayloadToD(data); if (dln) dln.textContent = ""; if (startProcurementDashboard) startProcurementDashboard(); }).catch(function (e) { if (dln) dln.textContent = "Could not read file: " + (e && e.message ? e.message : String(e)); if (startProcurementDashboard) startProcurementDashboard(); }).finally(function () { if (el) el.className = "pointer-events-none fixed inset-0 z-[100] flex items-center justify-center transition bg-white/0 opacity-0"; }); }
+  function wireSpendFileButton() { var fin = document.getElementById("spend-file-input"), b = document.getElementById("btn-load-spend-file"); if (!fin || !b || b.getAttribute("data-wu") === "1") return; b.setAttribute("data-wu", "1"); b.addEventListener("click", function () { fin.click(); }); fin.addEventListener("change", handleSpendFileInput); }
+  /* data.json: { "rows": [...], "harmonization_results": {...} } or legacy [] */
+  async function loadProcurementData() { var dl, text, r, buf, data, errBits, ok, candidates, cix, baseUrl, srcUrl, hr, ncat;
+    dl = document.getElementById("data-line"); text = null; errBits = [];
+    if (dl) { dl.textContent = "Loading…"; }
+    baseUrl = new URL(".", window.location.href).href;
+    candidates = [
+      new URL("data.json", window.location.href).href,
+      new URL("data.json", baseUrl).href,
+      new URL("public/data/data.json", baseUrl).href
+    ];
+    cix = 0; srcUrl = null;
+    if (typeof console !== "undefined" && console.log) { try { console.log("[procurement] Will try (in order):", candidates); } catch (e) { } }
+    for (cix = 0; cix < candidates.length; cix++) {
+      if (text && String(text).trim()) { break; }
+      try {
+        r = await fetch(candidates[cix], { cache: "no-cache" });
+        ok = r && r.ok;
+        if (ok) { text = await r.text(); srcUrl = candidates[cix]; } else { errBits.push(candidates[cix] + " → " + (r && r.status)); }
+      } catch (e) { errBits.push(candidates[cix] + " → " + ((e && e.message) ? e.message : String(e))); }
+    }
+    if (typeof console !== "undefined" && console.log && srcUrl) { try { console.log("[procurement] Loaded data.json from:", srcUrl, "bytes≈", text ? String(text).length : 0); } catch (e) { } }
+    if (!text || !String(text).trim()) {
+      if (typeof pako !== "undefined") {
+        try { r = await fetch("data.json.gz", { cache: "no-cache" }); if (r && r.ok) { buf = new Uint8Array(await r.arrayBuffer()); text = pako.ungzip(buf, { to: "string" }); srcUrl = "data.json.gz (gzip)"; } } catch (e) { errBits.push("gz:" + (e && e.message)); }
+      }
+    }
+    if (text == null) { if (dl) { dl.textContent = (location.protocol === "file:" ? "Open this page from a local web server" : "No data.json in this page’s folder or fetch failed")
+      + " — " + (errBits.length ? errBits.slice(0, 4).join("; ") : "all URLs failed")
+      + ". refresh_data.py writes " + (location.pathname.replace(/[^/]+$/, "")) + "data.json (same folder as this HTML). Run it from the procurement-spend-dashboard folder, then: python -m http.server 8765"; } if (startProcurementDashboard) startProcurementDashboard(); return; }
+    try { data = JSON.parse(text); } catch (e) { if (dl) dl.textContent = "Spend data JSON error: " + (e && e.message ? e.message : String(e)); if (startProcurementDashboard) startProcurementDashboard(); return; }
+    (function (pd) { try { if (typeof window !== "undefined") { window.__idp_payload = pd; } } catch (e) { } }(data));
+    if (typeof console !== "undefined" && console.log) { try { console.log("Data loaded (keys):", data && !Array.isArray(data) && typeof data === "object" ? Object.keys(data) : "[array]"); } catch (e) { } }
+    hr = data && (data.harmonization_results != null ? data.harmonization_results : data.harmonization_data);
+    ncat = hr && hr.categories ? hr.categories.length : 0;
+    if (typeof console !== "undefined" && console.log) { try { console.log("[harmonization] in payload: category_blocks=", ncat, "v=", hr && hr.v, "message=", hr && hr.message); } catch (e) { } }
+    if (data == null || !idpMainRowCount(data)) { if (dl) dl.textContent = "data.json must include non-empty \"rows\" or be a row array. Run: python refresh_data.py"; if (startProcurementDashboard) startProcurementDashboard(); return; }
+    applyPayloadToD(data);
+    if (typeof console !== "undefined" && console.log) { try { console.log("D: n=", D && D.n, "harmonization in D:", !!(D && D.harmonization_results), "D.harmonization categories:", D && D.harmonization_results && D.harmonization_results.categories && D.harmonization_results.categories.length); } catch (e) { } }
+    if (dl) dl.textContent = "";
+    if (startProcurementDashboard) startProcurementDashboard();
+  }
+  function startDataAndUi() { loadProcurementData(); }
+  if (document.readyState === "loading") { document.addEventListener("DOMContentLoaded", startDataAndUi); } else { startDataAndUi(); }
+
+    </script>
+  </body>
+</html>
