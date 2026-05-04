@@ -1,5 +1,17 @@
-# Byte-compiled / optimized / DLL files
+# Data files (too large for GitHub)
+data.json
+*.json
+*.xlsx
+*.xls
+*.csv
+
+# Python bytecode / cache (also see standard Python section below)
 __pycache__/
+pycache/
+*.pyc
+*.pyo
+
+# Byte-compiled / optimized / DLL files
 *.py[cod]
 *$py.class
 
