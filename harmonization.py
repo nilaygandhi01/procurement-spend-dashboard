@@ -7,11 +7,11 @@ Analysis year: min(max(Year) in data, current calendar year) to avoid future-dat
 Outliers: row-level Tukey IQR (3.0× fences) on unit_price within (item, site) and (item, supplier) when ≥4 rows;
 MECE cards skip unit-price spreads above MAX_UNIT_PRICE_SPREAD_USD (cap extreme tails); savings ≥ MIN_TOP5_SAVINGS_USD per slice.
 
-MECE order (exports: Category 1 and 3 only):
+MECE order (exports: Categories 1, 2, and 3):
   1) Category 1 — same Item+Site, multiple suppliers, unit_price > min within (item, site)
-  2) Category 3 (after remaining) — same Item+Supplier, multiple sites, unit_price > min
-     across sites
-  Category 2 is not produced in JSON output.
+  2) Category 2 (remaining) — same Item across sites with ≥2 suppliers and ≥2 sites;
+     savings = (unit_price − min unit price for item across all tranches) × qty on tranches above min
+  3) Category 3 (remaining) — same Item+Supplier, multiple sites, unit_price > min across sites
 """
 from __future__ import annotations
 
@@ -24,15 +24,15 @@ from typing import Any
 import pandas as pd
 
 VARIANCE_PCT = 0.02
-TOP_N = 5
-JSON_VERSION = 2
+TOP_N = 65
+JSON_VERSION = 3
 # Skip MECE slices whose unit-price span (max − min) exceeds this (USD); keeps smaller spreads / long tail.
-MAX_UNIT_PRICE_SPREAD_USD = 7500.0
+MAX_UNIT_PRICE_SPREAD_USD = 25000.0
 # MECE slice: skip opportunities whose MECE savings sum for that (item,site) or (item,supplier) group is below this (USD).
 MIN_TOP5_SAVINGS_USD = 1000.0
 
 HARMONIZATION_CALCULATION_NOTES = (
-    "Maximum unit-price spread capped at $7500 (captures long tail); top cards require at least $1000 MECE savings. "
+    "Maximum unit-price spread capped at $25000 (captures long tail); top cards require at least $1000 MECE savings. "
     "Base-table outliers trimmed with relaxed IQR (3.0× multiplier) on (item×site) and (item×supplier) groups when ≥4 rows. "
     "Savings use weighted transaction unit prices × quantities."
 )
@@ -265,7 +265,10 @@ def _assign_mece(base: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, int], floa
     n = len(b)
     b["_idx"] = range(n)
 
-    # ---- Category 1: (Item, Site) group — multiple suppliers, savings only if price > min
+    # ---- Category 1: (Item, Site) — multiple suppliers at the same plant.
+    # For each tranche with unit_price > min price at that (item, site):
+    #   savings_tranche = (unit_price - min_price_at_plant) * total_qty_tranche
+    # Total Cat-1 savings for a slice is the sum of those tranche savings.
     n_sup = b.groupby(["item", "site"], observed=True)["supplier"].transform("nunique")
     pmin1 = b.groupby(["item", "site"], observed=True)["unit_price"].transform("min")
     mask1 = (n_sup > 1) & (b["unit_price"] > pmin1 + 1e-12)
@@ -276,7 +279,29 @@ def _assign_mece(base: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, int], floa
 
     rem = b["category"] == 0
 
-    # ---- Category 3: (Item, Supplier) group — multiple sites, min U/P across those sites
+    # ---- Category 2: (Item) — multiple sites AND multiple suppliers among remaining rows;
+    # savings = (unit_price - min unit price for item) * qty where price > item min.
+    b2 = b.loc[rem].copy()
+    g_item_site = b2.groupby("item", observed=True)["site"].transform("nunique")
+    g_item_sup = b2.groupby("item", observed=True)["supplier"].transform("nunique")
+    pmin_item = b2.groupby("item", observed=True)["unit_price"].transform("min")
+    mask2 = (g_item_site > 1) & (g_item_sup > 1) & (b2["unit_price"] > pmin_item + 1e-12)
+    idx2 = b2.index[mask2]
+    b.loc[idx2, "min_ref_price"] = pmin_item[mask2].values
+    b.loc[idx2, "savings"] = (b2.loc[mask2, "unit_price"].values - pmin_item[mask2].values) * b2.loc[
+        mask2, "total_qty"
+    ].values
+    b.loc[idx2, "category"] = 2
+
+    rem = b["category"] == 0
+
+    # ---- Category 3: (Item, Supplier) — same supplier, multiple plants.
+    # Legitimate Cat-3 rows appear only where Cat 1 did not already attribute savings (same
+    # base tranche cannot be both multi-supplier-at-site and priced here). Thresholds
+    # (MIN_TOP5_SAVINGS_USD, MAX_UNIT_PRICE_SPREAD_USD) apply identically to Cat 1 and 3 cards.
+    # Only rows still category 0 after Cat 1 are eligible (MECE). For each tranche with
+    # unit_price > min price for that (item, supplier) across sites:
+    #   savings_tranche = (unit_price - min_price_across_plants) * total_qty_tranche
     b2 = b.loc[rem].copy()
     g3 = b2.groupby(["item", "supplier"], observed=True)
     ns3 = b2.groupby(["item", "supplier"], observed=True)["site"].transform("nunique")
@@ -295,7 +320,7 @@ def _assign_mece(base: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, int], floa
     total_sav = float(b["savings"].sum())
     val = {
         "category_1_rows": int((b["category"] == 1).sum()),
-        "category_2_rows": 0,  # not used (Category 2 omitted from output)
+        "category_2_rows": int((b["category"] == 2).sum()),
         "category_3_rows": int((b["category"] == 3).sum()),
         "no_opportunity_rows": int((b["category"] == 0).sum()),
     }
@@ -320,6 +345,8 @@ def _p80_savings_index(tagged: pd.DataFrame, category_id: int) -> pd.Series:
     gcols: list[str] = (
         ["item", "site"]
         if category_id == 1
+        else ["item"]
+        if category_id == 2
         else (["item", "supplier"] if category_id == 3 else ["item"])
     )
     return t.groupby(gcols, observed=True)["savings"].sum().sort_values(ascending=False)
@@ -458,6 +485,152 @@ def _build_cat1_opportunities(
                 "highest_supplier_site": high_s[:200],
                 "suppliers": sup_rows,
                 "supplier_count": int(pr["supplier"].nunique()),
+                "chart": {
+                    "labels": labels,
+                    "unit_prices": prices,
+                    "bar_colors": colors,
+                    "y_axis_label": "Unit price (USD / unit)",
+                },
+                "groups": groups_table,
+                "export_rows": export_rows,
+            }
+        )
+        taken += 1
+    return out
+
+
+def _build_cat2_opportunities(
+    tagged: pd.DataFrame,
+    base: pd.DataFrame,
+    max_cards: int | None,
+) -> list[dict[str, Any]]:
+    """
+    MECE category 2 at item grain: multiple sites and multiple suppliers; benchmark is min unit price across all
+    (item, supplier, site) tranches for that item. Same thresholds as Categories 1 and 3.
+    """
+    t = tagged[tagged["category"] == 2]
+    if t.empty:
+        return []
+    gsum = t.groupby("item", observed=True)["savings"].sum().sort_values(ascending=False)
+    out: list[dict[str, Any]] = []
+    taken = 0
+
+    for it in gsum.index:
+        if max_cards is not None and taken >= max_cards:
+            break
+        try:
+            sav_here = float(gsum.loc[it])
+        except Exception:
+            sav_here = 0.0
+        if sav_here < MIN_TOP5_SAVINGS_USD:
+            continue
+        it_s = str(it).strip()
+        pk = it_s
+        bpart = base[base["item"].astype(str) == it_s]
+        if bpart.empty or bpart["site"].nunique() < 2 or bpart["supplier"].nunique() < 2:
+            continue
+        pr = bpart
+        tot_spend = float(pr["total_spend"].sum()) if not pr.empty else 0.0
+        tot_qty = float(pr["total_qty"].sum()) if not pr.empty else 0.0
+        if not math.isfinite(tot_spend):
+            tot_spend = 0.0
+        if not math.isfinite(tot_qty):
+            tot_qty = 0.0
+        pmin = float(pr["unit_price"].min())
+        pmax = float(pr["unit_price"].max())
+        if not (math.isfinite(pmin) and math.isfinite(pmax)) or pmax <= pmin + 1e-12:
+            continue
+        if (pmax - pmin) > MAX_UNIT_PRICE_SPREAD_USD:
+            continue
+        pct, note0 = _format_note_pct_below(pmin, pmax)
+        r_lo = pr.loc[pr["unit_price"].idxmin()]
+        r_hi = pr.loc[pr["unit_price"].idxmax()]
+        t_sub = tagged[(tagged["item"].astype(str) == it_s) & (tagged["category"] == 2)].copy()
+        if t_sub.empty:
+            continue
+        try:
+            lead = t_sub.sort_values("savings", ascending=False).iloc[0]
+            disp_site = str(lead["site"])[:200]
+            disp_sup = str(lead["supplier"])[:200]
+        except Exception:
+            disp_site = str(r_hi["site"])[:200]
+            disp_sup = str(r_hi["supplier"])[:200]
+        low_s = f"{str(r_lo['supplier'])[:50]} @ {str(r_lo['site'])[:40]} (low)"
+        high_s = f"{str(r_hi['supplier'])[:50]} @ {str(r_hi['site'])[:40]} (high)"
+        note = f"{note0} · cross-site vs global min · {high_s} vs {low_s}"
+
+        labels: list[str] = []
+        prices: list[int] = []
+        colors: list[str] = []
+        for _, row in pr.sort_values("unit_price", ascending=True).iterrows():
+            up = float(row["unit_price"])
+            if not math.isfinite(up):
+                continue
+            lab = f"{str(row['supplier'])[:40]} @ {str(row['site'])[:40]}"
+            labels.append(lab[:100])
+            prices.append(int(round(up)))
+            is_m = up <= pmin + 1e-9 * (1.0 + abs(pmin))
+            colors.append(_BAR_GREEN if is_m else _BAR_BLUE)
+        if not labels:
+            continue
+
+        groups_table = [
+            {
+                "label": f"{str(r['supplier'])[:50]} - {str(r['site'])[:50]}",
+                "qty": int(round(float(r["total_qty"]))),
+            }
+            for _, r in pr.iterrows()
+        ]
+        sup_rows: list[dict[str, Any]] = []
+        for _, r in pr.sort_values("unit_price", ascending=True).iterrows():
+            up2 = float(r["unit_price"])
+            if not math.isfinite(up2):
+                continue
+            sup_rows.append(
+                {
+                    "supplier": str(r["supplier"])[:200],
+                    "site": str(r["site"])[:200],
+                    "unit_price": _round_usd(up2),
+                    "quantity": _round_usd(r["total_qty"]),
+                    "spend": _round_usd(r["total_spend"]),
+                }
+            )
+        pmin_val = pmin
+        export_rows: list[dict[str, Any]] = []
+        for _, r in pr.iterrows():
+            upv = float(r["unit_price"])
+            qv = float(r["total_qty"])
+            sav0 = max(0.0, (upv - pmin_val) * qv) if math.isfinite(upv) and math.isfinite(qv) else 0.0
+            export_rows.append(
+                {
+                    "Item Number": pk,
+                    "Supplier": str(r["supplier"]),
+                    "Site": str(r["site"]),
+                    "Unit Price": _round_usd(r["unit_price"]),
+                    "Quantity": _round_usd(r["total_qty"]),
+                    "Spend": _round_usd(r["total_spend"]),
+                    "Savings": _round_usd(sav0),
+                    "Category": "Category 2",
+                }
+            )
+        out.append(
+            {
+                "harm_mece": 2,
+                "item": f"{pk} · cross-site"[:200],
+                "item_number": pk[:200],
+                "display_site": disp_site,
+                "display_supplier": disp_sup,
+                "total_spend": int(round(tot_spend)),
+                "total_quantity": int(round(tot_qty)),
+                "price_gap_abs": _round_usd(pmax - pmin),
+                "price_gap_pct": pct,
+                "savings_subtitle": note,
+                "has_price_variance": pmax > pmin + 1e-12,
+                "lowest_supplier_site": low_s[:200],
+                "highest_supplier_site": high_s[:200],
+                "suppliers": sup_rows,
+                "supplier_count": int(pr["supplier"].nunique()),
+                "site_count": int(pr["site"].nunique()),
                 "chart": {
                     "labels": labels,
                     "unit_prices": prices,
@@ -615,11 +788,12 @@ def _per_category_block(
     isum = _p80_savings_index(tagged, category_id)
     p80 = _parts_to_80(isum, sav) if sav > 0 and not t.empty else 0
     pct_v = (100.0 * sav / spend_cat) if spend_cat > 0 else None
-    t5: list[dict[str, Any]] = (
-        _build_cat1_opportunities(tagged, base, TOP_N)
-        if category_id == 1
-        else _build_cat3_opportunities(tagged, base, TOP_N)
-    )
+    if category_id == 1:
+        t5 = _build_cat1_opportunities(tagged, base, TOP_N)
+    elif category_id == 2:
+        t5 = _build_cat2_opportunities(tagged, base, TOP_N)
+    else:
+        t5 = _build_cat3_opportunities(tagged, base, TOP_N)
 
     return {
         "id": category_id,
@@ -669,6 +843,25 @@ def calculate_harmonization(df: pd.DataFrame) -> dict[str, Any]:
     cat3_df = tagged[tagged["category"] == 3]
     print(f"[harm] cat1_items={len(cat1_df)}", flush=True)
     print(f"[harm] cat3_items={len(cat3_df)}", flush=True)
+    try:
+        excluded_cat3_candidates = 0
+        for (it, su), sub in base.groupby(["item", "supplier"], observed=True):
+            if sub["site"].nunique() <= 1:
+                continue
+            tag_sub = tagged[
+                (tagged["item"].astype(str) == str(it).strip())
+                & (tagged["supplier"].astype(str) == str(su).strip())
+            ]
+            if tag_sub.empty:
+                continue
+            if not (tag_sub["category"] == 3).any():
+                excluded_cat3_candidates += 1
+        print(
+            f"[harm][cat3-debug] item_supplier_pairs_multi_site_not_cat3_after_mece_order={excluded_cat3_candidates}",
+            flush=True,
+        )
+    except Exception as _cat3_dbg_e:
+        print(f"[harm][cat3-debug] skipped: {_cat3_dbg_e}", flush=True)
     if not cat3_df.empty and len(base) > 0:
         mns3: list[int] = []
         pair3 = cat3_df[["item", "supplier"]].drop_duplicates()
@@ -698,7 +891,7 @@ def calculate_harmonization(df: pd.DataFrame) -> dict[str, Any]:
         print(msg, file=sys.stderr, flush=True)
 
     all_item_sav = (
-        tagged[tagged["category"].isin([1, 3])]
+        tagged[tagged["category"].isin([1, 2, 3])]
         .groupby("item", observed=True)["savings"]
         .sum()
         .sort_values(ascending=False)
@@ -708,15 +901,18 @@ def calculate_harmonization(df: pd.DataFrame) -> dict[str, Any]:
 
     cat_defs: list[tuple[int, str]] = [
         (1, "Same site, different suppliers (unit price spread)"),
+        (2, "Different supplier, different plant (cross-site price spread)"),
         (3, "Same supplier, different sites (unit price spread)"),
     ]
 
     categories = [_per_category_block(tagged, cid, title, base) for cid, title in cat_defs]
 
     cat1_all = _build_cat1_opportunities(tagged, base, None)
+    cat2_all = _build_cat2_opportunities(tagged, base, None)
     cat3_all = _build_cat3_opportunities(tagged, base, None)
     print(
-        f"[harm] category_1_opportunities={len(cat1_all)} category_3_opportunities={len(cat3_all)}",
+        f"[harm] category_1_opportunities={len(cat1_all)} category_2_opportunities={len(cat2_all)} "
+        f"category_3_opportunities={len(cat3_all)}",
         flush=True,
     )
 
@@ -737,6 +933,7 @@ def calculate_harmonization(df: pd.DataFrame) -> dict[str, Any]:
         "validation": val,
         "categories": categories,
         "category_1": cat1_all,
+        "category_2": cat2_all,
         "category_3": cat3_all,
         "top_5": (categories[0].get("top5") or [])[:TOP_N] if categories else [],
         "top_10": [],
