@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<!-- Data: python refresh_data.py → data.json (same folder as this HTML) or public/data/data.json. Serve from that folder. Diagnostics: runCompleteDiagnostics() in console, or open with ?idpdiag=1 -->
+<!-- Data: python refresh_data.py → data.json (same folder as this HTML) or public/data/data.json. Serve from that folder. Diagnostics: runCompleteDiagnostics() in console, or open with ?idpdiag=1 (includes Harmonization “View details” waterfall payload logging on click). -->
 <html lang="en">
   <head>
     <meta charset="utf-8" />
@@ -22,6 +22,8 @@
         --idp-line: #e6e6e6;
         --idp-txt: #333333;
         --idp-muted: #8a8a8a;
+        /* Spacing scale: 8 / 16 / 24 / 32 — use for padding, gap, section rhythm */
+        --idp-space-0: 8px;
         --idp-space-1: 16px;
         --idp-space-2: 24px;
         --idp-space-3: 32px;
@@ -167,19 +169,19 @@
       .idp-harm-summary-card {
         background: rgba(255, 255, 255, 0.2);
         border-radius: 6px;
-        padding: 12px;
+        padding: var(--idp-space-0) var(--idp-space-1);
         text-align: center;
       }
       .idp-harm-summary-note {
         font-size: 13px;
         line-height: 1.55;
         opacity: 0.92;
-        margin: 14px 0 0;
+        margin: var(--idp-space-0) 0 0;
       }
       #idp-app .harmonization-section {
-        margin-top: 2.5rem;
-        padding: 20px;
-        background: #fff;
+        margin-top: var(--idp-space-2);
+        padding: var(--idp-space-1);
+        background: var(--idp-card);
         border-radius: 8px;
         box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
       }
@@ -190,14 +192,14 @@
         font-size: 18px;
         font-weight: 600;
         color: #333;
-        margin: 0 0 10px;
+        margin: 0 0 var(--idp-space-0);
         text-transform: uppercase;
         letter-spacing: 0.5px;
       }
       #idp-app .harm-section-description {
         font-size: 14px;
         color: #666;
-        margin: 0 0 20px;
+        margin: 0 0 var(--idp-space-1);
         line-height: 1.5;
       }
       #idp-app .idp-download-category-btn {
@@ -963,12 +965,72 @@
         padding: 0 !important;
         overflow: visible;
       }
+      #idp-app .harm-collapse-block {
+        margin-bottom: var(--idp-space-2);
+      }
+      #idp-app .idp-harm-detail-cell-wrap {
+        padding: var(--idp-space-1);
+        background: var(--idp-card);
+        border-top: 3px solid var(--idp-c-direct);
+      }
+      #idp-app .idp-harm-detail-cell-wrap .idp-harm-detail-hdr {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: var(--idp-space-0);
+        gap: var(--idp-space-0);
+      }
+      #idp-app .idp-harm-detail-kpi-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: var(--idp-space-0);
+        margin-bottom: var(--idp-space-1);
+      }
+      #idp-app .idp-harm-detail-kpi-card {
+        border: 1px solid var(--idp-line);
+        border-radius: 8px;
+        padding: var(--idp-space-0) var(--idp-space-1);
+      }
+      #idp-app .idp-harm-detail-kpi-lbl {
+        font-size: 10px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--idp-muted);
+        margin-bottom: var(--idp-space-0);
+      }
+      #idp-app .idp-harm-detail-kpi-val {
+        font-size: 22px;
+        font-weight: 700;
+        line-height: 1.2;
+      }
+      #idp-app .idp-harm-detail-kpi-sub {
+        font-size: 12px;
+        color: var(--idp-c-action);
+        margin-top: 2px;
+      }
+      #idp-app .idp-harm-detail-title {
+        font-size: 13px;
+        font-weight: 600;
+        color: var(--idp-txt);
+        min-width: 0;
+      }
+      #idp-app .idp-harm-detail-close {
+        flex-shrink: 0;
+        border: 1px solid var(--idp-line);
+        background: var(--idp-card);
+        padding: var(--idp-space-0) var(--idp-space-1);
+        border-radius: 4px;
+        font-size: 12px;
+        cursor: pointer;
+        color: var(--idp-txt);
+      }
       #idp-app .harm-collapse-section-header {
         display: flex;
         align-items: flex-start;
         justify-content: space-between;
         gap: 0.75rem;
-        padding: 0.75rem 1rem;
+        padding: 0.875rem var(--idp-space-1);
         border: 1px solid var(--idp-line);
         border-radius: 0.5rem 0.5rem 0 0;
         background: #fff;
@@ -1123,6 +1185,185 @@
         border: 1px solid #fed7aa;
         white-space: nowrap;
       }
+      #idp-app .idp-harm-waterfall-savings-pill--pos {
+        background: #ecfdf5;
+        color: #047857;
+        border-color: #a7f3d0;
+      }
+      #idp-app .idp-harm-waterfall-savings-pill--neg {
+        background: #fef2f2;
+        color: #b91c1c;
+        border-color: #fecaca;
+      }
+      #idp-app .idp-harm-wf-stack {
+        display: flex;
+        flex-direction: row;
+        width: 100%;
+        height: 100%;
+        min-height: 2rem;
+        border-radius: 4px;
+        overflow: hidden;
+      }
+      #idp-app .idp-harm-wf-seg {
+        flex-grow: 0;
+        flex-shrink: 0;
+        height: 100%;
+        min-width: 2px;
+        box-sizing: border-box;
+        border-right: 1px solid rgba(255, 255, 255, 0.35);
+      }
+      #idp-app .idp-harm-wf-seg:last-child {
+        border-right: none;
+      }
+      #idp-app .idp-harm-wf-sav-neg {
+        color: #b91c1c;
+      }
+      /* Category 1 — same plant, multiple suppliers: horizontal unit-price bars */
+      #idp-app .idp-harm-c1-wrap {
+        border: 1px solid var(--idp-line);
+        border-radius: 8px;
+        overflow: hidden;
+        background: #fff;
+      }
+      #idp-app .idp-harm-c1-axis-cap {
+        font-size: 11px;
+        font-weight: 600;
+        padding: 0.5rem 0.75rem;
+        background: #f8fafc;
+        border-bottom: 1px solid var(--idp-line);
+        color: var(--idp-txt);
+      }
+      #idp-app .idp-harm-c1-row {
+        display: flex;
+        align-items: stretch;
+        gap: 0.5rem;
+        padding: 0.4rem 0.65rem;
+        border-bottom: 1px solid #f0f0f0;
+      }
+      #idp-app .idp-harm-c1-row:last-of-type {
+        border-bottom: none;
+      }
+      #idp-app .idp-harm-c1-track {
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        align-items: center;
+      }
+      #idp-app .idp-harm-c1-bar {
+        min-height: 3.25rem;
+        border-radius: 4px;
+        display: flex;
+        align-items: center;
+        box-sizing: border-box;
+        padding: 0.35rem 0.5rem;
+        min-width: 5rem;
+        transition: width 0.2s ease;
+      }
+      #idp-app .idp-harm-c1-bar--bench {
+        background: #ff8c00;
+        color: #fff;
+      }
+      #idp-app .idp-harm-c1-bar--hi {
+        background: #1e3a8a;
+        color: #fff;
+      }
+      #idp-app .idp-harm-c1-bar-in {
+        min-width: 0;
+        overflow: hidden;
+      }
+      #idp-app .idp-harm-c1-name {
+        font-size: 12px;
+        font-weight: 700;
+        line-height: 1.2;
+        margin-bottom: 0.25rem;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+        overflow: hidden;
+      }
+      #idp-app .idp-harm-c1-badges {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.25rem;
+      }
+      #idp-app .idp-harm-c1-pill {
+        font-size: 10px;
+        font-weight: 600;
+        padding: 0.1rem 0.45rem;
+        border-radius: 999px;
+        background: #fff;
+        color: #1e3a8a;
+        border: 1px solid rgba(30, 58, 138, 0.2);
+        white-space: nowrap;
+      }
+      #idp-app .idp-harm-c1-bar--bench .idp-harm-c1-pill {
+        color: #1e3a8a;
+        border-color: rgba(0, 0, 0, 0.12);
+      }
+      #idp-app .idp-harm-c1-price {
+        flex-shrink: 0;
+        width: 4.75rem;
+        text-align: right;
+        font-size: 13px;
+        font-weight: 700;
+        color: var(--idp-txt);
+        align-self: center;
+        font-variant-numeric: tabular-nums;
+      }
+      #idp-app .idp-harm-c1-callout {
+        display: flex;
+        align-items: flex-start;
+        gap: 0.4rem;
+        padding: 0.6rem 0.75rem;
+        font-size: 11px;
+        line-height: 1.45;
+        color: #475569;
+        background: #fafafa;
+        border-top: 1px solid var(--idp-line);
+      }
+      #idp-app .idp-harm-c1-arrow {
+        flex-shrink: 0;
+        font-weight: 700;
+        color: #1e3a8a;
+        line-height: 1.2;
+      }
+      #idp-app .idp-harm-c1-foot {
+        margin: 0;
+        padding: 0.5rem 0.75rem;
+        font-size: 11px;
+        line-height: 1.45;
+        color: var(--idp-muted);
+        border-top: 1px solid var(--idp-line);
+        background: #fafafa;
+      }
+      #idp-app .idp-harm-c1-detail-table {
+        margin: 0;
+        border-top: 1px solid var(--idp-line);
+      }
+      #idp-app .idp-harm-wf-alloc-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 11px;
+        margin-top: 0.75rem;
+      }
+      #idp-app .idp-harm-wf-alloc-table th,
+      #idp-app .idp-harm-wf-alloc-table td {
+        padding: 6px 8px;
+        border-bottom: 1px solid #eee;
+        text-align: left;
+        vertical-align: top;
+      }
+      #idp-app .idp-harm-wf-alloc-table th {
+        background: #f8fafc;
+        font-weight: 600;
+        color: #475569;
+      }
+      #idp-app .idp-harm-wf-alloc-table .idp-harm-wf-num {
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+      }
+      #idp-app .idp-harm-wf-alloc-table tr.idp-harm-wf-lowest td {
+        background: #ecfdf5;
+      }
       #idp-app .idp-ssa-spend-cell {
         min-width: 200px;
       }
@@ -1195,6 +1436,81 @@
       #idp-app #view-index-analysis #index-chart-canvas.chart-hidden {
         opacity: 0;
         pointer-events: none;
+      }
+      #idp-app #view-price-explanation #pe-part-suggest button {
+        display: block;
+        width: 100%;
+        cursor: pointer;
+        border: 0;
+        background: transparent;
+        padding: 0.5rem 0.75rem;
+        text-align: left;
+        font-size: 0.875rem;
+        color: #333;
+      }
+      #idp-app #view-price-explanation #pe-part-suggest button:hover {
+        background: #f3f4f6;
+      }
+      #idp-app #view-price-explanation #pe-analyzing-wrap {
+        border-radius: 0.75rem;
+        border: 1px solid #e5e7eb;
+        background: #f3f4f6;
+        padding: 0.75rem 1rem 1rem;
+      }
+      #idp-app #view-price-explanation #pe-analyzing-wrap.pe-analyzing-empty {
+        padding: 0.65rem 1rem;
+      }
+      #idp-app #view-price-explanation .pe-analyzing-head {
+        margin: 0 0 0.5rem;
+        font-size: 0.65rem;
+        font-weight: 600;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: #6b7280;
+      }
+      #idp-app #view-price-explanation #pe-analyzing-list {
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+      }
+      #idp-app #view-price-explanation .pe-analyzing-chip {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 0.75rem;
+        padding: 8px 12px;
+        border-radius: 0.5rem;
+        background: #fff;
+        border: 1px solid #e5e7eb;
+        box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+        transition: box-shadow 0.15s ease;
+      }
+      #idp-app #view-price-explanation .pe-analyzing-chip:hover {
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+      }
+      #idp-app #view-price-explanation .pe-analyzing-chip-text {
+        min-width: 0;
+        font-size: 0.875rem;
+        color: #333;
+      }
+      #idp-app #view-price-explanation .pe-analyzing-chip-text strong {
+        font-weight: 600;
+      }
+      #idp-app #view-price-explanation .pe-analyzing-remove {
+        flex-shrink: 0;
+        margin: 0;
+        padding: 0 0.35rem;
+        border: none;
+        background: transparent;
+        color: #ef4444;
+        font-size: 1.35rem;
+        line-height: 1;
+        cursor: pointer;
+        border-radius: 4px;
+      }
+      #idp-app #view-price-explanation .pe-analyzing-remove:hover {
+        color: #b91c1c;
+        background: #fef2f2;
       }
       /* Cleansheet — match panel density */
       #idp-app .cs-panel {
@@ -1350,6 +1666,13 @@
                 <button type="button" class="app-nav-btn" data-app-view="rap" id="nav-rap">
                   <svg class="idp-nav-icon" viewBox="0 0 16 16" aria-hidden="true" fill="none"><rect x="2" y="3" width="12" height="10" rx="1" stroke="currentColor" stroke-width="1.5" /><path d="M5 7h6M5 10h4" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" /></svg>
                   <span class="sidebar-when-expanded">RAP</span>
+                </button>
+                <button type="button" class="app-nav-btn" data-app-view="price-explanation" id="nav-price-explanation">
+                  <svg class="idp-nav-icon" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M2 12 L6 8 L9 11 L14 4" />
+                    <circle cx="14" cy="4" r="1.5" fill="currentColor" />
+                  </svg>
+                  <span class="sidebar-when-expanded">Price Explanation</span>
                 </button>
               </div>
             </div>
@@ -1668,6 +1991,7 @@
       </div>
       <div id="view-overview">
       <main id="app-main" class="min-w-0 max-w-full overflow-x-hidden pt-1">
+      <div id="idp-overview-body" class="w-full min-w-0 max-w-full">
       <div
         id="kpi-strip"
         class="idp-kpi-strip mb-3 flex w-full min-w-0 flex-col gap-2 sm:flex-row sm:items-stretch"
@@ -1815,7 +2139,83 @@
           </div>
         </div>
       </div>
+      </div>
       </main>
+      <section
+        id="view-price-explanation"
+        class="hidden w-full max-w-full min-w-0 pt-1 pb-3"
+        aria-hidden="true"
+        aria-label="Price explanation"
+      >
+        <div class="mb-3 border-b border-[#E6E6E6] pb-2">
+          <h2 class="m-0 text-base font-semibold" style="color: #333">Price Explanation</h2>
+          <p class="mt-0.5 text-xs leading-snug idp-muted">
+            Spend Review filters above (period, CMI site, supplier, categories, commodity exclusions) apply to both charts. Default period tip: use <strong>Last 12 months</strong> for clearer trends.
+          </p>
+          <div class="mt-2 flex flex-wrap items-center gap-2">
+            <button type="button" id="pe-btn-last12" class="idp-btn-secondary shrink-0 px-3 py-1.5 text-xs font-medium">Use last 12 months</button>
+          </div>
+        </div>
+        <div class="mb-4 rounded-xl border border-[#E6E6E6] bg-white p-4 shadow-sm">
+          <p class="mb-2 text-xs font-semibold uppercase tracking-wide idp-muted">Part selection</p>
+          <div class="relative flex min-w-0 flex-wrap items-stretch gap-2">
+            <label class="sr-only" for="pe-part-input">Search part number or description</label>
+            <input
+              type="text"
+              id="pe-part-input"
+              class="box-border min-w-[12rem] flex-1 rounded-md border border-[#E6E6E6] px-3 py-2 text-sm"
+              style="color: #333"
+              placeholder="Type part number or description (2+ characters)…"
+              autocomplete="off"
+              aria-autocomplete="list"
+              aria-controls="pe-part-suggest"
+              aria-expanded="false"
+            />
+            <button type="button" id="pe-add-analysis" class="idp-btn-primary shrink-0 whitespace-nowrap px-4 py-2 text-sm font-semibold">Add to Analysis</button>
+            <div
+              id="pe-part-suggest"
+              class="absolute left-0 right-0 top-full z-[80] mt-1 hidden max-h-[16rem] overflow-y-auto rounded-md border border-[#E6E6E6] bg-white shadow-lg"
+              role="listbox"
+              hidden
+            ></div>
+          </div>
+          <input type="hidden" id="pe-part-ix" value="" />
+          <p id="pe-error-msg" class="mt-2 hidden text-sm font-medium" style="color: #b91c1c" role="alert"></p>
+          <p id="pe-warn-msg" class="mt-2 hidden text-sm" style="color: #b45309" role="status"></p>
+        </div>
+        <div id="pe-analyzing-wrap" class="mb-4 hidden" hidden>
+          <p class="pe-analyzing-head">Currently analyzing</p>
+          <div id="pe-analyzing-list" class="pe-analyzing-list" aria-live="polite"></div>
+        </div>
+        <p id="pe-empty-hint" class="mb-4 text-sm idp-muted">
+          Add a part number above to view price and volume analysis.
+        </p>
+        <div class="grid min-w-0 grid-cols-1 gap-4 xl:grid-cols-1">
+          <section class="card-chart relative min-w-0 overflow-hidden rounded-xl idp-card p-5 shadow-sm">
+            <h3 id="pe-title-price" class="mb-2 text-sm font-semibold" style="color: #333">Unit Price by Supplier</h3>
+            <div class="relative idp-chart-frame w-full" style="min-height: 320px">
+              <canvas id="pe-ch-price" class="!h-full !w-full" aria-label="Unit price by supplier over time"></canvas>
+            </div>
+          </section>
+          <section class="card-chart relative min-w-0 overflow-hidden rounded-xl idp-card p-5 shadow-sm">
+            <h3 id="pe-title-volume" class="mb-2 text-sm font-semibold" style="color: #333">Volume Mix by Supplier</h3>
+            <div class="relative idp-chart-frame w-full" style="min-height: 320px">
+              <canvas id="pe-ch-volume" class="!h-full !w-full" aria-label="Volume mix by supplier over time"></canvas>
+            </div>
+            <div id="pe-vol-metrics" class="mt-3 border-t border-[#eee] pt-3 text-xs leading-relaxed idp-muted"></div>
+          </section>
+        </div>
+        <div class="mt-4 grid min-w-0 grid-cols-1 gap-4 md:grid-cols-2">
+          <div class="rounded-xl border border-[#E6E6E6] bg-[#fafafa] p-4 shadow-sm">
+            <p class="mb-2 text-xs font-semibold uppercase tracking-wide idp-muted">Price insights</p>
+            <ul id="pe-insights-price" class="m-0 list-disc space-y-1.5 pl-4 text-sm" style="color: #333"></ul>
+          </div>
+          <div class="rounded-xl border border-[#E6E6E6] bg-[#fafafa] p-4 shadow-sm">
+            <p class="mb-2 text-xs font-semibold uppercase tracking-wide idp-muted">Volume insights</p>
+            <ul id="pe-insights-vol" class="m-0 list-disc space-y-1.5 pl-4 text-sm" style="color: #333"></ul>
+          </div>
+        </div>
+      </section>
       </div>
       <div id="view-rap" class="hidden max-w-full min-w-0 overflow-x-hidden" aria-hidden="true">
         <main class="min-w-0 max-w-full overflow-x-hidden pt-1 pb-6">
@@ -2162,7 +2562,7 @@
         <div class="mb-3 border-b border-[#E6E6E6] pb-2">
           <h2 class="m-0 text-base font-semibold" style="color: #333">Single Source Risk Analysis</h2>
           <p class="mt-0.5 text-xs leading-snug idp-muted">
-            Parts currently sourced from only one supplier (within Spend Review filters), ranked by total spend.
+            Parts with exactly one distinct supplier in the selected <strong>period</strong> and <strong>commodity exclusions</strong> (supplier/BU/site/category filters do not change that count). Table spend and volume use full Spend Review filters.
           </p>
           <p id="ssa-threshold-note" class="mt-1 text-xs font-medium" style="color: #475569">
             Showing parts with annual spend ≥ $50,000 only.
@@ -2484,7 +2884,7 @@
     Chart.defaults.font.family = "'Inter', system-ui, sans-serif";
   }
   var n, dicts, sortedYms, ymStrRank, fState, charts, kpiSparks, harmCharts, csChart, currentAppView, csBaselineSpendCached, csBaselineYearCached;
-  var partSearchResults, partSearchDebounceTimer, _idpRegionalSpendRendering, _idpHarmRendering;
+  var partSearchResults, partSearchDebounceTimer, _idpRegionalSpendRendering, _idpHarmRendering, _idpPeSelectedPartIxs, _idpPeSuggestTimer;
   var _idpHarmDirty, _idpHarmFilterDebounce, _idpHarmKeySetCache;
   harmCharts = [];
   var indexSelectedParts = [];
@@ -2497,12 +2897,14 @@
   csBaselineYearCached = 0;
   partSearchResults = [];
   partSearchDebounceTimer = null;
+  _idpPeSelectedPartIxs = [];
+  _idpPeSuggestTimer = null;
   _idpHarmDirty = true;
   _idpHarmFilterDebounce = null;
   _idpHarmKeySetCache = { snap: null, set: null };
   currentAppView = document.body && document.body.getAttribute("data-idp-app-view") ? String(document.body.getAttribute("data-idp-app-view")) : "overview";
   if (currentAppView === "harmonization-direct" || currentAppView === "harmonization-indirect") { currentAppView = "harmonization"; }
-  if (currentAppView !== "overview" && currentAppView !== "part-search" && currentAppView !== "rap" && currentAppView !== "harmonization" && currentAppView !== "single-source" && currentAppView !== "index-analysis" && currentAppView !== "cleansheet") { currentAppView = "overview"; }
+  if (currentAppView !== "overview" && currentAppView !== "part-search" && currentAppView !== "rap" && currentAppView !== "harmonization" && currentAppView !== "single-source" && currentAppView !== "index-analysis" && currentAppView !== "price-explanation" && currentAppView !== "cleansheet") { currentAppView = "overview"; }
   if (document.body) { document.body.setAttribute("data-idp-app-view", currentAppView); }
   /** DOM helper — defined early so tab handlers never reference it before initialization. */
   function $(id) {
@@ -2611,26 +3013,6 @@
       },
       formatter: function (v) {
         return fmtChartMillions(v);
-      }
-    };
-  }
-  /** Vertical stacked bars: total US$M above the stack (Yearly / Quarterly overview) */
-  function chartDatalabelsVerticalStackedTotal() {
-    if (typeof ChartDataLabels === "undefined") return { display: false };
-    return {
-      font: { size: CHART_FS_DATALABEL, weight: "600" },
-      color: "#333333",
-      anchor: "end",
-      align: "start",
-      offset: 10,
-      clip: false,
-      display: function (ctx) {
-        return ctx.datasetIndex === ctx.chart.data.datasets.length - 1;
-      },
-      formatter: function (_v, ctx) {
-        var sum = 0, j, ds = ctx.chart.data.datasets;
-        for (j = 0; j < ds.length; j++) sum += +(ds[j].data[ctx.dataIndex] != null ? ds[j].data[ctx.dataIndex] : 0);
-        return sum > 0 && isFinite(sum) ? fmtChartMillions(sum) : "";
       }
     };
   }
@@ -2831,7 +3213,7 @@
   function refreshDState() {
     n = D.n;
     dicts = D.dicts;
-    charts = { yoy: null, qtr: null, mon: null, yoyMo: null, catBr: null, regSp: null, c2d: null, c2i: null, ctry: null, site: null, topSup: null };
+    charts = { yoy: null, qtr: null, mon: null, yoyMo: null, catBr: null, regSp: null, c2d: null, c2i: null, ctry: null, site: null, topSup: null, pePrice: null, peVol: null };
     var s = new Set();
     for (var e = 0; e < dicts.ym.length; e++) { if (dicts.ym[e]) s.add(dicts.ym[e]); }
     sortedYms = Array.from(s).sort(function (a, b) { return ymKey(a) - ymKey(b); });
@@ -2907,6 +3289,23 @@
     return getFilteredRowObjects();
   }
   function rowOk(i) { if (!inYm(i)) return false; if (fState.suSet && fState.suSet.size > 0 && !fState.suSet.has(D.iSu[i])) return false; if (!sel(fState.bu, dicts.business_unit, D.iBu[i])) return false; if (!sel(fState.c1, dicts.category_l1, D.iC1[i])) return false; if (!sel(fState.c2, dicts.category_l2, D.iC2[i])) return false; if (!sel(fState.c3, dicts.category_l3, D.iC3[i])) return false; if (!sel(fState.c4, dicts.category_l4, D.iC4[i])) return false; if (!sel(fState.co, dicts.country, D.iCo[i])) return false; if (!sel(fState.site, dicts.site, D.iSite[i])) return false; if (idpRowExcludedByOverviewCommodity(i)) return false; return true; }
+  /** Rows used ONLY to count distinct suppliers per part: same financial months + commodity exclusions as Spend Review — no BU/category/geo/supplier facet filters (those would hide suppliers and break single-source detection). */
+  function rowOkSingleSourceUniverse(i) {
+    if (!inYm(i)) return false;
+    if (idpRowExcludedByOverviewCommodity(i)) return false;
+    return true;
+  }
+  /** Distinct-supplier identity for counting (trim + lowercase raw names; do not use formatLabel here — it could merge different suppliers). */
+  function idpSingleSourceSupplierKey(ix) {
+    var id, s, r;
+    id = D.iSu[ix];
+    s = id != null && dicts.supplier && dicts.supplier[id] != null ? String(dicts.supplier[id]).trim() : "";
+    r = D.rows && D.rows[ix];
+    if (!s && r) s = String(r.supplier != null ? r.supplier : r.su != null ? r.su : "").trim();
+    if (!s && r) s = String(r.erp != null ? r.erp : "").trim();
+    if (!s) return "__none__";
+    return s.toLowerCase();
+  }
   /** Same facet filters as Overview but ignores the financial month range (for YoY baseline from full dataset). */
   function rowOkIgnoreYm(i) {
     if (fState.suSet && fState.suSet.size > 0 && !fState.suSet.has(D.iSu[i])) return false;
@@ -2951,40 +3350,95 @@
   /** Single Source tab: min annual spend (USD) and progressive table page size. */
   var SSA_MIN_SPEND_USD = 50000;
   var SSA_PAGE_SIZE = 50;
-  /** Align with harmonization grain: part / commodity / noun key per row. */
+  /**
+   * Harmonization-style item key (part / commodity / …). Used where that grain is required (e.g. Index Analysis spend paths).
+   * Single Source risk table instead groups by {@link idpSingleSourcePartKey} so one row = one part number with one supplier.
+   */
   function idpSingleSourceItemKey(ix) {
     var fn = typeof idpHarmonizationItemKey === "function" ? idpHarmonizationItemKey : null;
     var r = D.rows[ix];
     if (!r || !fn) return "";
     return fn(r) || "";
   }
+  /** Part number string for Single Source aggregation (trimmed); empty if no usable part on the row. */
+  function idpSingleSourcePartKey(ix) {
+    var raw, r;
+    if (dicts && dicts.part && D.iPart && D.iPart[ix] != null) {
+      raw = dicts.part[D.iPart[ix]];
+      if (raw != null && String(raw).trim() !== "") return String(raw).trim();
+    }
+    r = D.rows && D.rows[ix];
+    if (r) {
+      if (r.part != null && String(r.part).trim() !== "") return String(r.part).trim();
+      if (r.Part != null && String(r.Part).trim() !== "") return String(r.Part).trim();
+    }
+    return "";
+  }
+  /** Canonical part bucket for grouping (trim, lower case, leading zeros stripped for all-numeric parts) so one physical part does not split across keys. */
+  function idpSingleSourcePartBucketKey(ix) {
+    var k = idpSingleSourcePartKey(ix);
+    if (!k) return "";
+    k = String(k).trim().toLowerCase();
+    if (/^\d+$/.test(k)) {
+      k = k.replace(/^0+/, "");
+      return k === "" ? "0" : k;
+    }
+    return k;
+  }
   function buildSingleSourceAggregates() {
-    var idx = getFiltered(), map = new Map(), i, ix, k, o, supId, spend, qty;
-    for (i = 0; i < idx.length; i++) {
-      ix = idx[i];
-      k = idpSingleSourceItemKey(ix);
+    var idxDisplay = getFiltered(),
+      map = new Map(),
+      eligible = new Set(),
+      i,
+      ix,
+      k,
+      sk,
+      o,
+      spend,
+      qty,
+      lim,
+      agg = new Map(),
+      supId,
+      supNm,
+      rows;
+    readFiltersFromForm();
+    lim = typeof D !== "undefined" && D && typeof D.n === "number" ? D.n : n;
+    for (i = 0; i < lim; i++) {
+      if (!rowOkSingleSourceUniverse(i)) continue;
+      ix = i;
+      k = idpSingleSourcePartBucketKey(ix);
       if (!k) continue;
-      supId = D.iSu[ix];
+      sk = idpSingleSourceSupplierKey(ix);
+      if (!map.has(k)) map.set(k, new Set());
+      map.get(k).add(sk);
+    }
+    map.forEach(function (set, key) {
+      if (set.size === 1) eligible.add(key);
+    });
+    for (i = 0; i < idxDisplay.length; i++) {
+      ix = idxDisplay[i];
+      k = idpSingleSourcePartBucketKey(ix);
+      if (!k || !eligible.has(k)) continue;
       spend = D.spend[ix] != null ? +D.spend[ix] : 0;
       qty = D.qty[ix] != null ? +D.qty[ix] : 0;
-      if (!map.has(k)) map.set(k, { supSet: new Set(), spend: 0, qty: 0, sampleIx: ix });
-      o = map.get(k);
-      o.supSet.add(supId);
+      if (!agg.has(k)) {
+        supId = D.iSu[ix];
+        supNm = formatLabel(String(dicts.supplier[supId] || "").trim() || "—");
+        agg.set(k, { spend: 0, qty: 0, sampleIx: ix, supplierId: supId, supplierName: supNm });
+      }
+      o = agg.get(k);
       o.spend += isFinite(spend) ? spend : 0;
       o.qty += isFinite(qty) ? qty : 0;
     }
-    var rows = [];
-    map.forEach(function (v, key) {
-      var sid;
-      if (v.supSet.size !== 1) return;
-      sid = v.supSet.values().next().value;
+    rows = [];
+    agg.forEach(function (v, key) {
       rows.push({
         itemKey: key,
         sampleIx: v.sampleIx,
         totalSpend: v.spend,
         totalQty: v.qty,
-        supplierId: sid,
-        supplierName: formatLabel(String(dicts.supplier[sid] || "").trim() || "—")
+        supplierId: v.supplierId,
+        supplierName: v.supplierName
       });
     });
     return rows;
@@ -3415,6 +3869,11 @@
     if (a >= 1000) return "$" + v.toLocaleString("en-US", { maximumFractionDigits: 0, minimumFractionDigits: 0 });
     if (a >= 1) return "$" + v.toLocaleString("en-US", { maximumFractionDigits: 2, minimumFractionDigits: 0 });
     return "$" + v.toLocaleString("en-US", { maximumFractionDigits: 4, minimumFractionDigits: 0 });
+  }
+  /** Harmonization waterfall benchmark column: keep cents (avoids $108.30 → $108 from integer branch). */
+  function fmtHarmBenchmarkPrice(v) {
+    if (v == null || !isFinite(v)) return "—";
+    return "$" + Number(v).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 4 });
   }
   /** Harmonization supplier table: same formatting as prior inline toLocaleString on unit_price. */
   function fmtHarmSupplierRowUnitPrice(u) {
@@ -4694,7 +5153,7 @@
     var expanded = harmCollapseStateExpanded(sectionId, true);
     var outer, head, left, svg, pathEl, titWrap, tit, sub, right, body;
     outer = document.createElement("div");
-    outer.className = "harm-collapse-block mb-6";
+    outer.className = "harm-collapse-block";
     head = document.createElement("div");
     head.className =
       "section-header harm-collapse-section-header" +
@@ -5149,159 +5608,353 @@
     strip.appendChild(note);
     wrapEl.appendChild(strip);
   }
-  /**
-   * Before/after spend comparison (waterfall-style): blended current cost vs lowest unit-price target.
-   * Current = weighted-average unit price × volume (from payload total_spend / quantity).
-   * Target = minimum tranche unit price in chart.unit_prices[] × same volume.
-   */
-  function harmAppendWaterfallComparison(wrapEl, p, w, dlab, totalQtyVal, totalSpendVal, yYear) {
-    var root, cap, hdr, rowCur, rowTgt, targetPrice, currentPrice, targetSpend, savings, pctUnit, tgtBarPct, minIx, zi;
-    var labMin, volTxt, priceTgtSpan, priceTgtEl, badge, spendCurWrap, spendTgtWrap, savCell, foot, scrollInner;
-    var barCur, barTgt, trackCur, trackTgt, labCur, labTgt, uVol1, uVol2, uPc, uSp, uSv;
-
-    if (!w || !w.length) return;
-
-    targetPrice = Math.min.apply(null, w);
-    minIx = 0;
-    for (zi = 1; zi < w.length; zi++) {
-      if (w[zi] < w[minIx]) minIx = zi;
+  /** chart.unit_prices as numbers[] (strict mode / odd payloads must not throw). */
+  function idpHarmChartUnitPricesArray(chart) {
+    var up, i, n, out;
+    if (!chart || chart.unit_prices == null) return [];
+    up = chart.unit_prices;
+    if (Array.isArray(up)) {
+      out = [];
+      for (i = 0, n = up.length; i < n; i++) out.push(+up[i]);
+      return out;
     }
-    labMin = dlab && dlab[minIx] != null ? String(dlab[minIx]) : "Lowest-price tranche";
-
-    currentPrice =
-      totalQtyVal > 0 && isFinite(totalSpendVal) && totalSpendVal > 0
-        ? totalSpendVal / totalQtyVal
-        : Math.max.apply(null, w);
-
-    targetSpend = totalQtyVal > 0 && isFinite(targetPrice) ? totalQtyVal * targetPrice : 0;
-    savings = harmSumExportSavings(p);
-    if (savings == null || !isFinite(savings)) savings = Math.max(0, (isFinite(totalSpendVal) ? totalSpendVal : 0) - targetSpend);
-
-    pctUnit = Math.abs(currentPrice) > 1e-15 ? ((targetPrice - currentPrice) / currentPrice) * 100 : 0;
-
-    tgtBarPct =
-      isFinite(totalSpendVal) && totalSpendVal > 0 && isFinite(targetSpend)
-        ? Math.min(100, Math.max(0, (targetSpend / totalSpendVal) * 100))
-        : isFinite(targetSpend) && targetSpend > 0 && !(totalSpendVal > 0)
-          ? 100
-          : 0;
-
-    volTxt = isFinite(totalQtyVal) && totalQtyVal > 0 ? fmtIntPlain(totalQtyVal) + " units" : "—";
+    return [];
+  }
+  /** True when URL has ?idpdiag=1 — logs harmonization detail / waterfall payloads to the console. */
+  function idpHarmDetailDiagEnabled() {
+    try {
+      return typeof location !== "undefined" && /[?&]idpdiag=1(?:&|$)/.test(location.search || "");
+    } catch (e) {
+      return false;
+    }
+  }
+  function idpHarmChartLabelsArray(chart) {
+    var lb;
+    if (!chart || chart.labels == null) return [];
+    lb = chart.labels;
+    return Array.isArray(lb) ? lb.slice() : [];
+  }
+  /**
+   * Parse supplier / site tranches from harmonization payload (no blending).
+   * Each row: spend ≈ quantity × unit_price; totals are taken from the payload rows when present.
+   */
+  function harmWaterfallParseAllocations(p, totalSpendVal, totalQtyVal, w) {
+    var rows = [],
+      i,
+      s,
+      q,
+      up,
+      sp,
+      sumS = 0,
+      sumQ = 0;
+    if (p && p.suppliers && p.suppliers.length) {
+      for (i = 0; i < p.suppliers.length; i++) {
+        s = p.suppliers[i] || {};
+        q = +(s.quantity != null ? s.quantity : s.qty != null ? s.qty : 0);
+        up = +(s.unit_price != null ? s.unit_price : NaN);
+        sp = +(s.spend != null ? s.spend : NaN);
+        if (!isFinite(q) || q <= 0) continue;
+        if (!isFinite(sp) && isFinite(up)) sp = q * up;
+        if (!isFinite(up) && isFinite(sp)) up = sp / q;
+        if (!isFinite(up) || !isFinite(sp)) continue;
+        rows.push({
+          site: s.site != null ? String(s.site) : "—",
+          supplier: s.supplier != null ? String(s.supplier) : "—",
+          qty: q,
+          unitPrice: up,
+          spend: sp
+        });
+        sumS += sp;
+        sumQ += q;
+      }
+    }
+    if (rows.length) return { rows: rows, sumSpend: sumS, sumQty: sumQ };
+    if (totalQtyVal > 0 && totalSpendVal > 0 && w && w.length) {
+      return {
+        rows: [
+          {
+            site: "—",
+            supplier: "All tranches (summary)",
+            qty: totalQtyVal,
+            unitPrice: totalSpendVal / totalQtyVal,
+            spend: totalSpendVal
+          }
+        ],
+        sumSpend: totalSpendVal,
+        sumQty: totalQtyVal
+      };
+    }
+    return { rows: [], sumSpend: 0, sumQty: 0 };
+  }
+  /**
+   * Benchmark = min(unit_price) across supplier rows in this opportunity (full numeric precision).
+   * Target spend = Σ quantity × benchmark. Net vs benchmark = currentSpend − targetSpend.
+   * Per-row delta = (benchmark − unitPrice) × quantity (negative when price is above benchmark).
+   */
+  function harmOpportunityBenchmarkAndSavings(p, totalSpendVal, totalQtyVal, wFallback) {
+    var alloc = harmWaterfallParseAllocations(p, totalSpendVal, totalQtyVal, wFallback || []);
+    var rows = alloc.rows,
+      benchmark = Infinity,
+      i,
+      lowIx = 0,
+      cur,
+      tq,
+      tgt,
+      sav,
+      labPart;
+    if (!rows.length) {
+      return {
+        rows: [],
+        benchmark: NaN,
+        currentSpend: 0,
+        totalQty: 0,
+        targetSpend: NaN,
+        savings: NaN,
+        lowIx: 0,
+        labMinLabel: ""
+      };
+    }
+    for (i = 0; i < rows.length; i++) {
+      if (isFinite(rows[i].unitPrice) && rows[i].unitPrice < benchmark) benchmark = rows[i].unitPrice;
+    }
+    if (!isFinite(benchmark)) {
+      return {
+        rows: rows,
+        benchmark: NaN,
+        currentSpend: alloc.sumSpend,
+        totalQty: alloc.sumQty,
+        targetSpend: NaN,
+        savings: NaN,
+        lowIx: 0,
+        labMinLabel: ""
+      };
+    }
+    for (i = 1; i < rows.length; i++) {
+      if (rows[i].unitPrice < rows[lowIx].unitPrice) lowIx = i;
+    }
+    cur = alloc.sumSpend > 0 ? alloc.sumSpend : +totalSpendVal;
+    if (!isFinite(cur)) cur = 0;
+    tq = alloc.sumQty > 0 ? alloc.sumQty : +totalQtyVal;
+    if (!isFinite(tq)) tq = 0;
+    tgt = tq * benchmark;
+    sav = cur - tgt;
+    labPart =
+      (rows[lowIx].supplier != null ? String(rows[lowIx].supplier) : "—") +
+      (rows[lowIx].site && String(rows[lowIx].site) !== "—" ? " @ " + String(rows[lowIx].site) : "");
+    return {
+      rows: rows,
+      benchmark: benchmark,
+      currentSpend: cur,
+      totalQty: tq,
+      targetSpend: tgt,
+      savings: sav,
+      lowIx: lowIx,
+      labMinLabel: labPart
+    };
+  }
+  /** Compact spend for in-bar labels (e.g. $853K). */
+  function fmtHarmSpendShort(n) {
+    if (n == null || !isFinite(n)) return "—";
+    n = +n;
+    var ax = Math.abs(n);
+    if (ax >= 1e6) return "$" + (n / 1e6).toFixed(1).replace(/\.0$/, "") + "M";
+    if (ax >= 1000) return "$" + Math.round(n / 1000) + "K";
+    return "$" + Math.round(n);
+  }
+  /** Compact quantity for in-bar labels (e.g. 102K units). */
+  function fmtHarmQtyShort(q) {
+    if (q == null || !isFinite(q)) return "—";
+    q = +q;
+    if (q >= 1e6) return (q / 1e6).toFixed(1).replace(/\.0$/, "") + "M units";
+    if (q >= 1000) return Math.round(q / 1000) + "K units";
+    return fmtIntPlain(q) + " units";
+  }
+  function harmNearBenchmarkUnit(up, benchmark) {
+    return isFinite(up) && isFinite(benchmark) && Math.abs(up - benchmark) <= 1e-4 * (1 + Math.abs(benchmark));
+  }
+  /** Chart title by MECE category (horizontal bar view). */
+  function harmHarmonizationBarCaption(catId) {
+    if (+catId === 2) return "Unit price ($/unit) — same part, different suppliers across plants";
+    if (+catId === 3) return "Unit price ($/unit) — same supplier, different sites";
+    return "Unit price ($/unit) — same part, multiple suppliers at this plant";
+  }
+  /** Bar primary label: Cat 1 = supplier only; Cat 2/3 = supplier — plant/site. */
+  function harmHarmonizationBarRowLabel(r, catId) {
+    var sup = (r.supplier != null ? String(r.supplier) : "").trim() || "—";
+    var site = r.site != null ? String(r.site).trim() : "";
+    if (!site || site === "—") return sup;
+    if (+catId === 1) return sup;
+    return sup + " — " + site;
+  }
+  /**
+   * All MECE categories: same horizontal unit-price bars (benchmark = min $/unit, orange; others navy).
+   */
+  function harmAppendHarmonizationUnitPriceBars(wrapEl, wfMeta, yYear, catId) {
+    var root,
+      cap,
+      i,
+      r,
+      rowsSorted,
+      pMax,
+      benchmark,
+      rowEl,
+      track,
+      bar,
+      inner,
+      nameEl,
+      badges,
+      pillQ,
+      pillS,
+      priceEl,
+      callout,
+      pctHi,
+      foot,
+      sp,
+      pctTxt,
+      tbl,
+      thead,
+      trHead,
+      trb,
+      th,
+      tb,
+      td,
+      rowSav,
+      hi;
+    rowsSorted = wfMeta.rows.slice().sort(function (a, b) {
+      return b.unitPrice - a.unitPrice;
+    });
+    pMax = 0;
+    for (i = 0; i < rowsSorted.length; i++) {
+      if (isFinite(rowsSorted[i].unitPrice) && rowsSorted[i].unitPrice > pMax) pMax = rowsSorted[i].unitPrice;
+    }
+    if (!(pMax > 0) || !isFinite(wfMeta.benchmark)) return;
+    benchmark = wfMeta.benchmark;
 
     root = document.createElement("div");
-    root.className = "idp-harm-waterfall mt-3 max-w-full overflow-x-auto rounded-lg border border-[#E6E6E6] bg-white";
-    root.setAttribute("data-idp-harm-waterfall", "1");
+    root.className = "idp-harm-c1-wrap mt-3";
 
-    cap = document.createElement("p");
-    cap.className = "m-0 border-b border-[#E6E6E6] bg-[#f8fafc] px-3 py-2 text-xs font-semibold text-[#333]";
-    cap.textContent = "Current vs target (same volume)";
+    cap = document.createElement("div");
+    cap.className = "idp-harm-c1-axis-cap";
+    cap.textContent = harmHarmonizationBarCaption(catId);
     root.appendChild(cap);
 
-    hdr = document.createElement("div");
-    hdr.className = "idp-harm-wf-grid border-b border-[#eee] px-3 py-2 text-[10px] font-semibold uppercase tracking-wide idp-muted";
-    ["", "Units", "$ / unit", "Total spend", "Savings"].forEach(function (h, hi) {
-      var c = document.createElement("div");
-      c.textContent = h;
-      if (hi >= 3) c.style.textAlign = "right";
-      hdr.appendChild(c);
+    for (i = 0; i < rowsSorted.length; i++) {
+      r = rowsSorted[i];
+      rowEl = document.createElement("div");
+      rowEl.className = "idp-harm-c1-row";
+      track = document.createElement("div");
+      track.className = "idp-harm-c1-track";
+      bar = document.createElement("div");
+      bar.className =
+        "idp-harm-c1-bar " + (harmNearBenchmarkUnit(r.unitPrice, benchmark) ? "idp-harm-c1-bar--bench" : "idp-harm-c1-bar--hi");
+      bar.style.width = Math.max(10, (100 * r.unitPrice) / pMax) + "%";
+      inner = document.createElement("div");
+      inner.className = "idp-harm-c1-bar-in";
+      nameEl = document.createElement("div");
+      nameEl.className = "idp-harm-c1-name";
+      nameEl.textContent = harmHarmonizationBarRowLabel(r, catId);
+      badges = document.createElement("div");
+      badges.className = "idp-harm-c1-badges";
+      pillQ = document.createElement("span");
+      pillQ.className = "idp-harm-c1-pill";
+      pillQ.textContent = fmtHarmQtyShort(r.qty);
+      pillS = document.createElement("span");
+      pillS.className = "idp-harm-c1-pill";
+      pillS.textContent = "Spend " + fmtHarmSpendShort(r.spend);
+      badges.appendChild(pillQ);
+      badges.appendChild(pillS);
+      inner.appendChild(nameEl);
+      inner.appendChild(badges);
+      bar.appendChild(inner);
+      track.appendChild(bar);
+      priceEl = document.createElement("div");
+      priceEl.className = "idp-harm-c1-price";
+      priceEl.textContent = fmtHarmBenchmarkPrice(r.unitPrice);
+      rowEl.appendChild(track);
+      rowEl.appendChild(priceEl);
+      root.appendChild(rowEl);
+    }
+
+    tbl = document.createElement("table");
+    tbl.className = "idp-harm-wf-alloc-table idp-harm-c1-detail-table";
+    thead = document.createElement("thead");
+    trHead = document.createElement("tr");
+    ["Plant / site", "Current supplier", "Quantity", "Unit price", "Tranche spend", "Benchmark $/unit", "Row savings vs benchmark"].forEach(function (h, hi2) {
+      th = document.createElement("th");
+      th.textContent = h;
+      if (hi2 >= 2) th.className = "idp-harm-wf-num";
+      trHead.appendChild(th);
     });
+    thead.appendChild(trHead);
+    tbl.appendChild(thead);
+    tb = document.createElement("tbody");
+    for (hi = 0; hi < rowsSorted.length; hi++) {
+      r = rowsSorted[hi];
+      trb = document.createElement("tr");
+      if (harmNearBenchmarkUnit(r.unitPrice, benchmark)) trb.className = "idp-harm-wf-lowest";
+      rowSav = (benchmark - r.unitPrice) * r.qty;
+      td = document.createElement("td");
+      td.textContent = r.site != null ? String(r.site) : "—";
+      trb.appendChild(td);
+      td = document.createElement("td");
+      td.textContent = r.supplier != null ? String(r.supplier) : "—";
+      trb.appendChild(td);
+      td = document.createElement("td");
+      td.className = "idp-harm-wf-num";
+      td.textContent = fmtIntPlain(r.qty);
+      trb.appendChild(td);
+      td = document.createElement("td");
+      td.className = "idp-harm-wf-num";
+      td.textContent = fmtHarmBenchmarkPrice(r.unitPrice);
+      trb.appendChild(td);
+      td = document.createElement("td");
+      td.className = "idp-harm-wf-num";
+      td.textContent = fmtOppUSD(Math.round(r.spend));
+      trb.appendChild(td);
+      td = document.createElement("td");
+      td.className = "idp-harm-wf-num";
+      td.textContent = fmtHarmBenchmarkPrice(benchmark);
+      trb.appendChild(td);
+      td = document.createElement("td");
+      td.className = "idp-harm-wf-num" + (rowSav < 0 ? " idp-harm-wf-sav-neg" : "");
+      td.textContent = fmtOppUSD(Math.round(rowSav));
+      trb.appendChild(td);
+      tb.appendChild(trb);
+    }
+    tbl.appendChild(tb);
+    root.appendChild(tbl);
 
-    rowCur = document.createElement("div");
-    rowCur.className = "idp-harm-wf-grid border-b border-[#f0f0f0] bg-[#fafbff] px-3 py-3 text-xs";
-    labCur = document.createElement("div");
-    labCur.className = "font-bold leading-tight text-[#1e3a8a]";
-    labCur.innerHTML = "Current<br/><span class='font-normal text-[10px] text-[#64748b]'>blended</span>";
-    uVol1 = document.createElement("div");
-    uVol1.className = "tabular-nums text-[#333]";
-    uVol1.textContent = volTxt;
-    uPc = document.createElement("div");
-    uPc.className = "tabular-nums text-[#333]";
-    uPc.textContent = isFinite(currentPrice) ? fmtHarmUnitPrice(currentPrice) : "—";
-    spendCurWrap = document.createElement("div");
-    spendCurWrap.className = "flex min-w-0 items-center gap-2";
-    trackCur = document.createElement("div");
-    trackCur.className = "relative h-8 min-w-[100px] flex-1 overflow-hidden rounded bg-[#e2e8f0]";
-    barCur = document.createElement("div");
-    barCur.className = "absolute left-0 top-0 h-full rounded";
-    barCur.style.width = isFinite(totalSpendVal) && totalSpendVal > 0 ? "100%" : "0%";
-    barCur.style.background = "linear-gradient(90deg,#1e3a8a 0%,#1d4ed8 100%)";
-    trackCur.appendChild(barCur);
-    uSp = document.createElement("span");
-    uSp.className = "shrink-0 text-xs font-semibold tabular-nums text-[#333]";
-    uSp.textContent = isFinite(totalSpendVal) ? fmtOppUSD(totalSpendVal) : "—";
-    spendCurWrap.appendChild(trackCur);
-    spendCurWrap.appendChild(uSp);
-    uSv = document.createElement("div");
-    uSv.style.textAlign = "right";
-    uSv.className = "text-xs idp-muted";
-    uSv.textContent = "—";
-    rowCur.appendChild(labCur);
-    rowCur.appendChild(uVol1);
-    rowCur.appendChild(uPc);
-    rowCur.appendChild(spendCurWrap);
-    rowCur.appendChild(uSv);
-
-    rowTgt = document.createElement("div");
-    rowTgt.className = "idp-harm-wf-grid px-3 py-3 text-xs";
-    labTgt = document.createElement("div");
-    labTgt.className = "font-bold leading-tight text-[#2563eb]";
-    labTgt.innerHTML = "Target<br/><span class='font-normal text-[10px] text-[#64748b]'>lowest price</span>";
-    uVol2 = document.createElement("div");
-    uVol2.className = "tabular-nums text-[#333]";
-    uVol2.textContent = volTxt;
-    priceTgtEl = document.createElement("div");
-    priceTgtEl.className = "flex flex-col gap-0.5";
-    priceTgtSpan = document.createElement("span");
-    priceTgtSpan.className = "tabular-nums font-semibold text-[#333]";
-    priceTgtSpan.textContent = isFinite(targetPrice) ? fmtHarmUnitPrice(targetPrice) : "—";
-    badge = document.createElement("span");
-    badge.className = "inline-block w-fit rounded bg-[#dbeafe] px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-[#1e40af]";
-    badge.textContent = (isFinite(pctUnit) ? (pctUnit >= 0 ? "+" : "") + pctUnit.toFixed(1) : "0") + "% vs blended";
-    priceTgtEl.appendChild(priceTgtSpan);
-    priceTgtEl.appendChild(badge);
-    spendTgtWrap = document.createElement("div");
-    spendTgtWrap.className = "flex min-w-0 items-center gap-2";
-    trackTgt = document.createElement("div");
-    trackTgt.className = "relative h-8 min-w-[100px] flex-1 overflow-hidden rounded bg-[#e0f2fe]";
-    barTgt = document.createElement("div");
-    barTgt.className = "absolute left-0 top-0 h-full rounded";
-    barTgt.style.width = (isFinite(tgtBarPct) ? tgtBarPct : 0) + "%";
-    barTgt.style.background = "linear-gradient(90deg,#7dd3fc 0%,#38bdf8 100%)";
-    barTgt.style.maxWidth = "100%";
-    trackTgt.appendChild(barTgt);
-    uSp = document.createElement("span");
-    uSp.className = "shrink-0 text-xs font-semibold tabular-nums text-[#333]";
-    uSp.textContent = isFinite(targetSpend) ? fmtOppUSD(targetSpend) : "—";
-    spendTgtWrap.appendChild(trackTgt);
-    spendTgtWrap.appendChild(uSp);
-    savCell = document.createElement("div");
-    savCell.style.textAlign = "right";
-    savCell.innerHTML =
-      "<span class='idp-harm-waterfall-savings-pill'>Save " +
-      (isFinite(savings) ? fmtOppUSD(savings) : "—") +
-      "</span>";
-    rowTgt.appendChild(labTgt);
-    rowTgt.appendChild(uVol2);
-    rowTgt.appendChild(priceTgtEl);
-    rowTgt.appendChild(spendTgtWrap);
-    rowTgt.appendChild(savCell);
-
-    scrollInner = document.createElement("div");
-    scrollInner.className = "min-w-[560px]";
-    scrollInner.appendChild(hdr);
-    scrollInner.appendChild(rowCur);
-    scrollInner.appendChild(rowTgt);
-    root.appendChild(scrollInner);
+    if (rowsSorted.length >= 2 && isFinite(benchmark) && pMax > benchmark + 1e-12) {
+      pctHi = ((pMax - benchmark) / pMax) * 100;
+      callout = document.createElement("div");
+      callout.className = "idp-harm-c1-callout";
+      sp = document.createElement("span");
+      sp.className = "idp-harm-c1-arrow";
+      sp.setAttribute("aria-hidden", "true");
+      sp.textContent = "↓";
+      pctTxt = document.createElement("span");
+      pctTxt.textContent =
+        "Cheapest unit price is " +
+        fmtHarmBenchmarkPrice(benchmark) +
+        " — up to " +
+        pctHi.toFixed(1) +
+        "% lower $/unit vs the highest-priced supplier in this slice.";
+      callout.appendChild(sp);
+      callout.appendChild(pctTxt);
+      root.appendChild(callout);
+    }
 
     foot = document.createElement("p");
-    foot.className = "m-0 border-t border-[#eee] bg-[#fafafa] px-3 py-2 text-[11px] leading-snug idp-muted";
-    foot.innerHTML =
-      "Opportunity uses lowest tranche price (" +
-      esc(labMin) +
-      "). Volume matches this opportunity (" +
-      esc(fmtIntPlain(totalQtyVal)) +
-      " units). Tranche prices from harmonization payload; filters include calendar year " +
-      esc(yYear != null && yYear !== "" ? String(yYear) : "selected") +
+    foot.className = "idp-harm-c1-foot";
+    foot.textContent =
+      "Row vs benchmark = (" +
+      fmtHarmBenchmarkPrice(benchmark) +
+      " − unit price) × quantity. Potential savings = current spend − (" +
+      fmtIntPlain(wfMeta.totalQty) +
+      " units × " +
+      fmtHarmBenchmarkPrice(benchmark) +
+      "). Calendar year: " +
+      (yYear != null && yYear !== "" ? String(yYear) : "selected") +
       ".";
     root.appendChild(foot);
 
@@ -5310,16 +5963,101 @@
   function harmUnifiedBuildDetailCell(td, mainTr, detailTr, p, catId, rowsSlice, yYear, canvasId) {
     td.innerHTML = "";
     var wrap = document.createElement("div");
-    wrap.style.cssText = "padding:16px;background:#fff;border-top:3px solid #1f3a8a;";
+    wrap.className = "idp-harm-detail-cell-wrap";
     var pk = harmHarmonizationPartKey(p);
-    var hdr = document.createElement("div");
-    hdr.style.cssText = "display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;";
-    var hdrLeft = document.createElement("div");
-    hdrLeft.style.cssText = "font-size:13px;font-weight:600;color:#333;";
+    var totalSpendVal = p.total_spend != null ? +p.total_spend : 0;
+    var kpiSav = harmSumExportSavings(p);
+    var totalQtyVal = 0;
+    var unitRaw,
+      labRaw,
+      w,
+      dlab,
+      ir,
+      pr,
+      lb,
+      s,
+      br,
+      fnL,
+      hdr,
+      hdrLeft,
+      closeBtn,
+      kpiGrid,
+      wfErr,
+      noWf;
+    if (p.suppliers) {
+      p.suppliers.forEach(function (sx) {
+        totalQtyVal += +(sx.quantity || sx.qty || 0);
+      });
+    }
+    unitRaw = idpHarmChartUnitPricesArray(p.chart);
+    labRaw = idpHarmChartLabelsArray(p.chart);
+    w = [];
+    dlab = [];
+    fnL = typeof formatLabel === "function" ? formatLabel : function (x) { return x == null ? "" : String(x); };
+    for (ir = 0; ir < unitRaw.length; ir++) {
+      pr = +unitRaw[ir];
+      if (!isFinite(pr)) continue;
+      w.push(pr);
+      lb = ir < labRaw.length ? labRaw[ir] : "";
+      try {
+        s = shortHarmLab(fnL(lb), 32);
+      } catch (eLab) {
+        s = "Tranche " + w.length;
+      }
+      br = s.indexOf("\n");
+      if (br >= 0) s = s.slice(0, br).trim();
+      if (!s) s = "Tranche " + w.length;
+      dlab.push(s);
+    }
+    if (idpHarmDetailDiagEnabled()) {
+      idpDiagLog(
+        "harm View details:",
+        "partKey",
+        pk,
+        "chart.unit_prices raw count",
+        unitRaw.length,
+        "finite tranches",
+        w.length,
+        "labels array",
+        Array.isArray(p.chart && p.chart.labels),
+        "suppliers",
+        p && p.suppliers ? p.suppliers.length : 0,
+        "total_spend",
+        totalSpendVal,
+        "total_qty_sum",
+        totalQtyVal
+      );
+    }
+    var wfMeta = harmOpportunityBenchmarkAndSavings(p, totalSpendVal, totalQtyVal, w);
+    var kpiSpendVal =
+      wfMeta.rows.length && isFinite(wfMeta.currentSpend) ? Math.round(wfMeta.currentSpend) : Math.round(totalSpendVal);
+    var kpiVolStr =
+      wfMeta.rows.length && isFinite(wfMeta.totalQty)
+        ? fmtIntPlain(wfMeta.totalQty) + " units"
+        : fmtIntPlain(totalQtyVal) + " units";
+    var kpiThirdLabel = "POTENTIAL SAVINGS";
+    var kpiSavDisplay, kpiSavColor, kpiSavSub;
+    if (isFinite(wfMeta.savings)) {
+      kpiSavDisplay = fmtOppUSD(Math.round(wfMeta.savings));
+      kpiSavColor =
+        wfMeta.savings > 0 ? "#F07F00" : wfMeta.savings < 0 ? "#b91c1c" : "#333";
+      kpiSavSub =
+        wfMeta.currentSpend > 0
+          ? ((100 * wfMeta.savings) / wfMeta.currentSpend).toFixed(1) + "% of current spend"
+          : "";
+    } else {
+      kpiSavDisplay = kpiSav != null ? fmtOppUSD(kpiSav) : "—";
+      kpiSavColor = "#F07F00";
+      kpiSavSub = "";
+    }
+    hdr = document.createElement("div");
+    hdr.className = "idp-harm-detail-hdr";
+    hdrLeft = document.createElement("div");
+    hdrLeft.className = "idp-harm-detail-title";
     hdrLeft.textContent = pk;
-    var closeBtn = document.createElement("button");
+    closeBtn = document.createElement("button");
     closeBtn.type = "button";
-    closeBtn.style.cssText = "border:1px solid #ccc;background:#fff;padding:4px 12px;border-radius:4px;font-size:12px;cursor:pointer;color:#333;";
+    closeBtn.className = "idp-harm-detail-close";
     closeBtn.textContent = "× Close";
     closeBtn.addEventListener("click", function (e) {
       e.stopPropagation();
@@ -5331,61 +6069,67 @@
     hdr.appendChild(hdrLeft);
     hdr.appendChild(closeBtn);
     wrap.appendChild(hdr);
-    var totalSpendVal = p.total_spend != null ? +p.total_spend : 0;
-    var kpiSav = harmSumExportSavings(p);
-    var totalQtyVal = 0;
-    if (p.suppliers) {
-      p.suppliers.forEach(function (s) {
-        totalQtyVal += +(s.quantity || s.qty || 0);
-      });
-    }
-    var kpiGrid = document.createElement("div");
-    kpiGrid.style.cssText = "display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:16px;";
+    kpiGrid = document.createElement("div");
+    kpiGrid.className = "idp-harm-detail-kpi-grid";
     [
-      { label: "SPEND", value: fmtOppUSD(totalSpendVal), color: "#333" },
-      { label: "VOLUME", value: fmtIntPlain(totalQtyVal) + " units", color: "#333" },
-      { label: "POTENTIAL SAVINGS", value: kpiSav != null ? fmtOppUSD(kpiSav) : "—", sub: "", color: "#F07F00" }
+      { label: "SPEND", value: fmtOppUSD(kpiSpendVal), color: "#333", sub: "" },
+      { label: "VOLUME", value: kpiVolStr, color: "#333", sub: "" },
+      { label: kpiThirdLabel, value: kpiSavDisplay, sub: kpiSavSub, color: kpiSavColor }
     ].forEach(function (card) {
       var c = document.createElement("div");
-      c.style.cssText = "border:1px solid #e6e6e6;border-radius:8px;padding:14px;";
+      c.className = "idp-harm-detail-kpi-card";
       c.innerHTML =
-        "<div style='font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:#8a8a8a;margin-bottom:6px;'>" +
-        card.label +
+        "<div class='idp-harm-detail-kpi-lbl'>" +
+        esc(card.label) +
         "</div>" +
-        "<div style='font-size:22px;font-weight:700;color:" +
-        card.color +
+        "<div class='idp-harm-detail-kpi-val' style='color:" +
+        esc(card.color) +
         ";'>" +
-        card.value +
+        esc(card.value) +
         "</div>" +
-        (card.sub ? "<div style='font-size:12px;color:#F07F00;margin-top:2px;'>" + esc(card.sub) + "</div>" : "");
+        (card.sub ? "<div class='idp-harm-detail-kpi-sub'>" + esc(card.sub) + "</div>" : "");
       kpiGrid.appendChild(c);
     });
     wrap.appendChild(kpiGrid);
-    var w = p.chart && p.chart.unit_prices ? p.chart.unit_prices.map(function (u) { return +u; }) : [];
-    var dlab =
-      p.chart && p.chart.labels
-        ? p.chart.labels.map(function (L) {
-            var s = shortHarmLab(formatLabel(L), 32);
-            var br = s.indexOf("\n");
-            if (br >= 0) s = s.slice(0, br).trim();
-            return s;
-          })
-        : [];
-    if (w.length >= 1) {
+    if (wfMeta.rows.length >= 1 && isFinite(wfMeta.benchmark)) {
       harmUnifiedDestroyCanvasChart(document.getElementById(canvasId));
       try {
-        harmAppendWaterfallComparison(wrap, p, w, dlab, totalQtyVal, totalSpendVal, yYear);
+        harmAppendHarmonizationUnitPriceBars(wrap, wfMeta, yYear, catId);
       } catch (eWf) {
-        if (typeof console !== "undefined" && console.error) console.error("[harm] waterfall comparison failed:", eWf);
-        var wfErr = document.createElement("p");
+        if (typeof console !== "undefined" && console.error) {
+          console.error("[harm] harmonization detail chart failed:", eWf && eWf.message ? eWf.message : eWf, eWf);
+        }
+        if (idpHarmDetailDiagEnabled() && eWf && eWf.stack) {
+          console.error("[harm] harmonization chart stack:", eWf.stack);
+        }
+        if (idpHarmDetailDiagEnabled()) {
+          idpDiagLog("harm harmonization chart payload snapshot", {
+            partKey: pk,
+            harm_mece: p && p.harm_mece,
+            item: p && p.item,
+            unit_prices_sample: unitRaw.slice(0, 16),
+            w_len: w.length,
+            dlab_len: dlab.length,
+            suppliers_len: p && p.suppliers ? p.suppliers.length : 0,
+            benchmark: wfMeta.benchmark,
+            rows_len: wfMeta.rows.length
+          });
+        }
+        wfErr = document.createElement("p");
         wfErr.className = "mt-2 text-xs text-amber-800";
-        wfErr.textContent = "Could not build comparison view for this opportunity.";
+        wfErr.textContent =
+          "Could not build harmonization chart for this opportunity." +
+          (idpHarmDetailDiagEnabled() && eWf && eWf.message ? " (" + eWf.message + ")" : "");
         wrap.appendChild(wfErr);
       }
     } else {
-      var noWf = document.createElement("p");
+      noWf = document.createElement("p");
       noWf.className = "mt-2 text-xs idp-muted";
-      noWf.textContent = "No unit price breakdown (chart.unit_prices) in harmonization payload for this opportunity.";
+      noWf.textContent =
+        "No supplier rows with unit prices for this opportunity, so the comparison chart cannot be built. " +
+        (idpHarmDetailDiagEnabled()
+          ? "supplier count " + (p && p.suppliers ? p.suppliers.length : 0) + ", chart tranches " + w.length + "."
+          : "Open with ?idpdiag=1 for console details.");
       wrap.appendChild(noWf);
     }
     td.appendChild(wrap);
@@ -5725,7 +6469,7 @@
     var harmKind = opts.harmKind, tableKey = opts.tableKey;
     var secInner, pdesc, wrapScroll, tbl2, thead2, trh, th2, tb2, labels, i, li, p, td;
     var catIdNum, sumCatSav, si, colSpan, harmMoreBtnWrap;
-    var kpiShell, kpiToggle, kpiBody, cardsSectionId, displayTitle, svgC, pathC;
+    var kpiShell, kpiToggle, kpiBody, cardsSectionId, svgC, pathC;
     harmMoreBtnWrap = null;
     sumCatSav = 0;
     if (opps && opps.length) {
@@ -5998,11 +6742,11 @@
     if (harmMoreBtnWrap) secInner.appendChild(harmMoreBtnWrap);
     (function () {
       var collapseSectionId = harmKind === 1 ? "category-1" : harmKind === 2 ? "category-2" : "category-3";
-      displayTitle = title + " [" + fmtOppUSD(sumCatSav) + " opportunity]";
       var wrapped = harmBuildCollapsibleSection(collapseSectionId, {
-        title: displayTitle,
+        title: title,
         subtitle: "",
-        variant: "category"
+        variant: "category",
+        headerRight: isFinite(sumCatSav) ? fmtOppUSD(sumCatSav) + " savings" : "—"
       }, secInner);
       wrapped.classList.add("harmonization-section");
       fGrid.appendChild(wrapped);
@@ -6760,7 +7504,7 @@
             { label: "Indirect", data: vI, backgroundColor: C_INDIRECT, borderWidth: 0, borderRadius: 3, stack: "a" }
           ]
         },
-        options: chartOptsOverviewHorizontalStackedM(true)
+        options: chartOptsOverviewHorizontalStackedM(true, { datalabels: { display: false } })
       });
     } catch (err) {
       if (typeof console !== "undefined" && console.error) console.error("Regionalized spend rendering failed:", err);
@@ -6872,7 +7616,7 @@
           { label: "Indirect", data: tlab2, backgroundColor: C_INDIRECT, borderWidth: 0, borderRadius: 3, stack: "a" }
         ]
       },
-      options: chartOptsOverviewHorizontalStackedM(true)
+      options: chartOptsOverviewHorizontalStackedM(true, { datalabels: { display: false } })
     });
     if (tb) {
       for (i = 0; i < supL.length; i++) {
@@ -7052,6 +7796,7 @@
   SECTION: DASHBOARD DIAGNOSTICS (manual / ?idpdiag=1)
   Purpose: Structure checks aligned with this file — Chart.js, data.json, real DOM ids.
   Console: runCompleteDiagnostics()  |  URL: ?idpdiag=1 after load
+  Harmonization: with ?idpdiag=1, each "View details" logs chart/supplier payload via idpDiagLog (see harmUnifiedBuildDetailCell).
   ============================================ */
 
   function idpDiagLog() {
@@ -7216,6 +7961,10 @@
           ok = false;
           idpDiagLog("nav maps to missing view-index-analysis");
         }
+        if (v === "price-explanation" && !$("view-price-explanation")) {
+          ok = false;
+          idpDiagLog("nav maps to missing view-price-explanation");
+        }
       });
     } catch (e) {
       ok = false;
@@ -7298,7 +8047,7 @@
       console.table(results);
     } catch (eT) {}
     idpDiagLog("======== end diagnostics ========");
-    idpDiagLog("Tip: append ?idpdiag=1 to URL to auto-run after first load.");
+    idpDiagLog("Tip: append ?idpdiag=1 to URL to auto-run after first load. With that flag, open Harmonization → View details to log unit_prices / labels / suppliers for the comparison waterfall.");
     return results;
   }
 
@@ -8065,10 +8814,912 @@
     });
   }
 
+  var PE_SUPPLIER_COLORS = ["#FF8C00", "#1E3A8A", "#7C3AED", "#059669", "#DC2626", "#CA8A04", "#0891B2", "#DB2777"];
+  function idpPeDestroyCharts() {
+    destroyCh("pePrice");
+    destroyCh("peVol");
+  }
+  function idpPeRowQty(ix) {
+    var q = +(D.qty && D.qty[ix] != null ? D.qty[ix] : 0);
+    return q > 0 && isFinite(q) ? q : 0;
+  }
+  function idpPeRowUnitPrice(ix) {
+    var q = idpPeRowQty(ix),
+      sp = +(D.spend && D.spend[ix] != null ? D.spend[ix] : 0),
+      p;
+    if (q > 0 && isFinite(sp) && sp > 0) return sp / q;
+    p = +(D.price && D.price[ix] != null ? D.price[ix] : NaN);
+    return isFinite(p) && p > 0 ? p : NaN;
+  }
+  function idpPeRowDesc(ix) {
+    var r = D.rows && D.rows[ix];
+    if (!r) return "";
+    return String(r.noun || r.material || r.cname || "").trim();
+  }
+  function idpPeRowOk(ix, partIx) {
+    if (D.iPart[ix] !== partIx) return false;
+    if (!rowOk(ix)) return false;
+    if (idpPeRowQty(ix) <= 0) return false;
+    if (!isFinite(idpPeRowUnitPrice(ix))) return false;
+    return true;
+  }
+  function idpPeCollectSuggestions(query, lim) {
+    var idx, seen, out, i, ix, pix, ps, lw, dl;
+    readFiltersFromForm();
+    idx = getFiltered();
+    seen = {};
+    out = [];
+    lw = (query + "").trim().toLowerCase();
+    lim = lim || 48;
+    if (lw.length < 2) return out;
+    for (i = 0; i < idx.length && out.length < lim; i++) {
+      ix = idx[i];
+      pix = D.iPart[ix];
+      if (pix == null || seen[pix]) continue;
+      ps = dicts.part[pix] != null ? String(dicts.part[pix]).trim() : "";
+      if (!ps) continue;
+      dl = idpPeRowDesc(ix).toLowerCase();
+      if (ps.toLowerCase().indexOf(lw) < 0 && dl.indexOf(lw) < 0) continue;
+      seen[pix] = 1;
+      out.push({ partIx: pix, part: ps, desc: idpPeRowDesc(ix) || "—" });
+    }
+    return out;
+  }
+  function idpPeRenderSuggestDropdown(query) {
+    var list = $("pe-part-suggest"),
+      inp = $("pe-part-input"),
+      hid = $("pe-part-ix"),
+      arr,
+      i,
+      b,
+      row;
+    if (!list || !inp) return;
+    list.innerHTML = "";
+    if (hid) hid.value = "";
+    arr = idpPeCollectSuggestions(query, 50);
+    if ((query + "").trim().length < 2) {
+      list.classList.add("hidden");
+      list.setAttribute("hidden", "hidden");
+      inp.setAttribute("aria-expanded", "false");
+      return;
+    }
+    if (!arr.length) {
+      b = document.createElement("p");
+      b.className = "m-0 px-3 py-2 text-sm idp-muted";
+      b.textContent = "No matching parts in the current filters.";
+      list.appendChild(b);
+      list.classList.remove("hidden");
+      list.removeAttribute("hidden");
+      inp.setAttribute("aria-expanded", "true");
+      return;
+    }
+    for (i = 0; i < arr.length; i++) {
+      row = arr[i];
+      b = document.createElement("button");
+      b.type = "button";
+      b.setAttribute("role", "option");
+      b.innerHTML =
+        "<span class=\"font-medium\">" +
+        esc(row.part) +
+        "</span><span class=\"idp-muted\"> — " +
+        esc(row.desc.length > 64 ? row.desc.slice(0, 62) + "…" : row.desc) +
+        "</span>";
+      (function (pick) {
+        b.addEventListener("click", function (ev) {
+          ev.preventDefault();
+          inp.value = pick.part + " — " + (pick.desc.length > 80 ? pick.desc.slice(0, 78) + "…" : pick.desc);
+          if (hid) hid.value = String(pick.partIx);
+          list.classList.add("hidden");
+          list.setAttribute("hidden", "hidden");
+          inp.setAttribute("aria-expanded", "false");
+        });
+      })(row);
+      list.appendChild(b);
+    }
+    list.classList.remove("hidden");
+    list.removeAttribute("hidden");
+    inp.setAttribute("aria-expanded", "true");
+  }
+  function idpPeResolvePartIx() {
+    var hid = $("pe-part-ix"),
+      raw,
+      pix,
+      idx,
+      i,
+      ix,
+      p,
+      low;
+    if (hid && hid.value) {
+      pix = +hid.value;
+      if (isFinite(pix) && pix > 0) return pix;
+    }
+    raw = ($("pe-part-input") && $("pe-part-input").value ? $("pe-part-input").value : "").trim();
+    low = raw.split("—")[0].trim().toLowerCase();
+    if (!low) return NaN;
+    idx = getFiltered();
+    for (i = 0; i < idx.length; i++) {
+      ix = idx[i];
+      p = dicts.part[D.iPart[ix]];
+      if (p && String(p).trim().toLowerCase() === low) return D.iPart[ix];
+    }
+    return NaN;
+  }
+  function idpPeApplyLast12Months() {
+    var mx, r0;
+    syncSliceFromD();
+    mx = Math.max(0, sortedYms.length - 1);
+    r0 = Math.max(0, mx - 11);
+    fState.r0 = r0;
+    fState.r1 = mx;
+    fState.timeMode = "custom";
+    if ($("f-ym0")) $("f-ym0").value = String(r0);
+    if ($("f-ym1")) $("f-ym1").value = String(mx);
+    markTimeQuick();
+    updateFilterButtonLabels();
+    if (typeof withLoad === "function") {
+      withLoad(function () {
+        try {
+          runWithCharts();
+        } catch (eL12) {
+          if (typeof console !== "undefined" && console.error) console.error(eL12);
+        }
+      });
+    } else {
+      idpPeRefreshIfActive();
+    }
+  }
+  function idpPeAggregate(partIx) {
+    var ranks = [],
+      ymR,
+      bySup = {},
+      idx,
+      i,
+      ix,
+      sup,
+      rnk,
+      qty,
+      sp,
+      pairs,
+      rk2,
+      labels;
+    for (ymR = fState.r0; ymR <= fState.r1; ymR++) ranks.push(ymR);
+    labels = ranks.map(function (rk) {
+      return fmtYm(sortedYms[rk]) || sortedYms[rk] || "—";
+    });
+    idx = getFiltered();
+    for (i = 0; i < idx.length; i++) {
+      ix = idx[i];
+      if (!idpPeRowOk(ix, partIx)) continue;
+      rnk = ymStrRank.get(dicts.ym[D.iYm[ix]]);
+      if (rnk == null || rnk < fState.r0 || rnk > fState.r1) continue;
+      sup = formatLabel(dicts.supplier[D.iSu[ix]] || "—");
+      if (!bySup[sup]) bySup[sup] = {};
+      if (!bySup[sup][rnk]) bySup[sup][rnk] = { qty: 0, spend: 0 };
+      qty = idpPeRowQty(ix);
+      sp = +(D.spend[ix] != null ? D.spend[ix] : 0);
+      if (!isFinite(sp) || sp <= 0) sp = qty * idpPeRowUnitPrice(ix);
+      bySup[sup][rnk].qty += qty;
+      bySup[sup][rnk].spend += sp;
+    }
+    pairs = Object.keys(bySup).map(function (name) {
+      var totQ = 0;
+      for (rk2 = fState.r0; rk2 <= fState.r1; rk2++) {
+        if (bySup[name][rk2]) totQ += bySup[name][rk2].qty;
+      }
+      return { name: name, totQ: totQ };
+    });
+    pairs.sort(function (x, y) {
+      return y.totQ - x.totQ;
+    });
+    return { ranks: ranks, labels: labels, bySup: bySup, suppliers: pairs.map(function (p) { return p.name; }) };
+  }
+  function idpPePartDisplayLabel(partIx) {
+    return dicts.part && dicts.part[partIx] != null ? String(dicts.part[partIx]).trim() : "—";
+  }
+  function idpPeChipDesc(partIx) {
+    var idx = getFiltered(),
+      i,
+      ix,
+      d;
+    for (i = 0; i < idx.length; i++) {
+      ix = idx[i];
+      if (D.iPart[ix] !== partIx) continue;
+      if (!rowOk(ix)) continue;
+      d = idpPeRowDesc(ix);
+      if (d) return d;
+    }
+    return "—";
+  }
+  function idpPeRenderAnalyzingList() {
+    var wrap = $("pe-analyzing-wrap"),
+      list = $("pe-analyzing-list"),
+      arr,
+      i,
+      pix,
+      pl,
+      desc,
+      row,
+      btn;
+    if (!wrap || !list) return;
+    arr = _idpPeSelectedPartIxs || [];
+    if (!arr.length) {
+      wrap.classList.add("hidden");
+      wrap.setAttribute("hidden", "hidden");
+      list.innerHTML = "";
+      return;
+    }
+    wrap.classList.remove("hidden");
+    wrap.removeAttribute("hidden");
+    wrap.classList.remove("pe-analyzing-empty");
+    list.innerHTML = "";
+    for (i = 0; i < arr.length; i++) {
+      pix = arr[i];
+      pl = idpPePartDisplayLabel(pix);
+      desc = idpPeChipDesc(pix);
+      row = document.createElement("div");
+      row.className = "pe-analyzing-chip";
+      row.innerHTML =
+        '<span class="pe-analyzing-chip-text"><strong>Part ' +
+        esc(pl) +
+        "</strong> — " +
+        esc(desc) +
+        '</span><button type="button" class="pe-analyzing-remove" data-pe-remove="' +
+        String(pix) +
+        '" aria-label="Remove part ' +
+        esc(pl) +
+        ' from analysis">×</button>';
+      list.appendChild(row);
+    }
+  }
+  function idpPeRemovePartFromAnalysis(partIx) {
+    var arr = _idpPeSelectedPartIxs || [],
+      j,
+      next = [];
+    for (j = 0; j < arr.length; j++) {
+      if (arr[j] !== partIx) next.push(arr[j]);
+    }
+    _idpPeSelectedPartIxs = next;
+    idpPeRenderAnalyzingList();
+    idpPeRunCharts();
+  }
+  function idpPeAggregateMergedBySupplier(partIxs) {
+    var ranks = [],
+      ymR,
+      bySup = {},
+      idx,
+      i,
+      ix,
+      pix,
+      rnk,
+      qty,
+      sp,
+      sup,
+      pairs,
+      rk2,
+      labels;
+    for (ymR = fState.r0; ymR <= fState.r1; ymR++) ranks.push(ymR);
+    labels = ranks.map(function (rk) {
+      return fmtYm(sortedYms[rk]) || sortedYms[rk] || "—";
+    });
+    idx = getFiltered();
+    for (i = 0; i < idx.length; i++) {
+      ix = idx[i];
+      pix = D.iPart[ix];
+      if (partIxs.indexOf(pix) < 0) continue;
+      if (!idpPeRowOk(ix, pix)) continue;
+      rnk = ymStrRank.get(dicts.ym[D.iYm[ix]]);
+      if (rnk == null || rnk < fState.r0 || rnk > fState.r1) continue;
+      sup = formatLabel(dicts.supplier[D.iSu[ix]] || "—");
+      if (!bySup[sup]) bySup[sup] = {};
+      if (!bySup[sup][rnk]) bySup[sup][rnk] = { qty: 0, spend: 0 };
+      qty = idpPeRowQty(ix);
+      sp = +(D.spend[ix] != null ? D.spend[ix] : 0);
+      if (!isFinite(sp) || sp <= 0) sp = qty * idpPeRowUnitPrice(ix);
+      bySup[sup][rnk].qty += qty;
+      bySup[sup][rnk].spend += sp;
+    }
+    pairs = Object.keys(bySup).map(function (name) {
+      var totQ = 0;
+      for (rk2 = fState.r0; rk2 <= fState.r1; rk2++) {
+        if (bySup[name][rk2]) totQ += bySup[name][rk2].qty;
+      }
+      return { name: name, totQ: totQ };
+    });
+    pairs.sort(function (x, y) {
+      return y.totQ - x.totQ;
+    });
+    return { ranks: ranks, labels: labels, bySup: bySup, suppliers: pairs.map(function (p) { return p.name; }) };
+  }
+  function idpPeBuildMultiPartSeries(partIxs) {
+    var colors = PE_SUPPLIER_COLORS,
+      labels,
+      ranks,
+      pi,
+      partIx,
+      agg,
+      priceDs = [],
+      volDs = [],
+      si = 0,
+      supIdx,
+      sname,
+      pri,
+      vol,
+      idx0,
+      rk,
+      cell,
+      wpu,
+      partLabel,
+      leg,
+      c;
+    if (!partIxs || !partIxs.length) return null;
+    agg = idpPeAggregate(partIxs[0]);
+    labels = agg.labels;
+    ranks = agg.ranks;
+    for (pi = 0; pi < partIxs.length; pi++) {
+      partIx = partIxs[pi];
+      if (!isFinite(partIx) || partIx <= 0) continue;
+      agg = idpPeAggregate(partIx);
+      if (!agg.suppliers.length) continue;
+      partLabel = idpPePartDisplayLabel(partIx);
+      for (supIdx = 0; supIdx < agg.suppliers.length; supIdx++) {
+        sname = agg.suppliers[supIdx];
+        pri = [];
+        vol = [];
+        for (idx0 = 0; idx0 < ranks.length; idx0++) {
+          rk = ranks[idx0];
+          cell = agg.bySup[sname] && agg.bySup[sname][rk];
+          if (cell && cell.qty > 0) {
+            wpu = cell.spend / cell.qty;
+            pri.push(isFinite(wpu) ? wpu : null);
+            vol.push(cell.qty);
+          } else {
+            pri.push(null);
+            vol.push(0);
+          }
+        }
+        leg = "Part " + partLabel + " - " + sname;
+        c = colors[si % colors.length];
+        si++;
+        priceDs.push({
+          label: leg,
+          data: pri,
+          borderColor: c,
+          backgroundColor: c,
+          tension: 0.2,
+          spanGaps: false,
+          pointRadius: 3,
+          pointHoverRadius: 5,
+          borderWidth: 2,
+          fill: false,
+          _pePartIx: partIx,
+          _peSupplier: sname
+        });
+        volDs.push({
+          label: leg,
+          data: vol,
+          backgroundColor: c,
+          borderRadius: 2,
+          stack: "v",
+          borderWidth: 0,
+          _pePartIx: partIx,
+          _peSupplier: sname
+        });
+      }
+    }
+    if (!priceDs.length) return null;
+    return { labels: labels, ranks: ranks, priceDatasets: priceDs, volDatasets: volDs };
+  }
+  function idpPeRunCharts() {
+    var partIxs = [],
+      j,
+      pix0,
+      aggMerged,
+      agg,
+      series,
+      elP,
+      elV,
+      errEl,
+      warnEl,
+      hintEl,
+      metricsEl,
+      monthSpan,
+      totSpend,
+      totQty,
+      supShares,
+      bestVolSup,
+      bestVol,
+      sumQ,
+      moIdx,
+      rk,
+      cell,
+      activeSuppliers,
+      totMo,
+      singleMo,
+      divMo,
+      divCount,
+      divParts,
+      priceLines,
+      si2,
+      sname2,
+      pricesArr,
+      minP,
+      maxP,
+      volPct,
+      stabSup,
+      stabPct,
+      wAvg,
+      ulP,
+      ulV,
+      idx,
+      i,
+      ix,
+      rk2,
+      sup,
+      iv,
+      ds,
+      multi,
+      nParts,
+      v;
+    readFiltersFromForm();
+    errEl = $("pe-error-msg");
+    warnEl = $("pe-warn-msg");
+    hintEl = $("pe-empty-hint");
+    metricsEl = $("pe-vol-metrics");
+    ulP = $("pe-insights-price");
+    ulV = $("pe-insights-vol");
+    if (errEl) {
+      errEl.classList.add("hidden");
+      errEl.textContent = "";
+    }
+    if (warnEl) {
+      warnEl.classList.add("hidden");
+      warnEl.textContent = "";
+    }
+    if (_idpPeSelectedPartIxs && _idpPeSelectedPartIxs.length) {
+      for (j = 0; j < _idpPeSelectedPartIxs.length; j++) {
+        pix0 = _idpPeSelectedPartIxs[j];
+        if (isFinite(pix0) && pix0 > 0) partIxs.push(pix0);
+      }
+    }
+    if (!partIxs.length) {
+      idpPeDestroyCharts();
+      if (hintEl) {
+        hintEl.classList.remove("hidden");
+        hintEl.textContent = "Add a part number above to view price and volume analysis.";
+      }
+      if ($("pe-title-price")) $("pe-title-price").textContent = "Unit Price by Supplier";
+      if ($("pe-title-volume")) $("pe-title-volume").textContent = "Volume Mix by Supplier";
+      if (metricsEl) metricsEl.innerHTML = "";
+      if (ulP) ulP.innerHTML = "";
+      if (ulV) ulV.innerHTML = "";
+      return;
+    }
+    if (hintEl) {
+      hintEl.classList.add("hidden");
+      hintEl.textContent = "Add a part number above to view price and volume analysis.";
+    }
+    multi = partIxs.length > 1;
+    nParts = partIxs.length;
+    if ($("pe-title-price"))
+      $("pe-title-price").textContent = multi ? "Unit Price by Supplier (" + nParts + " parts)" : "Unit Price by Supplier — Part " + idpPePartDisplayLabel(partIxs[0]);
+    if ($("pe-title-volume"))
+      $("pe-title-volume").textContent = multi ? "Volume Mix by Supplier (" + nParts + " parts)" : "Volume Mix by Supplier — Part " + idpPePartDisplayLabel(partIxs[0]);
+    series = idpPeBuildMultiPartSeries(partIxs);
+    if (!series || !series.priceDatasets.length) {
+      idpPeDestroyCharts();
+      if (errEl) {
+        errEl.textContent = "No data found for the selected part(s) in this period and filters.";
+        errEl.classList.remove("hidden");
+      }
+      if (metricsEl) metricsEl.innerHTML = "";
+      if (ulP) ulP.innerHTML = "";
+      if (ulV) ulV.innerHTML = "";
+      return;
+    }
+    aggMerged = idpPeAggregateMergedBySupplier(partIxs);
+    monthSpan = fState.r1 - fState.r0 + 1;
+    if (monthSpan < 3 && warnEl) {
+      warnEl.textContent = "Limited data available: fewer than three months in the selected period.";
+      warnEl.classList.remove("hidden");
+    }
+    elP = $("pe-ch-price");
+    elV = $("pe-ch-volume");
+    idpPeDestroyCharts();
+    if (elP && series.priceDatasets.length) {
+      charts.pePrice = new Chart(elP, {
+        type: "line",
+        data: { labels: series.labels, datasets: series.priceDatasets },
+        options: {
+          maintainAspectRatio: false,
+          interaction: { mode: "index", intersect: false },
+          plugins: {
+            legend: { position: "bottom", labels: chartLegendD() },
+            datalabels: { display: false },
+            tooltip: Object.assign({}, chartTt(), {
+              callbacks: {
+                title: function (items) {
+                  var di0 = items && items[0] ? items[0].dataIndex : 0;
+                  return series.labels[di0] != null ? String(series.labels[di0]) : "";
+                },
+                label: function (ctx) {
+                  var pv = ctx.parsed && ctx.parsed.y != null ? ctx.parsed.y : null;
+                  var dix = ctx.dataIndex,
+                    rk = series.ranks[dix],
+                    sumQ = 0,
+                    jj,
+                    ix2,
+                    fIdx,
+                    dset = ctx.dataset || {},
+                    pIxL = dset._pePartIx,
+                    supL = dset._peSupplier;
+                  if (pv == null || !isFinite(pv)) return (ctx.dataset && ctx.dataset.label ? ctx.dataset.label + ": " : "") + "—";
+                  if (pIxL == null || !supL) return (ctx.dataset && ctx.dataset.label ? ctx.dataset.label + ": " : "") + "—";
+                  fIdx = getFiltered();
+                  for (jj = 0; jj < fIdx.length; jj++) {
+                    ix2 = fIdx[jj];
+                    if (!idpPeRowOk(ix2, pIxL)) continue;
+                    if (ymStrRank.get(dicts.ym[D.iYm[ix2]]) !== rk) continue;
+                    if (formatLabel(dicts.supplier[D.iSu[ix2]] || "—") !== supL) continue;
+                    sumQ += idpPeRowQty(ix2);
+                  }
+                  return (
+                    (ctx.dataset && ctx.dataset.label ? ctx.dataset.label + ": " : "") +
+                    "$" +
+                    pv.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 4 }) +
+                    "/unit · " +
+                    fmtIntPlain(sumQ) +
+                    " units (month)"
+                  );
+                }
+              }
+            })
+          },
+          scales: {
+            x: { ticks: { color: "#8A8A8A", maxRotation: 45, font: { size: CHART_FS_TICK } }, grid: { color: "rgba(138,138,138,0.2)" } },
+            y: {
+              beginAtZero: false,
+              title: { display: true, text: "$/unit", color: "#8A8A8A", font: { size: CHART_FS_TITLE, weight: "500" } },
+              ticks: {
+                color: "#8A8A8A",
+                font: { size: CHART_FS_TICK },
+                callback: function (v) {
+                  return typeof v === "number" && isFinite(v) ? "$" + v.toFixed(2) : v;
+                }
+              },
+              grid: { color: "rgba(138,138,138,0.25)" }
+            }
+          }
+        }
+      });
+    }
+    if (elV && series.volDatasets.length) {
+      charts.peVol = new Chart(elV, {
+        type: "bar",
+        data: { labels: series.labels, datasets: series.volDatasets },
+        options: {
+          maintainAspectRatio: false,
+          interaction: { mode: "index", intersect: false },
+          plugins: {
+            legend: { position: "bottom", labels: chartLegendD() },
+            datalabels: { display: false },
+            tooltip: Object.assign({}, chartTt(), {
+              callbacks: {
+                title: function (items) {
+                  var tdi = items && items[0] ? items[0].dataIndex : 0;
+                  var ml = series.labels[tdi] != null ? String(series.labels[tdi]) : "";
+                  return ml ? "Month: " + ml : "";
+                },
+                footer: function (items) {
+                  var sum = 0,
+                    k;
+                  if (!items || !items.length) return "";
+                  for (k = 0; k < items.length; k++) sum += +(items[k].parsed && items[k].parsed.y != null ? items[k].parsed.y : 0);
+                  return "Total volume: " + fmtIntPlain(sum) + " units";
+                },
+                label: function (ctx) {
+                  var y = ctx.parsed && ctx.parsed.y != null ? ctx.parsed.y : 0,
+                    di2 = ctx.dataIndex,
+                    sum = 0,
+                    kk,
+                    pct,
+                    partL,
+                    dset2 = ctx.dataset || {},
+                    pIx2 = dset2._pePartIx,
+                    supL2 = dset2._peSupplier;
+                  partL = pIx2 != null ? idpPePartDisplayLabel(pIx2) : "—";
+                  if (!ctx.chart || !ctx.chart.data || !ctx.chart.data.datasets) return "";
+                  for (kk = 0; kk < ctx.chart.data.datasets.length; kk++) {
+                    sum += +(ctx.chart.data.datasets[kk].data[di2] != null ? ctx.chart.data.datasets[kk].data[di2] : 0);
+                  }
+                  pct = sum > 0 ? (100 * y) / sum : 0;
+                  return (
+                    "Part " +
+                    partL +
+                    " · " +
+                    (supL2 || "—") +
+                    ": " +
+                    fmtIntPlain(y) +
+                    " units (" +
+                    pct.toFixed(1) +
+                    "% of month)"
+                  );
+                }
+              }
+            })
+          },
+          scales: {
+            x: { stacked: true, ticks: { color: "#8A8A8A", maxRotation: 45, font: { size: CHART_FS_TICK } }, grid: { display: false } },
+            y: {
+              stacked: true,
+              beginAtZero: true,
+              title: { display: true, text: "Units", color: "#8A8A8A", font: { size: CHART_FS_TITLE, weight: "500" } },
+              ticks: { color: "#8A8A8A", font: { size: CHART_FS_TICK }, callback: function (v) { return fmtIntPlain(v); } },
+              grid: { color: "rgba(138,138,138,0.25)" }
+            }
+          }
+        }
+      });
+    }
+    agg = aggMerged;
+    totSpend = 0;
+    totQty = 0;
+    supShares = {};
+    singleMo = 0;
+    divCount = 0;
+    divMo = null;
+    divParts = [];
+    for (moIdx = 0; moIdx < agg.ranks.length; moIdx++) {
+      rk = agg.ranks[moIdx];
+      activeSuppliers = 0;
+      totMo = 0;
+      for (si2 = 0; si2 < agg.suppliers.length; si2++) {
+        sname2 = agg.suppliers[si2];
+        cell = agg.bySup[sname2] && agg.bySup[sname2][rk];
+        if (cell && cell.qty > 0) {
+          activeSuppliers++;
+          totMo += cell.qty;
+        }
+      }
+      if (activeSuppliers === 1) singleMo++;
+      if (activeSuppliers > divCount) {
+        divCount = activeSuppliers;
+        divMo = rk;
+        divParts = [];
+        for (si2 = 0; si2 < agg.suppliers.length; si2++) {
+          sname2 = agg.suppliers[si2];
+          cell = agg.bySup[sname2] && agg.bySup[sname2][rk];
+          if (cell && cell.qty > 0 && totMo > 0) divParts.push({ n: sname2, pct: (100 * cell.qty) / totMo });
+        }
+      }
+    }
+    for (si2 = 0; si2 < agg.suppliers.length; si2++) {
+      sname2 = agg.suppliers[si2];
+      sumQ = 0;
+      for (rk2 = fState.r0; rk2 <= fState.r1; rk2++) {
+        cell = agg.bySup[sname2] && agg.bySup[sname2][rk2];
+        if (cell) sumQ += cell.qty;
+      }
+      supShares[sname2] = sumQ;
+      totQty += sumQ;
+    }
+    totSpend = 0;
+    idx = getFiltered();
+    for (i = 0; i < idx.length; i++) {
+      ix = idx[i];
+      if (partIxs.indexOf(D.iPart[ix]) < 0) continue;
+      if (!idpPeRowOk(ix, D.iPart[ix])) continue;
+      totSpend += +(D.spend[ix] != null ? D.spend[ix] : 0) || idpPeRowQty(ix) * idpPeRowUnitPrice(ix);
+    }
+    bestVolSup = "";
+    bestVol = 0;
+    for (sup in supShares) {
+      if (supShares[sup] > bestVol) {
+        bestVol = supShares[sup];
+        bestVolSup = sup;
+      }
+    }
+    wAvg = totQty > 0 ? totSpend / totQty : 0;
+    if (metricsEl) {
+      metricsEl.innerHTML =
+        "<strong>Monthly average volume</strong>: " +
+        (agg.ranks.length ? fmtIntPlain(totQty / agg.ranks.length) : "—") +
+        " units/month · <strong>Supplier concentration</strong>: " +
+        (totQty > 0 && bestVolSup ? ((100 * bestVol) / totQty).toFixed(0) + "% of volume from " + esc(bestVolSup) + " (highest share)" : "—");
+    }
+    priceLines = [];
+    stabSup = "";
+    stabPct = Infinity;
+    for (si2 = 0; si2 < series.priceDatasets.length; si2++) {
+      ds = series.priceDatasets[si2];
+      sname2 = ds.label || "";
+      pricesArr = [];
+      for (moIdx = 0; moIdx < series.ranks.length; moIdx++) {
+        rk = series.ranks[moIdx];
+        v = ds.data[moIdx];
+        if (v != null && isFinite(v) && series.volDatasets[si2] && series.volDatasets[si2].data[moIdx] > 0) pricesArr.push(v);
+      }
+      if (pricesArr.length >= 2) {
+        minP = Math.min.apply(null, pricesArr);
+        maxP = Math.max.apply(null, pricesArr);
+        volPct = minP > 0 ? ((100 * (maxP - minP)) / minP).toFixed(0) : "—";
+        priceLines.push(
+          "Price variance: <strong>" + esc(sname2) + "</strong> ranges from $" + minP.toFixed(2) + " – $" + maxP.toFixed(2) + " (" + volPct + "% spread vs low)"
+        );
+        if (isFinite(+volPct) && +volPct < stabPct) {
+          stabPct = +volPct;
+          stabSup = sname2;
+        }
+      } else if (pricesArr.length === 1) {
+        priceLines.push("Price variance: <strong>" + esc(sname2) + "</strong> — single month with volume in range ($" + pricesArr[0].toFixed(2) + "/unit).");
+      }
+    }
+    if (ulP) {
+      ulP.innerHTML = "";
+      priceLines.slice(0, 8).forEach(function (line) {
+        var li = document.createElement("li");
+        li.innerHTML = line;
+        ulP.appendChild(li);
+      });
+      if (stabSup && isFinite(stabPct)) {
+        iv = document.createElement("li");
+        iv.innerHTML = "<strong>" + esc(stabSup) + "</strong> has the tightest month-to-month price spread in this window (~" + stabPct + "% vs its low).";
+        ulP.appendChild(iv);
+      }
+      if (isFinite(wAvg) && wAvg > 0) {
+        iv = document.createElement("li");
+        iv.innerHTML =
+          "<strong>Average price paid</strong>: $" +
+          wAvg.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) +
+          "/unit (volume-weighted across suppliers" +
+          (multi ? " and parts" : "") +
+          ").";
+        ulP.appendChild(iv);
+      }
+    }
+    if (ulV) {
+      ulV.innerHTML = "";
+      if (bestVolSup && totQty > 0) {
+        iv = document.createElement("li");
+        iv.innerHTML = "<strong>" + esc(bestVolSup) + "</strong> supplies " + ((100 * bestVol) / totQty).toFixed(0) + "% of total volume in this view.";
+        ulV.appendChild(iv);
+      }
+      if (singleMo > 0) {
+        iv = document.createElement("li");
+        iv.textContent = "Single-sourced in " + singleMo + " month(s) (only one supplier with volume).";
+        ulV.appendChild(iv);
+      }
+      if (divMo != null && divParts && divParts.length) {
+        iv = document.createElement("li");
+        iv.innerHTML =
+          "Most diversified month: <strong>" +
+          esc(fmtYm(sortedYms[divMo]) || "") +
+          "</strong> (" +
+          divCount +
+          " suppliers: " +
+          divParts
+            .map(function (x) {
+              return esc(x.n) + " " + x.pct.toFixed(0) + "%";
+            })
+            .join(", ") +
+          ").";
+        ulV.appendChild(iv);
+      }
+    }
+    setTimeout(function () {
+      try {
+        if (charts.pePrice && charts.pePrice.resize) charts.pePrice.resize();
+      } catch (e1) {}
+      try {
+        if (charts.peVol && charts.peVol.resize) charts.peVol.resize();
+      } catch (e2) {}
+    }, 80);
+  }
+  function idpPeOnAddAnalysis() {
+    var pix = idpPeResolvePartIx(),
+      errEl = $("pe-error-msg"),
+      hid = $("pe-part-ix"),
+      inp = $("pe-part-input"),
+      raw = (inp && inp.value ? inp.value : "").trim(),
+      pl,
+      aggTry;
+    readFiltersFromForm();
+    if (!isFinite(pix) || pix <= 0) {
+      if (errEl) {
+        errEl.textContent = raw.length ? "Part not found. Please check the part number." : "Choose a part from the suggestions or enter a valid part number.";
+        errEl.classList.remove("hidden");
+      }
+      return;
+    }
+    if (_idpPeSelectedPartIxs.indexOf(pix) >= 0) {
+      pl = idpPePartDisplayLabel(pix);
+      window.alert("Part " + pl + " is already in the analysis");
+      return;
+    }
+    if (_idpPeSelectedPartIxs.length >= 5) {
+      window.alert("Maximum 5 parts. Remove one to add another.");
+      return;
+    }
+    aggTry = idpPeAggregate(pix);
+    if (!aggTry.suppliers.length) {
+      if (errEl) {
+        errEl.textContent = "No data for this part in the selected period and filters.";
+        errEl.classList.remove("hidden");
+      }
+      return;
+    }
+    _idpPeSelectedPartIxs.push(pix);
+    if (errEl) errEl.classList.add("hidden");
+    if (hid) hid.value = "";
+    if (inp) inp.value = "";
+    if ($("pe-part-suggest")) {
+      $("pe-part-suggest").classList.add("hidden");
+      $("pe-part-suggest").setAttribute("hidden", "hidden");
+      if (inp) inp.setAttribute("aria-expanded", "false");
+    }
+    idpPeRenderAnalyzingList();
+    idpPeRunCharts();
+  }
+  function idpPeRefreshIfActive() {
+    if (currentAppView !== "price-explanation") return;
+    if (_idpPeSelectedPartIxs && _idpPeSelectedPartIxs.length) idpPeRunCharts();
+  }
+  function initPriceExplanationWireOnce() {
+    var inp, btn, b12, docFn;
+    if (document.body.getAttribute("data-pe-wu") === "1") return;
+    document.body.setAttribute("data-pe-wu", "1");
+    inp = $("pe-part-input");
+    btn = $("pe-add-analysis");
+    b12 = $("pe-btn-last12");
+    if (inp) {
+      inp.addEventListener("input", function () {
+        clearTimeout(_idpPeSuggestTimer);
+        _idpPeSuggestTimer = setTimeout(function () {
+          idpPeRenderSuggestDropdown((inp.value || "").trim());
+        }, 250);
+      });
+      inp.addEventListener("keydown", function (e) {
+        if (e.key === "Escape" && $("pe-part-suggest")) {
+          $("pe-part-suggest").classList.add("hidden");
+          $("pe-part-suggest").setAttribute("hidden", "hidden");
+          inp.setAttribute("aria-expanded", "false");
+        }
+      });
+    }
+    if (btn) btn.addEventListener("click", function () { idpPeOnAddAnalysis(); });
+    if (b12) b12.addEventListener("click", function () { idpPeApplyLast12Months(); });
+    (function () {
+      var al = $("pe-analyzing-list");
+      if (al && !al.getAttribute("data-pe-del")) {
+        al.setAttribute("data-pe-del", "1");
+        al.addEventListener("click", function (ev) {
+          var t = ev.target,
+            rm;
+          if (!t || !t.getAttribute) return;
+          rm = t.getAttribute("data-pe-remove");
+          if (rm == null && t.closest) t = t.closest("[data-pe-remove]");
+          if (!t || !t.getAttribute) return;
+          rm = t.getAttribute("data-pe-remove");
+          if (rm != null && rm !== "") idpPeRemovePartFromAnalysis(+rm);
+        });
+      }
+    })();
+    docFn = function (e) {
+      var t = e.target,
+        list = $("pe-part-suggest"),
+        inp2 = $("pe-part-input");
+      if (!list || !inp2) return;
+      if (t === inp2 || (inp2.contains && inp2.contains(t)) || (list.contains && list.contains(t))) return;
+      list.classList.add("hidden");
+      list.setAttribute("hidden", "hidden");
+      inp2.setAttribute("aria-expanded", "false");
+    };
+    document.addEventListener("click", docFn);
+  }
+
   function setAppView(name) {
-    var o, h, c, p, r, ss, idx, bO, bPS, bH, bC, bR, bSS, bIdx, fw, prevView, appMainWrap;
+    var o, h, c, p, r, ss, idx, pe, bulk, bO, bPS, bH, bC, bR, bSS, bIdx, bPE, fw, prevView, appMainWrap;
     appMainWrap = $("app-main-wrap");
-    if (name !== "overview" && name !== "part-search" && name !== "rap" && name !== "harmonization" && name !== "single-source" && name !== "index-analysis" && name !== "cleansheet") name = "overview";
+    if (name !== "overview" && name !== "part-search" && name !== "rap" && name !== "harmonization" && name !== "single-source" && name !== "index-analysis" && name !== "price-explanation" && name !== "cleansheet") name = "overview";
     prevView = document.body ? String(document.body.getAttribute("data-idp-app-view") || "") : "";
     if (prevView && prevView !== name) idpScrollStoreForView(prevView);
     currentAppView = name;
@@ -8080,6 +9731,7 @@
     c = $("view-cleansheet");
     ss = $("view-single-source");
     idx = $("view-index-analysis");
+    pe = $("view-price-explanation");
     bO = $("nav-overview");
     bPS = $("nav-part-search");
     bR = $("nav-rap");
@@ -8087,6 +9739,7 @@
     bC = $("nav-cleansheet");
     bSS = $("nav-single-source");
     bIdx = $("nav-index-analysis");
+    bPE = $("nav-price-explanation");
     fw = $("filter-wrap");
     if (fw) {
       if (name === "harmonization") {
@@ -8096,14 +9749,21 @@
         fw.removeAttribute("aria-hidden");
       }
     }
-    function hideAllMain() {
-      if (o) { o.classList.add("hidden"); o.setAttribute("aria-hidden", "true"); }
+    function hideNonSpendReviewShellViews() {
       if (p) { p.classList.add("hidden"); p.setAttribute("aria-hidden", "true"); }
       if (r) { r.classList.add("hidden"); r.setAttribute("aria-hidden", "true"); }
       if (h) { h.classList.add("hidden"); h.setAttribute("aria-hidden", "true"); }
       if (c) { c.classList.add("hidden"); c.setAttribute("aria-hidden", "true"); }
       if (ss) { ss.classList.add("hidden"); ss.setAttribute("aria-hidden", "true"); }
       if (idx) { idx.classList.add("hidden"); idx.setAttribute("aria-hidden", "true"); }
+    }
+    function hideAllMain() {
+      idpPeDestroyCharts();
+      hideNonSpendReviewShellViews();
+      if (o) { o.classList.add("hidden"); o.setAttribute("aria-hidden", "true"); }
+      if (pe) { pe.classList.add("hidden"); pe.setAttribute("aria-hidden", "true"); }
+      bulk = $("idp-overview-body");
+      if (bulk) { bulk.classList.remove("hidden"); bulk.removeAttribute("aria-hidden"); }
     }
     function deactivateSpendReview() {
       if (bO) bO.classList.remove("is-active");
@@ -8115,6 +9775,9 @@
       destroyCleansheetChart();
       hideAllMain();
       if (o) { o.classList.remove("hidden"); o.removeAttribute("aria-hidden"); }
+      bulk = $("idp-overview-body");
+      if (bulk) { bulk.classList.remove("hidden"); bulk.removeAttribute("aria-hidden"); }
+      if (pe) { pe.classList.add("hidden"); pe.setAttribute("aria-hidden", "true"); }
       if (bO) bO.classList.add("is-active");
       if (bPS) bPS.classList.remove("is-active");
       if (bR) bR.classList.remove("is-active");
@@ -8122,6 +9785,7 @@
       if (bC) bC.classList.remove("is-active");
       if (bSS) bSS.classList.remove("is-active");
       if (bIdx) bIdx.classList.remove("is-active");
+      if (bPE) bPE.classList.remove("is-active");
       setTimeout(function () {
         var k2;
         for (k2 in charts) {
@@ -8147,6 +9811,7 @@
       if (bC) bC.classList.remove("is-active");
       if (bSS) bSS.classList.remove("is-active");
       if (bIdx) bIdx.classList.remove("is-active");
+      if (bPE) bPE.classList.remove("is-active");
       syncPartSearchAfterFilter();
       idpNavFinishScroll(name);
       return;
@@ -8163,6 +9828,7 @@
       if (bC) bC.classList.remove("is-active");
       if (bSS) bSS.classList.remove("is-active");
       if (bIdx) bIdx.classList.remove("is-active");
+      if (bPE) bPE.classList.remove("is-active");
       readFiltersFromForm();
       renderRapTab(getFiltered());
       idpNavFinishScroll(name);
@@ -8175,6 +9841,7 @@
       deactivateSpendReview();
       if (bSS) bSS.classList.remove("is-active");
       if (bIdx) bIdx.classList.remove("is-active");
+      if (bPE) bPE.classList.remove("is-active");
       if (bH) bH.classList.add("is-active");
       if (bC) bC.classList.remove("is-active");
       harmUnifiedPopulateCategoryFilters();
@@ -8204,6 +9871,7 @@
       if (bH) bH.classList.remove("is-active");
       if (bC) bC.classList.remove("is-active");
       if (bIdx) bIdx.classList.remove("is-active");
+      if (bPE) bPE.classList.remove("is-active");
       if (bSS) bSS.classList.add("is-active");
       readFiltersFromForm();
       idpRenderSingleSourceView();
@@ -8225,6 +9893,7 @@
       if (bH) bH.classList.remove("is-active");
       if (bC) bC.classList.remove("is-active");
       if (bSS) bSS.classList.remove("is-active");
+      if (bPE) bPE.classList.remove("is-active");
       if (bIdx) bIdx.classList.add("is-active");
       timeQuickSet("all");
       readFiltersFromForm();
@@ -8239,12 +9908,47 @@
       idpNavFinishScroll(name);
       return;
     }
+    if (name === "price-explanation") {
+      idpTeardownHarmonizationView();
+      destroyCleansheetChart();
+      hideNonSpendReviewShellViews();
+      if (o) { o.classList.remove("hidden"); o.removeAttribute("aria-hidden"); }
+      bulk = $("idp-overview-body");
+      if (bulk) { bulk.classList.add("hidden"); bulk.setAttribute("aria-hidden", "true"); }
+      if (pe) {
+        pe.classList.remove("hidden");
+        pe.setAttribute("aria-hidden", "false");
+      }
+      deactivateSpendReview();
+      if (bO) bO.classList.remove("is-active");
+      if (bPS) bPS.classList.remove("is-active");
+      if (bR) bR.classList.remove("is-active");
+      if (bH) bH.classList.remove("is-active");
+      if (bC) bC.classList.remove("is-active");
+      if (bSS) bSS.classList.remove("is-active");
+      if (bIdx) bIdx.classList.remove("is-active");
+      if (bPE) bPE.classList.add("is-active");
+      readFiltersFromForm();
+      idpPeRenderAnalyzingList();
+      idpPeRefreshIfActive();
+      setTimeout(function () {
+        try {
+          if (charts.pePrice && charts.pePrice.resize) charts.pePrice.resize();
+        } catch (ePe1) {}
+        try {
+          if (charts.peVol && charts.peVol.resize) charts.peVol.resize();
+        } catch (ePe2) {}
+      }, 120);
+      idpNavFinishScroll(name);
+      return;
+    }
     idpTeardownHarmonizationView();
     hideAllMain();
     if (c) { c.classList.remove("hidden"); c.removeAttribute("aria-hidden"); }
     deactivateSpendReview();
     if (bSS) bSS.classList.remove("is-active");
     if (bIdx) bIdx.classList.remove("is-active");
+    if (bPE) bPE.classList.remove("is-active");
     if (bH) bH.classList.remove("is-active");
     if (bC) bC.classList.add("is-active");
     try {
@@ -8590,7 +10294,7 @@
           interaction: { mode: "index", intersect: false },
           plugins: {
             legend: { position: "bottom", align: "center", labels: chartLegendD() },
-            datalabels: chartDatalabelsVerticalStackedTotal(),
+            datalabels: { display: false },
             tooltip: Object.assign({}, chartTt(), { callbacks: ttStackedSpend(false) })
           },
           scales: {
@@ -8643,7 +10347,7 @@
           interaction: { mode: "index", intersect: false },
           plugins: {
             legend: { position: "bottom", align: "center", labels: chartLegendD() },
-            datalabels: chartDatalabelsVerticalStackedTotal(),
+            datalabels: { display: false },
             tooltip: Object.assign({}, chartTt(), { callbacks: ttStackedSpend(false) })
           },
           scales: {
@@ -8735,7 +10439,7 @@
     tlab2 = tlab0.map(function (r) { return (r.o.D) / 1e6; });
     tlab3 = tlab0.map(function (r) { return (r.o.I) / 1e6; });
     if (tlab0.length && $("ch-c2d")) {
-      c2Opt = chartOptsOverviewHorizontalStackedM(true);
+      c2Opt = chartOptsOverviewHorizontalStackedM(true, { datalabels: { display: false } });
       c2Opt.plugins.tooltip = Object.assign({}, chartTt(), {
         callbacks: Object.assign({}, ttStackedSpend(true), {
           title: function (items) {
@@ -8762,7 +10466,7 @@
     tlab2 = tlab0.map(function (r) { return (r.o.D) / 1e6; });
     tlab3 = tlab0.map(function (r) { return (r.o.I) / 1e6; });
     if (tlab0.length && $("ch-c2i")) {
-      c3Opt = chartOptsOverviewHorizontalStackedM(true);
+      c3Opt = chartOptsOverviewHorizontalStackedM(true, { datalabels: { display: false } });
       c3Opt.plugins.tooltip = Object.assign({}, chartTt(), {
         callbacks: Object.assign({}, ttStackedSpend(true), {
           title: function (items) {
@@ -8787,7 +10491,7 @@
     tlab0 = siteL.map(function (r) { var nm = formatLabel(r.name || "—"); return nm.length > 32 ? nm.slice(0, 30) + "…" : nm; });
     tlab1 = siteL.map(function (r) { return (r.o.D) / 1e6; });
     tlab2 = siteL.map(function (r) { return (r.o.I) / 1e6; });
-    if (siteL.length && $("ch-site")) { charts.site = new Chart($("ch-site"), { type: "bar", data: { labels: tlab0, datasets: [ { label: "Direct", data: tlab1, backgroundColor: C_DIRECT, borderWidth: 0, borderRadius: 3, stack: "a" }, { label: "Indirect", data: tlab2, backgroundColor: C_INDIRECT, borderWidth: 0, borderRadius: 3, stack: "a" } ] }, options: chartOptsOverviewHorizontalStackedM(true) }); }
+    if (siteL.length && $("ch-site")) { charts.site = new Chart($("ch-site"), { type: "bar", data: { labels: tlab0, datasets: [ { label: "Direct", data: tlab1, backgroundColor: C_DIRECT, borderWidth: 0, borderRadius: 3, stack: "a" }, { label: "Indirect", data: tlab2, backgroundColor: C_INDIRECT, borderWidth: 0, borderRadius: 3, stack: "a" } ] }, options: chartOptsOverviewHorizontalStackedM(true, { datalabels: { display: false } }) }); }
     renderOverviewAugmentedCharts(idx);
     renderTop10SuppliersOverview(idx);
     try { idpValidateQualityLabEquipment(); } catch (eVal) { if (typeof console !== "undefined" && console.warn) console.warn(eVal); }
@@ -8804,6 +10508,9 @@
     }
     if (currentAppView === "index-analysis" && typeof renderIndexChart === "function") {
       renderIndexChart();
+    }
+    if (currentAppView === "price-explanation") {
+      idpPeRefreshIfActive();
     }
     updateBadge();
   }
@@ -8919,6 +10626,7 @@
     }
     if (document.body && !document.body.getAttribute("data-app-shell-wired")) { document.body.setAttribute("data-app-shell-wired", "1"); wireAppShell(); }
     initPartSearch();
+    initPriceExplanationWireOnce();
     initHarmUnifiedFilterWire();
     initSingleSourceSortAndExportWireOnce();
     withLoad(function () { runWithCharts(); setTimeout(function () { setAppView(currentAppView); }, 0); });
