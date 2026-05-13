@@ -194,3 +194,11 @@ cython_debug/
 
 # Example workbooks tracked in-repo (override *.xlsx above)
 !/example-excels/*.xlsx
+# Small PPI / index workbooks next to HTML (same-origin fetch); large spend cubes stay ignored
+!/WPU1017.xlsx
+!/WPU11430119.xlsx
+!/WPU114301.xlsx
+!/PCU333996333996.xlsx
+!/PCU3339133391.xlsx
+# Small index-data manifests (override *.json above)
+!/index-data/*.json

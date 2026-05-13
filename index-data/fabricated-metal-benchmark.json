@@ -1,0 +1,15 @@
+{
+  "title": "Fabricated Metal Manufacturing Index",
+  "series": [
+    { "observation_date": "2024-01-01", "value": 248.5 },
+    { "observation_date": "2024-04-01", "value": 249.2 },
+    { "observation_date": "2024-07-01", "value": 250.1 },
+    { "observation_date": "2024-10-01", "value": 251.0 },
+    { "observation_date": "2025-01-01", "value": 252.8 },
+    { "observation_date": "2025-04-01", "value": 254.2 },
+    { "observation_date": "2025-07-01", "value": 255.6 },
+    { "observation_date": "2025-10-01", "value": 256.9 },
+    { "observation_date": "2026-01-01", "value": 258.4 },
+    { "observation_date": "2026-04-01", "value": 260.1 }
+  ]
+}
