@@ -1,0 +1,173 @@
+---
+description: "Deployer K8s PaaS platform agent. Routes Deployer/LRAH intents (S3 storage, SQS messaging, secrets/Vault) to the appropriate skill."
+alwaysApply: false
+---
+
+# Deployer Platform Agent — Service Routing
+
+This rule activates when a developer working in a Deployer/LRAH repository expresses
+intent to provision an AWS resource or manage application secrets. It routes to the
+appropriate skill based on detected intent.
+
+---
+
+## S3 Routing
+
+### S3 Trigger Terms
+
+Activate S3 routing when the developer's prompt contains any of the following:
+
+1. `s3`
+2. `bucket`
+3. `object storage`
+4. `file storage`
+5. `store files`
+6. `upload files`
+7. `download files`
+
+### On S3 Intent Detected
+
+1. Load `@.cursor/rules/deployer-aws-resources.mdc` as a context dependency before
+   generating any response.
+2. Inform the developer: "Activating the **deployer-s3-feature-skill** skill for S3
+   provisioning and IRSA integration on Deployer."
+3. Invoke `@.cursor/skills/deployer-skills/deployer-s3-feature-skill/SKILL.md`, passing the developer's
+   original prompt as context.
+
+---
+
+## SQS Routing
+
+### SQS Trigger Terms
+
+Activate SQS routing when the developer's prompt contains any of the following:
+
+1. `sqs`
+2. `queue`
+3. `message queue`
+4. `messaging`
+5. `send message`
+6. `receive message`
+7. `event-driven`
+8. `pub/sub`
+
+### On SQS Intent Detected
+
+1. Load `@.cursor/rules/deployer-aws-resources.mdc` as a context dependency before
+   generating any response.
+2. Inform the developer: "Activating the **deployer-sqs-feature-skill** skill."
+3. Invoke `@.cursor/skills/deployer-skills/deployer-sqs-feature-skill/SKILL.md`, passing the developer's
+   original prompt as context.
+
+---
+
+## Secrets/Vault Routing
+
+### Secrets/Vault Trigger Terms
+
+Activate Secrets/Vault routing when the developer's prompt contains any of the following:
+
+1. `move secrets`
+2. `hardcoded secrets`
+3. `parameterize credentials`
+4. `api key`
+5. `vault`
+6. `external secret`
+7. `secretKeyRef`
+
+### On Secrets Intent Detected
+
+1. Inform the developer: "Activating **deployer-move-secrets-to-vault** skill."
+2. Invoke `@.cursor/skills/deployer-skills/deployer-move-secrets-to-vault/SKILL.md`, passing the developer's
+   original prompt as context.
+
+---
+
+## PostgreSQL Routing
+
+### PostgreSQL Trigger Terms
+
+Activate PostgreSQL routing when the developer's prompt contains any of the following:
+
+1. `postgresql`
+2. `postgres`
+3. `add database`
+4. `create database`
+5. `pg database`
+6. `rds database`
+7. `connect to postgres`
+8. `use postgres`
+
+### On PostgreSQL Intent Detected
+
+1. Load `@.cursor/rules/deployer-aws-resources.mdc` as a context dependency before
+   generating any response.
+2. Inform the developer: "Activating the **deployer-postgresql-feature-skill** skill for PostgreSQL
+   provisioning and IRSA integration on Deployer."
+3. Invoke `@.cursor/skills/deployer-skills/deployer-postgresql-feature-skill/SKILL.md`, passing the developer's
+   original prompt as context.
+
+---
+
+## MySQL Routing
+
+### MySQL Trigger Terms
+
+Activate MySQL routing when the developer's prompt contains any of the following:
+
+1. `mysql`
+2. `add mysql`
+3. `create mysql`
+4. `mysql database`
+5. `rds mysql`
+6. `connect to mysql`
+7. `use mysql`
+
+### On MySQL Intent Detected
+
+1. Load `@.cursor/rules/deployer-aws-resources.mdc` as a context dependency before
+   generating any response.
+2. Inform the developer: "Activating the **deployer-mysql-feature-skill** skill for MySQL
+   provisioning and IRSA integration on Deployer."
+3. Invoke `@.cursor/skills/deployer-skills/deployer-mysql-feature-skill/SKILL.md`, passing the developer's
+   original prompt as context.
+
+---
+
+## Multi-Service and Ambiguous Intent Handling
+
+### On Ambiguous Multi-Service Intent
+
+If the prompt references more than one AWS service (e.g., both SQS and S3):
+
+1. Prioritize the most specific match based on the trigger terms present.
+2. Inform the developer which skill was activated and why.
+3. Acknowledge the unrouted secondary intents and instruct the developer to
+   address them in a separate prompt after the current skill completes.
+4. If the prompt references both PostgreSQL and MySQL trigger terms, activate the
+   more specific match (e.g., if `postgresql` and `mysql` both appear, prefer the
+   term that appears first or is most prominent) and inform the developer: "I've
+   activated the skill for [PostgreSQL/MySQL]. The other database type can be
+   addressed in a separate prompt."
+
+### On Ambiguous Intent (Service Unclear)
+
+If the prompt could plausibly refer to a non-Deployer-provisioned concern, ask a
+clarifying question before routing. Example:
+
+> "Are you looking to provision an SQS queue for your Deployer application? If so,
+> I'll activate the deployer-sqs-feature-skill skill."
+
+---
+
+## Scope Guard
+
+Do **not** route to any Deployer skill if the prompt is not covered by the trigger
+terms defined in this rule. Respond normally without invoking a skill.
+
+---
+
+## Language
+
+Always respond in English regardless of the language used in the developer's
+prompt.

@@ -1,0 +1,80 @@
+---
+description: Branch protection and deployment constraints for this repository.
+alwaysApply: false
+---
+
+# Deployment Guidelines
+
+## Branch Protection Constraint
+
+Before executing any command that modifies code files, check the current git branch to ensure the user is not on `main` or `master`.
+
+**Commands that require branch protection:**
+- Deploy application
+- Move sensitive variables into secrets
+- Dockerize application
+
+**If on main/master:**
+1. Warn the user: "You are on the main/master branch. This operation will modify code files."
+2. Ask: "Do you want to continue on main/master, or create a new deployment branch?"
+3. If creating a new branch, use date-based naming: `{MMM-DD-YYYY}-{###}` (e.g., `Feb-04-2026-001`)
+
+**Commands that do NOT require branch protection:**
+- Push changes to GitHub (only commits/pushes)
+- Execute deployment action (only triggers workflows)
+
+## Main-Branch Deployment Constraint
+
+The deployment platform only respects code on the `main` branch. When deploying from a feature/deployment branch, the workflow must:
+
+1. Run the Docker build workflow on the **current branch** to validate the image
+2. Create a **pull request** from the current branch to `main`
+3. **Wait for the user** to review and merge the PR (the agent must not merge it)
+4. Trigger the deploy workflow on **`main`** after the PR is merged
+
+This ensures that changes are validated before merging and that the platform always deploys the latest merged state of `main`.
+
+## Deployment Skills
+
+The deployment workflows are implemented as Cursor skills, synced at runtime into `.cursor/skills/deployer-skills/` by the `deployer-skill-sync` rule. Skills are fetched from the AI-DLC repo (`McK-Internal/code-beyond-ai-dlc`).
+
+| Skill | Trigger Phrase |
+|-------|----------------|
+| `deploy-application` | "Deploy application", "Deploy" |
+| `dockerize-application` | "Dockerize application" |
+| `move-secrets-to-vault` | "Move sensitive variables into secrets" |
+| `push-to-github` | "Push changes to GitHub" |
+| `execute-deployment-workflows` | "Execute deployment action" |
+
+> Skills are located at `.cursor/skills/deployer-skills/<skill-name>/` after sync. Use "sync skills" or "update deployer skills" to manually trigger a sync.
+
+## CI Workflow Generation (Dockerize Step)
+
+When an application is dockerized via the `dockerize-application` skill, a GitHub Actions workflow file is also generated to build and push the Docker image. This ensures the CI pipeline is ready immediately after Dockerization.
+
+### Workflow File Naming Convention
+
+| Resource | Pattern | Example |
+|----------|---------|---------|
+| Workflow file | `.github/workflows/<instance>-lrah-docker-build-and-publish.yml` | `jk-ci-02-lrah-docker-build-and-publish.yml` |
+| Docker image | `<instance>-app` | `jk-ci-02-app` |
+| JFrog registry | `mckinsey-<instance>-docker-local.jfrog.io` | Per-instance; determined during provisioning |
+
+### What the Workflow Does
+
+1. **Detects** the application stack and sets up the appropriate language runtime
+2. **Installs** dependencies and **runs** unit tests
+3. **Generates** a semver version from the project's version source + commit hash
+4. **Builds** the Docker image using the Dockerfile in `deployer-apps/<instance>/src/`
+5. **Scans** the image for vulnerabilities with JFrog Xray
+6. **Pushes** the image to JFrog with `latest` and semver tags
+7. **Outputs** a build + security summary to the GitHub Actions step summary
+
+### Triggers
+
+- **Automatic:** On push to `main` when files under `deployer-apps/<instance>/src/**` change
+- **Manual:** Via `workflow_dispatch` from the GitHub Actions UI
+
+## Secret Management Constraint
+
+**Never use build-time environment variables for secrets in frontend code.** Build-time variables are embedded into the application bundle, making secrets visible in client-side code. Always use runtime configuration injection via the backend API.

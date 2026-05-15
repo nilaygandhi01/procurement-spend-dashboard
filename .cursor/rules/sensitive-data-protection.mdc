@@ -1,0 +1,100 @@
+---
+description: Classifies data as sensitive or non-sensitive and enforces appropriate handling for code and commits.
+alwaysApply: true
+---
+
+# Sensitive Data Protection
+
+## Classifying data: sensitive vs. non-sensitive
+
+Before embedding data in code or committing data files, determine whether the data is sensitive. Use the categories below.
+
+### Sensitive data — never embed in code, never commit without approval
+
+Data is sensitive if it contains or resembles any of the following:
+
+| Category | Examples |
+|---|---|
+| **PII** (Personally Identifiable Information) | Names, email addresses, phone numbers, physical addresses, dates of birth, government IDs (SSN, passport), biometric data |
+| **Financial** | Bank account numbers, credit card numbers, transaction records, salary/compensation data, pricing that is contractually confidential |
+| **Health / HIPAA** | Medical records, diagnoses, prescriptions, insurance IDs, patient data |
+| **Authentication & secrets** | Passwords, API keys, tokens, private keys, certificates, connection strings |
+| **Proprietary datasets** | Customer lists, internal analytics, unpublished research data, trade secrets, licensed third-party data |
+| **User-generated content** | Uploaded files, form submissions, user profiles, messages |
+| **Records that describe real people, organizations, or transactions** | Employee directories, client rosters, order histories, audit logs |
+
+**Rule:** Do not embed sensitive data in source files. If the user asks you to, explain the risk and suggest placing it in an external data file under `deployer-apps/<instance>/src/app/data/` (that is, `app/data/` relative to `deployer-apps/<instance>/src/`) that is read at runtime. Do not commit sensitive data files without explicit user approval (see soft-block process below).
+
+### Non-sensitive application constants — the only data safe to embed in code
+
+Data may be embedded in source code **only** if it describes **how the application behaves**, not what it stores about real-world entities. These categories are the **sole exemption**:
+
+| Category | Examples |
+|---|---|
+| **UI constants** | Menu items, tab labels, button text, navigation structures, page titles |
+| **Application configuration** | Feature flags, timeouts, retry limits, pagination sizes, theme settings |
+| **Enums and status codes** | Order statuses, role names, category slugs, HTTP status mappings |
+| **Validation rules** | Regex patterns, min/max values, required-field lists |
+| **Static metadata** | Column headers, field display names, unit labels, format strings |
+| **Error and validation messages** | User-facing error text, toast messages, form validation copy |
+| **Public reference data** | Country/currency ISO codes, US state abbreviations, standard time zones |
+
+**Rule:** If it falls into one of the categories above, embed it in code freely — no flags, no warnings. If it does not, it belongs in a data file regardless of size, sensitivity, or whether the data is publicly available.
+
+### Decision test — run before writing any data inline
+
+1. Is this a UI label, config flag, enum, validation rule, error message, or ISO-style reference constant? → **embed freely**
+2. Is this anything else — product records, car specs, seed data, catalogs, reference datasets, any collection of domain records? → **put it in `app/data/` and read it at runtime. Do not embed it in code.**
+
+When in doubt, treat it as a domain record and use a data file.
+
+## Domain record datasets — always in data files
+
+ALL domain record data must live in external data files (`app/data/`), not in source code. This applies regardless of record count, line length, sensitivity level, or whether the data is publicly available.
+
+**Default rule:** if it is a domain record, it goes in a data file — period. There is no size threshold that makes it acceptable to embed domain records in code.
+
+This keeps the codebase clean, makes data independently updatable, and matches the runtime architecture where the app reads from the filesystem (local) or S3 (production). It also prevents future sensitive data from accidentally slipping in alongside "harmless" seed data.
+
+## Files to never commit (hard block)
+
+These are always excluded. Do not commit them under any circumstances:
+
+- **Secrets / credentials**: `.env`, `*.pem`, `*.key`, `*.p12`, `*.pfx`, `*.jks`, `credentials.json`, `*serviceaccount*.json`, `*-secret.*`
+- **Local dev artifacts**: `app/data/uploads/`, any user-uploaded content
+
+## Files to flag before committing (soft block)
+
+These file types *may* contain sensitive data. Treat them as potentially sensitive by default:
+
+- `*.xlsx`, `*.csv`, `*.tsv`, `*.parquet`, `*.sqlite`, `*.db`
+- `app/data/**/*.json` (JSON data files only)
+
+Common config/manifest JSON files (`package.json`, `package-lock.json`, `tsconfig.json`, and similar tool or build metadata) are **not** soft-blocked unless they contain sensitive data.
+
+When any of these are staged for commit:
+
+1. **Pause before committing** and list every flagged file.
+2. **Assess each file** against the sensitivity categories above. If a file clearly contains only non-sensitive data (e.g., a JSON config with UI labels), note that in your assessment.
+3. **Inform the user:**
+
+```
+The following data files are staged and may contain sensitive information:
+
+  - app/data/data.xlsx — contains domain records (names, specs); no PII detected
+  - app/data/output.csv — unknown content, treating as sensitive
+
+Files assessed as non-sensitive can be committed if you confirm.
+Files assessed as sensitive will NOT be committed unless you override.
+```
+
+4. **Wait for the user's response.**
+   - If the user confirms specific files are safe → commit them.
+   - If the user agrees they are sensitive → exclude them and suggest `.gitignore`.
+   - If the user wants to commit all → proceed only after explicit confirmation.
+
+## Best practices
+
+- **Data files as runtime inputs** — the app reads from `app/data/` (local) or S3 (production).
+- **`.gitignore` early** — add data file patterns to `.gitignore` to prevent accidental commits.
+- **Application constants belong in code; domain records do not** — a 5-item tab label list or a status enum is a constant and may be embedded. A list of car specs, products, employees, or any real-world entities is a domain record and must live in a data file, even if there are only 2 of them.

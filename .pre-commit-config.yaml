@@ -1,0 +1,24 @@
+repos:
+  - repo: https://github.com/gitguardian/ggshield
+    rev: v1.32.0
+    hooks:
+      - id: ggshield
+        language_version: python3
+        stages: [commit]
+
+################################################################
+# Terraform formatting & validation hooks
+# NOTE: requires access to terraform.mckinsey.cloud
+#
+#  - repo: https://github.com/antonbabenko/pre-commit-terraform
+#    rev: v1.96.1
+#    hooks:
+#      - id: terraform_fmt
+#      - id: terraform_validate
+#      - id: terraform_tflint
+#      - id: terraform_docs
+#        args:
+#          - --hook-config=--path-to-file=README.md
+#          - --hook-config=--add-to-existing-file=true
+#          - --hook-config=--create-file-if-not-exist=true
+#          - --args=--config=.terraform-docs.yml

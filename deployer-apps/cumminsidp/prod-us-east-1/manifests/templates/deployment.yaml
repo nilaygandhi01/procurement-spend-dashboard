@@ -1,0 +1,68 @@
+{{- if .Values.image }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "app.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+  {{- include "app.labels" . | nindent 4 }}
+  {{- range $key, $val := .Values.labels }}
+  {{- $key | nindent 4 }}: {{ $val | quote }}
+  {{- end}}
+  {{- if .Values.annotations }}
+  annotations:
+  {{- range $key, $val := .Values.annotations }}
+  {{- $key | nindent 4 }}: {{ $val | quote }}
+  {{- end}}
+  {{- end}}
+spec:
+  selector:
+    matchLabels:
+    {{- include "app.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+      {{- include "app.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+      - image: {{ .Values.image.repository }}:{{ .Values.image.tag }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        name: {{ .Chart.Name }}
+        ports:
+        - name: http
+          containerPort: 3000
+          protocol: TCP
+        securityContext: {}
+        resources:
+          limits:
+            cpu: 800m
+            memory: 256Mi
+          requests:
+            cpu: 400m
+            memory: 128Mi
+        env:
+        # Uncomment the following lines to enable McK ID configuration
+        # See Deployer documentation on how to configure secrets
+        # - name: MID_CLIENT_ID
+        #   valueFrom:
+        #     secretKeyRef:
+        #       name: lrah-secret-generic
+        #       key: MID_CLIENT_ID
+        # - name: MID_CLIENT_SECRET
+        #   valueFrom:
+        #     secretKeyRef:
+        #       name: lrah-secret-generic
+        #       key: MID_CLIENT_SECRET
+        - name: NODE_ENV
+          value: {{ .Values.env.NODE_ENV }}
+        - name: APP_VERSION
+          value: {{ .Values.image.tag }}
+      {{- if and .Values.deployer .Values.deployer.saReadWriteRoleARN }}
+      serviceAccountName: {{ include "app.fullname" . }}-sa
+      automountServiceAccountToken: false
+      {{- end }}
+{{- end }}

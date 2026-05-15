@@ -1,0 +1,25 @@
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "app.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+  {{- include "app.labels" . | nindent 4 }}
+  {{- range $key, $val := .Values.labels }}
+  {{- $key | nindent 4 }}: {{ $val | quote }}
+  {{- end}}
+  annotations:
+    kubernetes.io/ingress.class: {{ .Values.ingressClass }}
+    nginx.ingress.kubernetes.io/ssl-redirect: "false"
+spec:
+  rules:
+  - host: {{ .Values.subdomainPrefix }}.{{ .Values.cloudflareZone }}
+    http:
+      paths:
+      - backend:
+          service:
+            name: {{ include "app.fullname" . }}
+            port:
+              number: 80
+        path: /
+        pathType: Prefix
