@@ -7,15 +7,13 @@
 fullnameOverride: procurement-spend-dashboard
 
 image:
-  # TODO: confirm the exact ECR / Deployer-tenant registry path for the
-  # `cumminsidp` instance in prod-us-east-1. The path below is a
-  # plausible placeholder — replace before tagging an image.
-  repository: 123456789012.dkr.ecr.us-east-1.amazonaws.com/cumminsidp/procurement-spend-dashboard
+  # JFrog registry for the `cumminsidp` Deployer tenant.
+  repository: mckinsey-cummins-idp-dashboard-docker-local.jfrog.io/procurement-spend-dashboard
   tag: "0.1.0"
   pullPolicy: IfNotPresent
 
 imagePullSecrets:
-  - name: ecr-cumminsidp
+  - name: cumminsidp-jfrog
 
 ingress:
   enabled: true

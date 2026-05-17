@@ -62,7 +62,7 @@ spec:
         checksum/data-secret: "8b3e5e5c4d6c7a1f2e9d0b5a4c3b6e7d8c9a0b1c2d3e4f5a6b7c8d9e0a1b2c3d"
     spec:
       imagePullSecrets:
-        - name: ecr-cumminsidp
+        - name: cumminsidp-jfrog
       securityContext:
         seccompProfile:
           type: RuntimeDefault

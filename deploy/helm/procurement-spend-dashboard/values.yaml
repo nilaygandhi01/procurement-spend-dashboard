@@ -9,13 +9,12 @@
 # ----- Image -----
 # Replace `image.repository` with your Deployer-tenant container registry.
 image:
-  repository: ghcr.io/mckinsey-internal/procurement-spend-dashboard   # TODO: replace with Deployer registry path for tenant `cumminsidp`
+  repository: mckinsey-cummins-idp-dashboard-docker-local.jfrog.io/procurement-spend-dashboard
   tag: "0.1.0"
   pullPolicy: IfNotPresent
 
 imagePullSecrets:
-  # If your Deployer tenant requires a registry pull secret, name it here.
-  - name: deployer-registry
+  - name: cumminsidp-jfrog
 
 # ----- Workload -----
 replicaCount: 1
