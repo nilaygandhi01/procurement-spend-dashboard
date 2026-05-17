@@ -1,4 +1,4 @@
-# Static deploy: HTML + harmonization-client.js + data.json (same paths as local).
+# Static deploy: built bundle under src/dashboard (index.html, harmonization-client.js, data.json, PPI .xlsx).
 # Repo → Settings → Pages → Build and deployment → Source: GitHub Actions.
 name: Deploy GitHub Pages
 
@@ -26,13 +26,28 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Build data and stage dashboard
+        run: |
+          python src/scripts/refresh_data.py
+          cp data/outputs/data.json src/dashboard/
+          find data/inputs/indexes -maxdepth 1 -name '*.xlsx' -exec cp {} src/dashboard/ \;
+
       - name: Setup Pages
         uses: actions/configure-pages@v5
 
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: "."
+          path: "src/dashboard"
 
       - name: Deploy to GitHub Pages
         id: deployment

@@ -5,14 +5,23 @@
 (function (global) {
   "use strict";
   var VARIANCE_PCT = 0.02;
-  var TOP_N = 50;
-  var JSON_VERSION = 3;
-  /** Same as harmonization.py — skip MECE slices whose unit-price span exceeds this (USD). */
-  var MAX_UNIT_PRICE_SPREAD_USD = 25000;
+  var TOP_N = 5;
+  var JSON_VERSION = 2;
+  /** Hard cap for building all_opportunities (was Infinity when maxRows=null → browser freeze on large Cummins data). */
+  var MAX_ALL_OPPORTUNITY_CARDS = 3000;
+  /** Refuse client-side MECE recompute above this row count (use refresh_data.py harmonization_results instead). */
+  var MAX_CLIENT_HARM_INPUT_ROWS = 100000;
+  /** Abort inner top-N loops after this many milliseconds (graceful partial result). */
+  var HARM_COMPUTE_BUDGET_MS = 8000;
+  /**
+   * Same as harmonization.py — MECE card excludes slices whose unit-price span exceeds this (USD).
+   * Keep aligned with harmonization.py / refresh_data.py (do not raise to ~1e6 — that would negate price-variance filtering).
+   */
+  var MAX_UNIT_PRICE_SPREAD_USD = 7500;
   /** Same as harmonization.py — minimum MECE savings for a MECE card row (USD). */
   var MIN_TOP5_SAVINGS_USD = 1000;
   var HARMONIZATION_CALCULATION_NOTES =
-    "Maximum unit-price spread capped at $25000 (captures long tail); top cards require at least $1000 MECE savings. " +
+    "Maximum unit-price spread capped at $7500 (captures long tail); top cards require at least $1000 MECE savings. " +
     "Base-table outliers trimmed with relaxed IQR (3.0× multiplier) on (item×site) and (item×supplier) groups when ≥4 rows. " +
     "Savings use weighted transaction unit prices × quantities.";
   var BAR_GREEN = "#4CAF50";
@@ -62,7 +71,7 @@
     return 0;
   }
 
-  /** forcedYear: if set to a calendar year, analyze only that year; else same logic as harmonization.py (latest complete year in data). */
+  /** forcedYear: if set (e.g. 2025), analyze only that calendar year; else same logic as harmonization.py (latest complete year in data). */
   function buildBaseTable(rows, forcedYear) {
     var nowY = new Date().getFullYear();
     var work = [];
@@ -278,38 +287,6 @@
         }
       }
     }
-    var mapItem = {};
-    for (i = 0; i < n; i++) {
-      if (b[i].category !== 0) continue;
-      key = b[i].item;
-      if (!mapItem[key]) mapItem[key] = [];
-      mapItem[key].push(i);
-    }
-    for (key in mapItem) {
-      var ixItem = mapItem[key];
-      sites = {};
-      sups = {};
-      pmin = Infinity;
-      for (j = 0; j < ixItem.length; j++) {
-        ii = ixItem[j];
-        sites[b[ii].site] = 1;
-        sups[b[ii].supplier] = 1;
-        if (b[ii].unit_price < pmin) pmin = b[ii].unit_price;
-      }
-      nSite = 0;
-      for (var st2 in sites) nSite++;
-      nSup = 0;
-      for (var su2 in sups) nSup++;
-      if (nSite <= 1 || nSup <= 1) continue;
-      for (j = 0; j < ixItem.length; j++) {
-        ii = ixItem[j];
-        if (b[ii].unit_price > pmin + 1e-12) {
-          b[ii].category = 2;
-          b[ii].min_ref_price = pmin;
-          b[ii].savings = (b[ii].unit_price - pmin) * b[ii].total_qty;
-        }
-      }
-    }
     var mapISup = {};
     for (i = 0; i < n; i++) {
       if (b[i].category !== 0) continue;
@@ -355,12 +332,10 @@
     };
     for (i = 0; i < n; i++) {
       if (b[i].category === 1) val.category_1_rows++;
-      else if (b[i].category === 2) val.category_2_rows++;
       else if (b[i].category === 3) val.category_3_rows++;
       else val.no_opportunity_rows++;
     }
-    val.sum_matches_base =
-      val.category_1_rows + val.category_2_rows + val.category_3_rows + val.no_opportunity_rows === n;
+    val.sum_matches_base = val.category_1_rows + val.category_3_rows + val.no_opportunity_rows === n;
     return { tagged: b, val: val, total_sav: total_sav };
   }
 
@@ -414,12 +389,7 @@
     for (i = 0; i < tagged.length; i++) {
       t = tagged[i];
       if (t.category !== category_id) continue;
-      key =
-        category_id === 1
-          ? t.item + "\t" + t.site
-          : category_id === 2
-            ? t.item
-            : t.item + "\t" + t.supplier;
+      key = category_id === 1 ? t.item + "\t" + t.site : t.item + "\t" + t.supplier;
       m[key] = (m[key] || 0) + t.savings;
     }
     for (key in m) arr.push({ k: key, s: m[key] });
@@ -450,6 +420,38 @@
     var c = 0;
     for (var k in u) c++;
     return c;
+  }
+
+  /** O(n) index: item\t → rows (avoids O(pairs×n) base.filter in top5Cat1). */
+  function indexBaseByItemSite(base) {
+    var m = Object.create(null),
+      i,
+      row,
+      k;
+    if (!base || !base.length) return m;
+    for (i = 0; i < base.length; i++) {
+      row = base[i];
+      k = String(row.item).trim() + "\t" + String(row.site).trim();
+      if (!m[k]) m[k] = [];
+      m[k].push(row);
+    }
+    return m;
+  }
+
+  /** O(n) index: item\tsupplier → rows (top5Cat3). */
+  function indexBaseByItemSupplier(base) {
+    var m = Object.create(null),
+      i,
+      row,
+      k;
+    if (!base || !base.length) return m;
+    for (i = 0; i < base.length; i++) {
+      row = base[i];
+      k = String(row.item).trim() + "\t" + String(row.supplier).trim();
+      if (!m[k]) m[k] = [];
+      m[k].push(row);
+    }
+    return m;
   }
 
   function top5Cat1(tagged, base, maxRows) {
@@ -494,7 +496,9 @@
       qv,
       row,
       up2,
-      lim;
+      lim,
+      tCompute0,
+      byItemSite;
     for (i = 0; i < t.length; i++) {
       k = t[i].item + "\t" + t[i].site;
       gsum[k] = (gsum[k] || 0) + t[i].savings;
@@ -506,20 +510,30 @@
     pairs.sort(function (a, b) {
       return b.sav - a.sav;
     });
-    lim = maxRows === undefined ? TOP_N : maxRows === null ? Infinity : maxRows;
+    lim = maxRows === undefined ? TOP_N : maxRows === null ? MAX_ALL_OPPORTUNITY_CARDS : maxRows;
+    if (!(lim > 0) || lim === Infinity) lim = MAX_ALL_OPPORTUNITY_CARDS;
+    byItemSite = indexBaseByItemSite(base);
+    tCompute0 = typeof Date !== "undefined" && Date.now ? Date.now() : 0;
     var out = [];
     for (pi = 0; pi < pairs.length && out.length < lim; pi++) {
+      if (tCompute0 && Date.now() - tCompute0 > HARM_COMPUTE_BUDGET_MS) {
+        if (typeof console !== "undefined" && console.warn) {
+          try {
+            console.warn("[harm] top5Cat1 stopped early (time budget " + HARM_COMPUTE_BUDGET_MS + "ms)");
+          } catch (eW) {}
+        }
+        break;
+      }
       if (!(pairs[pi].sav >= MIN_TOP5_SAVINGS_USD)) continue;
       it_s = String(pairs[pi].item).trim();
       st_s = String(pairs[pi].site).trim();
       pk = it_s;
-      bpart = base.filter(function (row2) {
-        return String(row2.item).trim() === it_s && String(row2.site).trim() === st_s;
-      });
+      k = it_s + "\t" + st_s;
+      bpart = byItemSite[k] || [];
       var supU = {};
       for (i = 0; i < bpart.length; i++) supU[bpart[i].supplier] = 1;
       var nsup = 0;
-      for (k in supU) nsup++;
+      for (var kSup in supU) if (Object.prototype.hasOwnProperty.call(supU, kSup)) nsup++;
       if (!bpart.length || nsup < 2) continue;
       tot_spend = 0;
       tot_qty = 0;
@@ -630,219 +644,6 @@
     return out;
   }
 
-  function top5Cat2(tagged, base, maxRows) {
-    var t = tagged.filter(function (x) {
-      return x.category === 2;
-    });
-    if (!t.length) return [];
-    var gsum = {};
-    var i,
-      k,
-      pairs,
-      pi,
-      it_s,
-      pk,
-      bpart,
-      tot_spend,
-      tot_qty,
-      pmin,
-      pmax,
-      pctNote,
-      r_lo,
-      r_hi,
-      note,
-      pr,
-      labels,
-      prices,
-      colors,
-      row,
-      up,
-      lab,
-      is_m,
-      groups_table,
-      sup_rows,
-      export_rows,
-      pminVal,
-      sav0,
-      upv,
-      qv,
-      up2,
-      lim,
-      siteU,
-      supU,
-      nsite,
-      nsup,
-      disp_site,
-      disp_sup,
-      tsub;
-    for (i = 0; i < t.length; i++) {
-      k = t[i].item;
-      gsum[k] = (gsum[k] || 0) + t[i].savings;
-    }
-    pairs = Object.keys(gsum).map(function (item) {
-      return { item: item, sav: gsum[item] };
-    });
-    pairs.sort(function (a, b) {
-      return b.sav - a.sav;
-    });
-    lim = maxRows === undefined ? TOP_N : maxRows === null ? Infinity : maxRows;
-    var out = [];
-    for (pi = 0; pi < pairs.length && out.length < lim; pi++) {
-      if (!(pairs[pi].sav >= MIN_TOP5_SAVINGS_USD)) continue;
-      it_s = String(pairs[pi].item).trim();
-      pk = it_s;
-      bpart = base.filter(function (row2) {
-        return String(row2.item).trim() === it_s;
-      });
-      siteU = {};
-      supU = {};
-      for (i = 0; i < bpart.length; i++) {
-        siteU[bpart[i].site] = 1;
-        supU[bpart[i].supplier] = 1;
-      }
-      nsite = 0;
-      for (k in siteU) nsite++;
-      nsup = 0;
-      for (k in supU) nsup++;
-      if (!bpart.length || nsite < 2 || nsup < 2) continue;
-      tot_spend = 0;
-      tot_qty = 0;
-      for (i = 0; i < bpart.length; i++) {
-        tot_spend += bpart[i].total_spend;
-        tot_qty += bpart[i].total_qty;
-      }
-      pmin = Math.min.apply(
-        null,
-        bpart.map(function (r) {
-          return r.unit_price;
-        })
-      );
-      pmax = Math.max.apply(
-        null,
-        bpart.map(function (r) {
-          return r.unit_price;
-        })
-      );
-      if (!(isFinite(pmin) && isFinite(pmax)) || pmax <= pmin + 1e-12) continue;
-      if (pmax - pmin > MAX_UNIT_PRICE_SPREAD_USD) continue;
-      pctNote = formatNotePctBelow(pmin, pmax);
-      r_lo = argMinUnitPriceRow(bpart);
-      r_hi = argMaxUnitPriceRow(bpart);
-      tsub = t.filter(function (row3) {
-        return String(row3.item).trim() === it_s;
-      });
-      tsub.sort(function (a, b) {
-        return b.savings - a.savings;
-      });
-      disp_site = r_hi.site;
-      disp_sup = r_hi.supplier;
-      if (tsub.length) {
-        disp_site = tsub[0].site;
-        disp_sup = tsub[0].supplier;
-      }
-      note =
-        pctNote[1] +
-        " · cross-site vs global min · " +
-        String(r_hi.supplier).slice(0, 50) +
-        " @ " +
-        String(r_hi.site).slice(0, 40) +
-        " (high) vs " +
-        String(r_lo.supplier).slice(0, 50) +
-        " @ " +
-        String(r_lo.site).slice(0, 40) +
-        " (low)";
-      pr = sortBaseByUnitPriceAsc(bpart);
-      labels = [];
-      prices = [];
-      colors = [];
-      for (i = 0; i < pr.length; i++) {
-        row = pr[i];
-        up = row.unit_price;
-        if (!isFinite(up)) continue;
-        lab = String(row.supplier).slice(0, 40) + " @ " + String(row.site).slice(0, 40);
-        labels.push(lab.slice(0, 100));
-        prices.push(Math.round(up));
-        is_m = up <= pmin + 1e-9 * (1 + Math.abs(pmin));
-        colors.push(is_m ? BAR_GREEN : BAR_BLUE);
-      }
-      if (!labels.length) continue;
-      groups_table = pr.map(function (r) {
-        return {
-          label: String(r.supplier).slice(0, 50) + " - " + String(r.site).slice(0, 50),
-          qty: Math.round(r.total_qty),
-        };
-      });
-      sup_rows = [];
-      for (i = 0; i < pr.length; i++) {
-        row = pr[i];
-        up2 = row.unit_price;
-        if (!isFinite(up2)) continue;
-        sup_rows.push({
-          supplier: String(row.supplier).slice(0, 200),
-          site: String(row.site).slice(0, 200),
-          unit_price: roundUsd(up2),
-          quantity: roundUsd(row.total_qty),
-          spend: roundUsd(row.total_spend),
-        });
-      }
-      pminVal = pmin;
-      export_rows = [];
-      for (i = 0; i < bpart.length; i++) {
-        row = bpart[i];
-        upv = row.unit_price;
-        qv = row.total_qty;
-        sav0 = isFinite(upv) && isFinite(qv) ? Math.max(0, (upv - pminVal) * qv) : 0;
-        export_rows.push({
-          "Item Number": pk,
-          Supplier: String(row.supplier),
-          Site: String(row.site),
-          "Unit Price": roundUsd(row.unit_price),
-          Quantity: roundUsd(row.total_qty),
-          Spend: roundUsd(row.total_spend),
-          Savings: roundUsd(sav0),
-          Category: "Category 2",
-        });
-      }
-      out.push({
-        harm_mece: 2,
-        item: (pk + " · cross-site").slice(0, 200),
-        item_number: pk.slice(0, 200),
-        display_site: String(disp_site).slice(0, 200),
-        display_supplier: String(disp_sup).slice(0, 200),
-        total_spend: Math.round(tot_spend),
-        total_quantity: Math.round(tot_qty),
-        price_gap_abs: roundUsd(pmax - pmin),
-        price_gap_pct: pctNote[0],
-        savings_subtitle: note,
-        has_price_variance: pmax > pmin + 1e-12,
-        lowest_supplier_site: (
-          String(r_lo.supplier).slice(0, 50) +
-          " @ " +
-          String(r_lo.site).slice(0, 40) +
-          " (low)"
-        ).slice(0, 200),
-        highest_supplier_site: (
-          String(r_hi.supplier).slice(0, 50) +
-          " @ " +
-          String(r_hi.site).slice(0, 40) +
-          " (high)"
-        ).slice(0, 200),
-        suppliers: sup_rows,
-        supplier_count: nsup,
-        site_count: nsite,
-        chart: {
-          labels: labels,
-          unit_prices: prices,
-          bar_colors: colors,
-          y_axis_label: "Unit price (USD / unit)",
-        },
-        groups: groups_table,
-        export_rows: export_rows,
-      });
-    }
-    return out;
-  }
-
   function top5Cat3(tagged, base, maxRows) {
     var t = tagged.filter(function (x) {
       return x.category === 3;
@@ -883,7 +684,9 @@
       qv,
       row,
       up2,
-      lim;
+      lim,
+      tCompute0,
+      byItemSup;
     for (i = 0; i < t.length; i++) {
       k = t[i].item + "\t" + t[i].supplier;
       gsum[k] = (gsum[k] || 0) + t[i].savings;
@@ -895,20 +698,30 @@
     pairs.sort(function (a, b) {
       return b.sav - a.sav;
     });
-    lim = maxRows === undefined ? TOP_N : maxRows === null ? Infinity : maxRows;
+    lim = maxRows === undefined ? TOP_N : maxRows === null ? MAX_ALL_OPPORTUNITY_CARDS : maxRows;
+    if (!(lim > 0) || lim === Infinity) lim = MAX_ALL_OPPORTUNITY_CARDS;
+    byItemSup = indexBaseByItemSupplier(base);
+    tCompute0 = typeof Date !== "undefined" && Date.now ? Date.now() : 0;
     var out = [];
     for (pi = 0; pi < pairs.length && out.length < lim; pi++) {
+      if (tCompute0 && Date.now() - tCompute0 > HARM_COMPUTE_BUDGET_MS) {
+        if (typeof console !== "undefined" && console.warn) {
+          try {
+            console.warn("[harm] top5Cat3 stopped early (time budget " + HARM_COMPUTE_BUDGET_MS + "ms)");
+          } catch (eW2) {}
+        }
+        break;
+      }
       if (!(pairs[pi].sav >= MIN_TOP5_SAVINGS_USD)) continue;
       it_s = String(pairs[pi].item).trim();
       sup_s = String(pairs[pi].supplier).trim();
       pk = it_s;
-      bpart = base.filter(function (row2) {
-        return String(row2.item).trim() === it_s && String(row2.supplier).trim() === sup_s;
-      });
+      k = it_s + "\t" + sup_s;
+      bpart = byItemSup[k] || [];
       var siteU = {};
       for (i = 0; i < bpart.length; i++) siteU[bpart[i].site] = 1;
       var nsite = 0;
-      for (k in siteU) nsite++;
+      for (var kSt in siteU) if (Object.prototype.hasOwnProperty.call(siteU, kSt)) nsite++;
       if (!bpart.length || nsite < 2) continue;
       tot_spend = 0;
       tot_qty = 0;
@@ -1045,12 +858,7 @@
     }
     var isum = p80SavingsIndex(taggedArr, category_id);
     var p80 = sav > 0 && isum.length ? partsTo80(isum, sav) : 0;
-    var top5 =
-      category_id === 1
-        ? top5Cat1(taggedArr, baseArr)
-        : category_id === 2
-          ? top5Cat2(taggedArr, baseArr)
-          : top5Cat3(taggedArr, baseArr);
+    var top5 = category_id === 1 ? top5Cat1(taggedArr, baseArr) : top5Cat3(taggedArr, baseArr);
     var pct_v = spend_cat > 0 ? Math.round(10 * ((100 * sav) / spend_cat)) / 10 : null;
     return {
       id: category_id,
@@ -1083,7 +891,6 @@
       pct_savings_vs_spend: null,
       categories: [],
       category_1: [],
-      category_2: [],
       category_3: [],
       top_5: [],
       top_10: [],
@@ -1115,6 +922,20 @@
     var fy;
     opts = opts || {};
     if (!rows || !rows.length) return harmEmpty("empty_rows");
+    if (rows.length > MAX_CLIENT_HARM_INPUT_ROWS) {
+      if (typeof console !== "undefined" && console.warn) {
+        try {
+          console.warn(
+            "[harm] Client harmonization skipped: " +
+              rows.length +
+              " rows > limit " +
+              MAX_CLIENT_HARM_INPUT_ROWS +
+              " (precompute with refresh_data.py)."
+          );
+        } catch (eL) {}
+      }
+      return harmEmpty("row_count_exceeds_client_limit_" + MAX_CLIENT_HARM_INPUT_ROWS);
+    }
     fy = opts.analysisYear != null && opts.analysisYear !== "" ? +opts.analysisYear : null;
     if (fy == null || isNaN(fy) || fy < 1990 || fy > 2100) fy = null;
     var bt = buildBaseTable(rows, fy);
@@ -1150,7 +971,7 @@
     for (i = 0; i < base.length; i++) current_spend += base[i].total_spend;
     var all_item_sav = {};
     for (i = 0; i < tagged.length; i++) {
-      if (tagged[i].category !== 1 && tagged[i].category !== 2 && tagged[i].category !== 3) continue;
+      if (tagged[i].category !== 1 && tagged[i].category !== 3) continue;
       var itk = tagged[i].item;
       all_item_sav[itk] = (all_item_sav[itk] || 0) + tagged[i].savings;
     }
@@ -1166,16 +987,14 @@
     var pct_spend = current_spend > 0 ? Math.round(10 * ((100 * total_opp) / current_spend)) / 10 : null;
     var catDefs = [
       [1, "Same site, different suppliers (unit price spread)"],
-      [2, "Different supplier, different plant (cross-site price spread)"],
       [3, "Same supplier, different sites (unit price spread)"],
     ];
     var categories = catDefs.map(function (cd) {
       return perCategoryBlock(tagged, cd[0], cd[1], base);
     });
-    var allCat1 = top5Cat1(tagged, base, null);
-    var allCat2 = top5Cat2(tagged, base, null);
-    var allCat3 = top5Cat3(tagged, base, null);
-    var all_opp = allCat1.concat(allCat2).concat(allCat3);
+    var allCat1 = top5Cat1(tagged, base, MAX_ALL_OPPORTUNITY_CARDS);
+    var allCat3 = top5Cat3(tagged, base, MAX_ALL_OPPORTUNITY_CARDS);
+    var all_opp = allCat1.concat(allCat3);
     all_opp.sort(function (a, b) {
       return harmSumExportRowsSavings(b) - harmSumExportRowsSavings(a);
     });
@@ -1196,7 +1015,6 @@
       validation: val,
       categories: categories,
       category_1: allCat1,
-      category_2: allCat2,
       category_3: allCat3,
       top_5: categories[0] && categories[0].top5 ? categories[0].top5.slice(0, TOP_N) : [],
       top_10: [],
@@ -1214,4 +1032,9 @@
 
   global.idpCalculateHarmonizationFromRows = calculateFromRows;
   global.idpHarmonizationItemKey = harmonizationItemKey;
+  global.idpHarmonizationLimits = {
+    maxClientInputRows: MAX_CLIENT_HARM_INPUT_ROWS,
+    maxAllOpportunityCards: MAX_ALL_OPPORTUNITY_CARDS,
+    computeBudgetMs: HARM_COMPUTE_BUDGET_MS,
+  };
 })(typeof window !== "undefined" ? window : this);

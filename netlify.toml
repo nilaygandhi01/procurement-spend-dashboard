@@ -1,8 +1,7 @@
-# Optional: deploy from this folder with Netlify CLI or drag-and-drop:
-#   npx netlify-cli deploy --prod --dir .
-# Useful if data.json exceeds GitHub's 100 MB blob limit.
+# Build regenerates JSON and stages the static dashboard bundle (data + PPI workbooks for same-origin fetch).
 [build]
-  publish = "."
+  publish = "src/dashboard"
+  command = "pip install -r requirements.txt && python src/scripts/refresh_data.py && cp data/outputs/data.json src/dashboard/ && find data/inputs/indexes -maxdepth 1 -name '*.xlsx' -exec cp {} src/dashboard/ \\;"
 
 [[headers]]
   for = "/data.json"

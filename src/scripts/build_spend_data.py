@@ -1,6 +1,6 @@
 """
-Read CCS Spend Excel, emit D payload for Cummins_IDP_Dashboard.html (used by refresh_data.py → data.json; optional spend_data.json + gzip if run directly).
-Run: python build_spend_data.py
+Read CCS Spend Excel, emit D payload for the dashboard (used by refresh_data.py → data/outputs/data.json; optional spend_data.json + gzip if run directly).
+Run (from repo root): python src/scripts/build_spend_data.py
 
 Set INPUT_XLSX to override the default workbook path.
 """
@@ -14,12 +14,13 @@ import sys
 import pandas as pd
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 DEFAULT_XLSX = os.path.join(
-    HERE,
+    ROOT,
     "3.4.01 Jan. 2024 - Apr. 2026 CCS Spend_Direct & Indirect - Copy.xlsx",
 )
-OUT_JSON = os.path.join(HERE, "spend_data.json")
-OUT_GZ = os.path.join(HERE, "spend_data.json.gz")
+OUT_JSON = os.path.join(ROOT, "data", "outputs", "spend_data.json")
+OUT_GZ = os.path.join(ROOT, "data", "outputs", "spend_data.json.gz")
 
 
 def _cell_str(x) -> str:

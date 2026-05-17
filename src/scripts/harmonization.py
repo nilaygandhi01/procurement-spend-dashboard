@@ -9,9 +9,12 @@ MECE cards skip unit-price spreads above MAX_UNIT_PRICE_SPREAD_USD (cap extreme 
 
 MECE order (exports: Categories 1, 2, and 3):
   1) Category 1 — same Item+Site, multiple suppliers, unit_price > min within (item, site)
-  2) Category 2 (remaining) — same Item across sites with ≥2 suppliers and ≥2 sites;
-     savings = (unit_price − min unit price for item across all tranches) × qty on tranches above min
-  3) Category 3 (remaining) — same Item+Supplier, multiple sites, unit_price > min across sites
+  2) Category 2 (remaining) — cross-site, supplier NOT at global item minimum price;
+     savings = (unit_price − global item min unit price) × qty (each base row claimed at most once)
+  3) Category 3 (remaining) — supplier HAS a global-min tranche for the item, multiple sites among unclaimed;
+     savings vs same global item minimum as Cat 2
+
+Rows claimed by Cat 1 are excluded from Cat 2/3 so the same tranche is never double-counted across categories.
 """
 from __future__ import annotations
 
@@ -21,6 +24,7 @@ import sys
 from datetime import datetime
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 VARIANCE_PCT = 0.02
@@ -253,69 +257,83 @@ def _format_note_pct_below(pmin: float, pmax: float) -> tuple[float, str]:
 
 def _assign_mece(base: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, int], float]:
     """
-    Append columns: category (0 none, 1,2,3), savings, min_ref_price
+    Append columns: category (0 none, 1, 2, 3), claimed_by_category (pd.NA or 1/2/3),
+    savings, min_ref_price. Each row at most one claiming category; Cat 2/3 use global item min.
     """
     b = base.copy()
     b["item"] = b["item"].map(lambda x: str(x).strip() if pd.notna(x) else "")
     b = b[b["item"] != ""]
+    n = len(b)
     b["category"] = 0
     b["savings"] = 0.0
-    b["min_ref_price"] = b["unit_price"].values  # overwrites below
+    b["min_ref_price"] = b["unit_price"].values
+    b["claimed_by_category"] = pd.Series(pd.NA, index=b.index, dtype="Int64")
 
-    n = len(b)
-    b["_idx"] = range(n)
-
-    # ---- Category 1: (Item, Site) — multiple suppliers at the same plant.
-    # For each tranche with unit_price > min price at that (item, site):
-    #   savings_tranche = (unit_price - min_price_at_plant) * total_qty_tranche
-    # Total Cat-1 savings for a slice is the sum of those tranche savings.
+    # ---- Pass 1 — Category 1: (Item, Site) — multiple suppliers; savings vs plant min.
     n_sup = b.groupby(["item", "site"], observed=True)["supplier"].transform("nunique")
     pmin1 = b.groupby(["item", "site"], observed=True)["unit_price"].transform("min")
     mask1 = (n_sup > 1) & (b["unit_price"] > pmin1 + 1e-12)
     b.loc[mask1, "min_ref_price"] = pmin1[mask1]
-    s1 = (b.loc[mask1, "unit_price"] - pmin1[mask1]) * b.loc[mask1, "total_qty"]
-    b.loc[mask1, "savings"] = s1
+    b.loc[mask1, "savings"] = (b.loc[mask1, "unit_price"] - pmin1[mask1]) * b.loc[mask1, "total_qty"]
     b.loc[mask1, "category"] = 1
+    b.loc[mask1, "claimed_by_category"] = 1
 
-    rem = b["category"] == 0
+    unclaimed = b["claimed_by_category"].isna()
+    if not unclaimed.any():
+        total_sav = float(b["savings"].sum())
+        val = {
+            "category_1_rows": int((b["category"] == 1).sum()),
+            "category_2_rows": int((b["category"] == 2).sum()),
+            "category_3_rows": int((b["category"] == 3).sum()),
+            "no_opportunity_rows": int((b["category"] == 0).sum()),
+        }
+        val["sum_matches_base"] = val["category_1_rows"] + val["category_2_rows"] + val["category_3_rows"] + val["no_opportunity_rows"] == n
+        return b, val, total_sav
 
-    # ---- Category 2: (Item) — multiple sites AND multiple suppliers among remaining rows;
-    # savings = (unit_price - min unit price for item) * qty where price > item min.
-    b2 = b.loc[rem].copy()
-    g_item_site = b2.groupby("item", observed=True)["site"].transform("nunique")
-    g_item_sup = b2.groupby("item", observed=True)["supplier"].transform("nunique")
-    pmin_item = b2.groupby("item", observed=True)["unit_price"].transform("min")
-    mask2 = (g_item_site > 1) & (g_item_sup > 1) & (b2["unit_price"] > pmin_item + 1e-12)
-    idx2 = b2.index[mask2]
-    b.loc[idx2, "min_ref_price"] = pmin_item[mask2].values
-    b.loc[idx2, "savings"] = (b2.loc[mask2, "unit_price"].values - pmin_item[mask2].values) * b2.loc[
-        mask2, "total_qty"
-    ].values
-    b.loc[idx2, "category"] = 2
+    # Global item minimum unit price (full base table).
+    gmin_item = b.groupby("item", observed=True)["unit_price"].transform("min")
+    b["_gmin_item"] = gmin_item
 
-    rem = b["category"] == 0
+    # Suppliers that have at least one tranche at the global minimum for that item.
+    up_min_per_is = b.groupby(["item", "supplier"], observed=True)["unit_price"].transform("min")
+    at_global_min = np.isclose(up_min_per_is, gmin_item, rtol=0.0, atol=1e-8 * (1.0 + np.abs(gmin_item)))
+    b["_supplier_at_global_min"] = at_global_min
 
-    # ---- Category 3: (Item, Supplier) — same supplier, multiple plants.
-    # Legitimate Cat-3 rows appear only where Cat 1 did not already attribute savings (same
-    # base tranche cannot be both multi-supplier-at-site and priced here). Thresholds
-    # (MIN_TOP5_SAVINGS_USD, MAX_UNIT_PRICE_SPREAD_USD) apply identically to Cat 1 and 3 cards.
-    # Only rows still category 0 after Cat 1 are eligible (MECE). For each tranche with
-    # unit_price > min price for that (item, supplier) across sites:
-    #   savings_tranche = (unit_price - min_price_across_plants) * total_qty_tranche
-    b2 = b.loc[rem].copy()
-    g3 = b2.groupby(["item", "supplier"], observed=True)
-    ns3 = b2.groupby(["item", "supplier"], observed=True)["site"].transform("nunique")
-    pmin3 = g3["unit_price"].transform("min")
-    mask3 = (ns3 > 1) & (b2["unit_price"] > pmin3 + 1e-12)
-    idx3 = b2.index[mask3]
-    b.loc[idx3, "min_ref_price"] = pmin3[mask3].values
-    b.loc[idx3, "savings"] = (b2.loc[mask3, "unit_price"].values - pmin3[mask3].values) * b2.loc[
-        mask3, "total_qty"
-    ].values
-    b.loc[idx3, "category"] = 3
+    # Structural counts among **unclaimed** rows only (matches legacy Cat 2 / Cat 3 gates).
+    ns_u = pd.Series(0, index=b.index, dtype=np.int64)
+    n_sup_u = pd.Series(0, index=b.index, dtype=np.int64)
+    ns_is_u = pd.Series(0, index=b.index, dtype=np.int64)
+    um = b.loc[unclaimed]
+    if len(um) > 0:
+        ns_u.loc[um.index] = um.groupby("item", observed=True)["site"].transform("nunique").astype(np.int64)
+        n_sup_u.loc[um.index] = um.groupby("item", observed=True)["supplier"].transform("nunique").astype(np.int64)
+        ns_is_u.loc[um.index] = um.groupby(["item", "supplier"], observed=True)["site"].transform("nunique").astype(
+            np.int64
+        )
+
+    prime = unclaimed & (b["unit_price"] > b["_gmin_item"] + 1e-12)
+    in_bench = b["_supplier_at_global_min"].astype(bool)
+
+    # Cat 3 (same supplier as a global-min tranche, multi-site among unclaimed): claim vs global min.
+    mask3 = prime & in_bench & (ns_is_u > 1)
+    b.loc[mask3, "min_ref_price"] = b.loc[mask3, "_gmin_item"]
+    b.loc[mask3, "savings"] = (b.loc[mask3, "unit_price"] - b.loc[mask3, "_gmin_item"]) * b.loc[mask3, "total_qty"]
+    b.loc[mask3, "category"] = 3
+    b.loc[mask3, "claimed_by_category"] = 3
+
+    # Cat 2 (supplier not at global min; item has ≥2 sites and ≥2 suppliers among unclaimed): vs global min.
+    still_u = b["claimed_by_category"].isna()
+    prime2 = still_u & (b["unit_price"] > b["_gmin_item"] + 1e-12)
+    mask2 = prime2 & (~in_bench) & (ns_u > 1) & (n_sup_u > 1)
+    b.loc[mask2, "min_ref_price"] = b.loc[mask2, "_gmin_item"]
+    b.loc[mask2, "savings"] = (b.loc[mask2, "unit_price"] - b.loc[mask2, "_gmin_item"]) * b.loc[mask2, "total_qty"]
+    b.loc[mask2, "category"] = 2
+    b.loc[mask2, "claimed_by_category"] = 2
 
     b.loc[b["category"] == 0, "savings"] = 0.0
     b.loc[b["category"] == 0, "min_ref_price"] = b.loc[b["category"] == 0, "unit_price"]
+
+    b.drop(columns=["_gmin_item", "_supplier_at_global_min"], inplace=True, errors="ignore")
 
     total_sav = float(b["savings"].sum())
     val = {
@@ -327,6 +345,94 @@ def _assign_mece(base: pd.DataFrame) -> tuple[pd.DataFrame, dict[str, int], floa
     val["sum_matches_base"] = val["category_1_rows"] + val["category_2_rows"] + val["category_3_rows"] + val["no_opportunity_rows"] == n
 
     return b, val, total_sav
+
+
+def _phantom_naive_cat23_export_overcount(tagged: pd.DataFrame, base: pd.DataFrame) -> tuple[float, float]:
+    """
+    Extra USD implied if Category 2/3 opportunity cards summed ``(unit_price − global_item_min) × qty``
+    across every base row in the slice, while Category 1 already owns some of those rows — i.e. naive export totals.
+
+    MECE ``total_opp`` counts each tranche once; this returns how much those naive card sums overshoot Cat 2/3
+    tagged savings alone (so ``total_opp + ph2 + ph3`` approximates a wrongly stacked headline).
+    """
+    phantom2 = 0.0
+    items2 = tagged.loc[tagged["category"] == 2, "item"].astype(str).str.strip().unique()
+    for it_s in items2:
+        pr = base[base["item"].astype(str).str.strip() == it_s]
+        if pr.empty:
+            continue
+        gmin = float(pr["unit_price"].min())
+        naive = 0.0
+        for _, r in pr.iterrows():
+            up = float(r["unit_price"])
+            q = float(r["total_qty"])
+            if math.isfinite(up) and math.isfinite(q) and up > gmin + 1e-12:
+                naive += (up - gmin) * q
+        tagged_sum = float(
+            tagged.loc[
+                (tagged["item"].astype(str).str.strip() == it_s) & (tagged["category"] == 2),
+                "savings",
+            ].sum()
+        )
+        phantom2 += max(0.0, naive - tagged_sum)
+
+    phantom3 = 0.0
+    pairs = tagged.loc[tagged["category"] == 3, ["item", "supplier"]].drop_duplicates()
+    for _, prow in pairs.iterrows():
+        it_s = str(prow["item"]).strip()
+        sup_s = str(prow["supplier"]).strip()
+        pr = base[
+            (base["item"].astype(str).str.strip() == it_s) & (base["supplier"].astype(str).str.strip() == sup_s)
+        ]
+        if pr.empty:
+            continue
+        b_it = base[base["item"].astype(str).str.strip() == it_s]
+        if b_it.empty:
+            continue
+        gmin_item = float(b_it["unit_price"].min())
+        naive = 0.0
+        for _, r in pr.iterrows():
+            up = float(r["unit_price"])
+            q = float(r["total_qty"])
+            if math.isfinite(up) and math.isfinite(q) and up > gmin_item + 1e-12:
+                naive += (up - gmin_item) * q
+        tagged_sum = float(
+            tagged.loc[
+                (tagged["item"].astype(str).str.strip() == it_s)
+                & (tagged["supplier"].astype(str).str.strip() == sup_s)
+                & (tagged["category"] == 3),
+                "savings",
+            ].sum()
+        )
+        phantom3 += max(0.0, naive - tagged_sum)
+
+    return phantom2, phantom3
+
+
+def _harm_debug_part_rows(tagged: pd.DataFrame, part: str) -> None:
+    """Print per-row claim/savings for validation (e.g. part 4984369)."""
+    p = str(part).strip()
+    sub = tagged[tagged["item"].astype(str).str.strip() == p].copy()
+    if sub.empty:
+        print(f"[harm][dedup-validation] no base rows for item={p!r}", flush=True)
+        return
+    sub = sub.sort_values(["site", "supplier"])
+    print(f"[harm][dedup-validation] item={p} rows={len(sub)}", flush=True)
+    for _, r in sub.iterrows():
+        cc = r["claimed_by_category"]
+        cc_s = int(cc) if pd.notna(cc) else None
+        sav = float(r["savings"] or 0.0)
+        print(
+            f"  site={str(r['site'])[:60]!r} supplier={str(r['supplier'])[:50]!r} "
+            f"qty={float(r['total_qty']):.2f} unit_price={float(r['unit_price']):.4f} "
+            f"claimed_by_category={cc_s} savings=${sav:,.2f}",
+            flush=True,
+        )
+    for cid in (1, 2, 3):
+        ssum = float(sub.loc[sub["category"] == cid, "savings"].sum())
+        print(f"[harm][dedup-validation] item={p} Cat {cid} sum=${ssum:,.2f}", flush=True)
+    tot = float(sub["savings"].sum())
+    print(f"[harm][dedup-validation] item={p} Cat1+2+3 row savings total=${tot:,.2f}", flush=True)
 
 
 def _fragmented_parts_count(base: pd.DataFrame) -> int:
@@ -364,6 +470,20 @@ def _parts_to_80(item_sav: pd.Series, total: float) -> int:
         if c >= target:
             break
     return n
+
+
+def _tagged_row_savings(tagged: pd.DataFrame, item: str, sup: str, site: str, cat: int) -> float:
+    """Savings for one base tranche if claimed for ``cat``; else 0."""
+    it, su, si = str(item).strip(), str(sup).strip(), str(site).strip()
+    m = tagged[
+        (tagged["item"].astype(str).str.strip() == it)
+        & (tagged["supplier"].astype(str).str.strip() == su)
+        & (tagged["site"].astype(str).str.strip() == si)
+        & (tagged["category"] == cat)
+    ]
+    if m.empty:
+        return 0.0
+    return float(m.iloc[0]["savings"])
 
 
 def _build_cat1_opportunities(
@@ -458,7 +578,7 @@ def _build_cat1_opportunities(
         for _, r in pr.iterrows():
             upv = float(r["unit_price"])
             qv = float(r["total_qty"])
-            sav0 = max(0.0, (upv - pmin) * qv) if math.isfinite(upv) and math.isfinite(qv) else 0.0
+            sav0 = _tagged_row_savings(tagged, pk, str(r["supplier"]), str(r["site"]), 1)
             export_rows.append(
                 {
                     "Item Number": pk,
@@ -595,12 +715,9 @@ def _build_cat2_opportunities(
                     "spend": _round_usd(r["total_spend"]),
                 }
             )
-        pmin_val = pmin
         export_rows: list[dict[str, Any]] = []
         for _, r in pr.iterrows():
-            upv = float(r["unit_price"])
-            qv = float(r["total_qty"])
-            sav0 = max(0.0, (upv - pmin_val) * qv) if math.isfinite(upv) and math.isfinite(qv) else 0.0
+            sav0 = _tagged_row_savings(tagged, pk, str(r["supplier"]), str(r["site"]), 2)
             export_rows.append(
                 {
                     "Item Number": pk,
@@ -733,9 +850,7 @@ def _build_cat3_opportunities(
             )
         export_rows: list[dict[str, Any]] = []
         for _, r in pr.iterrows():
-            upv = float(r["unit_price"])
-            qv = float(r["total_qty"])
-            sav0 = max(0.0, (upv - pmin) * qv) if math.isfinite(upv) and math.isfinite(qv) else 0.0
+            sav0 = _tagged_row_savings(tagged, pk, str(r["supplier"]), str(r["site"]), 3)
             export_rows.append(
                 {
                     "Item Number": pk,
@@ -839,6 +954,17 @@ def calculate_harmonization(df: pd.DataFrame) -> dict[str, Any]:
     frag = _fragmented_parts_count(base)
 
     tagged, val, total_opp = _assign_mece(base)
+    ph2, ph3 = _phantom_naive_cat23_export_overcount(tagged, base)
+    phantom_total = ph2 + ph3
+    approx_stacked_naive_headline_usd = total_opp + phantom_total
+    print(
+        f"[harm][dedup] total_opportunity_usd_mece={total_opp:,.2f} "
+        f"approx_naive_cat23_export_overcount_usd={phantom_total:,.2f} "
+        f"(cat2={ph2:,.2f} cat3={ph3:,.2f}) "
+        f"approx_headline_if_cat123_summed_naive_cat23_exports_usd={approx_stacked_naive_headline_usd:,.2f}",
+        flush=True,
+    )
+    _harm_debug_part_rows(tagged, "4984369")
     cat1_df = tagged[tagged["category"] == 1]
     cat3_df = tagged[tagged["category"] == 3]
     print(f"[harm] cat1_items={len(cat1_df)}", flush=True)

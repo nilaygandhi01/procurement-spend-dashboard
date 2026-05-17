@@ -1,5 +1,9 @@
 # Data files (too large for GitHub)
 data.json
+data/outputs/*.json
+data/outputs/*.csv
+src/dashboard/data.json
+src/dashboard/data.json.gz
 *.json
 *.xlsx
 *.xls
@@ -193,12 +197,20 @@ cython_debug/
 .cursorindexingignore
 
 # Example workbooks tracked in-repo (override *.xlsx above)
-!/example-excels/*.xlsx
-# Small PPI / index workbooks next to HTML (same-origin fetch); large spend cubes stay ignored
-!/WPU1017.xlsx
-!/WPU11430119.xlsx
-!/WPU114301.xlsx
-!/PCU333996333996.xlsx
-!/PCU3339133391.xlsx
+!/data/samples/example-excels/*.xlsx
+# Small PPI / index workbooks (same-origin fetch paths after copy to dashboard; canonical repo path)
+!/data/inputs/indexes/*.xlsx
 # Small index-data manifests (override *.json above)
-!/index-data/*.json
+!/data/inputs/index-data/*.json
+
+# --- Repo layout (procurement-spend-dashboard) ---
+logs/*.log
+!logs/.gitkeep
+src/**/__pycache__/
+.venv/
+venv/
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

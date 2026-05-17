@@ -1,9 +1,8 @@
 """
-procurement-spend-dashboard/refresh_data.py
--------------------------------------------
-Regenerates **data.json** in this same folder (the file Cummins_IDP_Dashboard.html loads via
-`fetch("data.json")`). Not under public/ or src/ — keep JSON next to the HTML when using
-`python -m http.server`.
+procurement-spend-dashboard/src/scripts/refresh_data.py
+---------------------------------------------------------
+Regenerates **data/outputs/data.json** (default). The dashboard in ``src/dashboard/index.html``
+loads ``./data.json`` when you copy the output next to the HTML (see README / netlify build).
 
 Output shape: a JSON object with
   1) "rows": list of flat row objects (incl. spend_type: Direct|Indirect)
@@ -14,7 +13,7 @@ Output shape: a JSON object with
 Data source: default Excel name below, or set INPUT_XLSX / OUT_JSON. Paths with spaces are fine.
 Optional: set MIRROR_DATA_TO_PUBLIC=1 to also copy data.json to public/data/data.json (for alternate hosting).
 
-Run (from this folder):  python refresh_data.py
+Run (from repo root):  python src/scripts/refresh_data.py
 """
 from __future__ import annotations
 
@@ -36,6 +35,7 @@ from build_spend_data import _cell_str
 from harmonization import calculate_harmonization
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = os.path.abspath(os.path.join(HERE, "..", ".."))
 
 
 def _json_sanitize(obj: Any) -> Any:
@@ -63,7 +63,7 @@ def _json_sanitize(obj: Any) -> Any:
 
 PRIMARY_XLSX = r"C:\Users\Nilay Gandhi\OneDrive - McKinsey & Company\Desktop\Nilay @ Work\procurement-spend-dashboard\3.4.01 Jan. 2024 - Apr. 2026 CCS Spend_Direct & Indirect - Copy.xlsx"
 LOCAL_NAME = "3.4.01 Jan. 2024 - Apr. 2026 CCS Spend_Direct & Indirect - Copy.xlsx"
-LOCAL_CANDIDATE = os.path.join(HERE, LOCAL_NAME)
+LOCAL_CANDIDATE = os.path.join(ROOT, LOCAL_NAME)
 
 # Map alternate Excel column names to internal names used in harmonization / build_enriched_rows.
 # Confirmed source headers (e.g. "Category L1", "Business Unit") are listed as aliases to canonicals.
@@ -669,12 +669,12 @@ def resolve_excel_path() -> str:
     if os.path.isfile(LOCAL_CANDIDATE):
         print("Using project-folder workbook:", LOCAL_CANDIDATE, file=sys.stderr)
         return os.path.normpath(LOCAL_CANDIDATE)
-    pattern = os.path.join(HERE, "3.4.01*CCS*Spend*Indirect*.xlsx")
+    pattern = os.path.join(ROOT, "3.4.01*CCS*Spend*Indirect*.xlsx")
     m = glob.glob(pattern)
     if len(m) == 1 and os.path.isfile(m[0]):
         print("Using single matching workbook in folder:", m[0], file=sys.stderr)
         return os.path.normpath(m[0])
-    m2 = [p for p in glob.glob(os.path.join(HERE, "*.xlsx")) if "node_modules" not in p.replace("\\", "/")]
+    m2 = [p for p in glob.glob(os.path.join(ROOT, "*.xlsx")) if "node_modules" not in p.replace("\\", "/")]
     if len(m2) == 1:
         print("Using only .xlsx in project folder:", m2[0], file=sys.stderr)
         return os.path.normpath(m2[0])
@@ -684,7 +684,8 @@ def resolve_excel_path() -> str:
 
 def main() -> int:
     xlsx = resolve_excel_path()
-    out = (os.environ.get("OUT_JSON") or os.environ.get("OUTPUT_JSON") or os.path.join(HERE, "data.json")).strip() or os.path.join(HERE, "data.json")
+    default_out = os.path.join(ROOT, "data", "outputs", "data.json")
+    out = (os.environ.get("OUT_JSON") or os.environ.get("OUTPUT_JSON") or default_out).strip() or default_out
     out = os.path.abspath(os.path.normpath(out))
     print("Reading Excel…", xlsx, flush=True)
     try:
@@ -760,12 +761,12 @@ def main() -> int:
     print(
         "Wrote",
         out,
-        f"— {n} flat rows, ytd y={ytd.get('current_year')}, ytd_spend%Δ={ytd.get('spend_change_pct')}, "
+        f"- {n} flat rows, ytd y={ytd.get('current_year')}, ytd_spend_pct_chg={ytd.get('spend_change_pct')}, "
         f"harmonization, {z // (1024 * 1024)} MB ({z} bytes)",
         flush=True,
     )
     if os.environ.get("MIRROR_DATA_TO_PUBLIC", "").strip().lower() in ("1", "true", "yes"):
-        pub = os.path.join(HERE, "public", "data", "data.json")
+        pub = os.path.join(ROOT, "public", "data", "data.json")
         try:
             os.makedirs(os.path.dirname(pub), exist_ok=True)
             shutil.copy2(out, pub)
