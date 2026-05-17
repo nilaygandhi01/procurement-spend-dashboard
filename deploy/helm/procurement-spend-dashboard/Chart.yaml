@@ -1,0 +1,16 @@
+apiVersion: v2
+name: procurement-spend-dashboard
+description: |
+  Cummins IDP procurement spend dashboard (static UI, sensitive client data).
+  Deployed via McKinsey-internal Deployer K8s PaaS only. NOT for public hosting.
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - procurement
+  - dashboard
+  - cummins
+  - internal-only
+maintainers:
+  - name: Nilay Gandhi
+    email: nilay_gandhi@mckinsey.com

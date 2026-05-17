@@ -1,0 +1,41 @@
+# Keep the runtime image lean and prevent sensitive payloads from leaking
+# into the container. Aligned with docs/DEPLOYMENT.md → Deployer K8s PaaS.
+
+# Sensitive client data — NEVER bake into the image.
+data/outputs/
+data.json
+**/data.json
+
+# Spend workbooks (potentially client data).
+*.xlsx
+!data/inputs/indexes/*.xlsx
+!data/samples/example-excels/*.xlsx
+
+# Dev artifacts
+.git/
+.github/
+.vscode/
+.idea/
+node_modules/
+**/node_modules/
+__pycache__/
+**/__pycache__/
+*.pyc
+
+# Local logs / scratch
+*.log
+scratch/
+tmp/
+terminals/
+
+# Tests / docs that don't need to ship
+tests/
+docs/
+*.md
+!README.md
+
+# Tooling
+scripts/
+src/scripts/
+requirements.txt
+netlify.toml

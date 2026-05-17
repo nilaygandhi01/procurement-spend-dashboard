@@ -1,0 +1,132 @@
+# values.yaml — Procurement Spend Dashboard on Deployer K8s PaaS.
+#
+# This chart is intentionally opinionated for client-data hosting:
+#   - Single replica by default (low-traffic internal tool); HPA optional.
+#   - data.json is consumed from a K8s Secret, NEVER baked into the image.
+#   - Ingress is locked to firm-network + Cloudflare Access (McKID SSO).
+#   - Network policy denies egress except DNS by default.
+
+# ----- Image -----
+# Replace `image.repository` with your Deployer-tenant container registry.
+image:
+  repository: ghcr.io/mckinsey-internal/procurement-spend-dashboard   # TODO: replace with Deployer registry path for tenant `cumminsidp`
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+
+imagePullSecrets:
+  # If your Deployer tenant requires a registry pull secret, name it here.
+  - name: deployer-registry
+
+# ----- Workload -----
+replicaCount: 1
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 101            # nginx user in nginx:1.27-alpine
+  runAsGroup: 101
+  fsGroup: 101
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: ["ALL"]
+
+podSecurityContext:
+  seccompProfile:
+    type: RuntimeDefault
+
+# Writable tmpfs for nginx (since readOnlyRootFilesystem: true).
+extraVolumes:
+  - name: nginx-cache
+    emptyDir: {}
+  - name: nginx-run
+    emptyDir: {}
+extraVolumeMounts:
+  - name: nginx-cache
+    mountPath: /var/cache/nginx
+  - name: nginx-run
+    mountPath: /var/run
+
+# ----- Sensitive data mount -----
+# The dashboard fetches /data.json at runtime. It is loaded from a K8s
+# Secret in the same namespace. Create the secret OUT OF BAND (do NOT
+# commit it; use Vault → External Secrets, or `kubectl create secret`
+# with the rendered file from your local refresh_data.py run).
+#
+#   kubectl -n <ns> create secret generic procurement-spend-data \
+#     --from-file=data.json=./data/outputs/data.json
+data:
+  secretName: procurement-spend-data
+  secretKey: data.json
+  # Mount path inside the nginx container (must match nginx root).
+  mountPath: /usr/share/nginx/html/data.json
+  subPath: data.json
+
+# ----- Service -----
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+
+# ----- Ingress -----
+# Cloudflare Access enforces McKID SSO at the edge. The annotations below
+# are PLACEHOLDERS — replace with the exact keys your Deployer tenant
+# requires. Validate with the Platform McKinsey "cumminsidp" workspace
+# docs before applying.
+ingress:
+  enabled: true
+  className: nginx           # Deployer-tenant ingress class; verify with Platform team.
+  host: cumminsidp.internal.mckinsey.com   # TODO: replace with the hostname provisioned for this app
+  annotations:
+    # --- Cloudflare Access / McKID SSO (PLACEHOLDER values) ---
+    cloudflare.access/enabled: "true"
+    cloudflare.access/team-name: "mckinsey"
+    cloudflare.access/application: "cumminsidp"
+    cloudflare.access/policy: "firm-network-mckid-sso"
+    # --- Firm-network only ---
+    nginx.ingress.kubernetes.io/whitelist-source-range: "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"   # TODO: replace with firm CIDR list from Platform McKinsey
+    # --- HTTPS only ---
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+  tls:
+    - hosts:
+        - cumminsidp.internal.mckinsey.com
+      secretName: cumminsidp-tls   # cert provisioned by tenant cert-manager / Cloudflare origin cert
+
+# ----- Probes -----
+probes:
+  liveness:
+    httpGet:
+      path: /healthz
+      port: 8080
+    initialDelaySeconds: 10
+    periodSeconds: 30
+    timeoutSeconds: 3
+  readiness:
+    httpGet:
+      path: /healthz
+      port: 8080
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 3
+
+# ----- Network policy -----
+# Deny all egress except DNS; allow ingress only from the namespace's
+# ingress controller. Override per your Deployer tenant's conventions.
+networkPolicy:
+  enabled: true
+  allowDNS: true
+
+# ----- HPA (off by default; internal-only tool) -----
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 3
+  targetCPUUtilizationPercentage: 70
