@@ -1,0 +1,16 @@
+# Passwordless access configuration for McK-Internal/cummins-idp-dashboard
+# Created by EP-API GitHub Service
+
+issuer: https://token.actions.githubusercontent.com
+subject_pattern: repo:McK-Internal/lrah-control-plane:.*
+
+permissions:
+  actions: write
+  administration: write
+  contents: write
+  dependabot_secrets: write
+  environments: write
+  metadata: read
+  pull_requests: write
+  secrets: write
+  workflows: write

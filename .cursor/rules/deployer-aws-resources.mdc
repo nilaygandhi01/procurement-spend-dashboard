@@ -1,0 +1,218 @@
+---
+description: "Deployer K8s PaaS AWS resource governance: naming conventions and IRSA policy for Deployer/LRAH repos. Load when provisioning or discussing any AWS resource."
+alwaysApply: false
+---
+
+# Deployer AWS Resource Governance
+
+This rule is scoped to Deployer project contexts only. It must not interfere with
+non-Deployer repositories. If you are not working in a Deployer/LRAH repository, ignore
+this rule entirely.
+
+---
+
+## Section 1 — Naming Conventions
+
+All Deployer AWS resource names are derived from three platform identity values
+(`account-id`, `env-id`, `name`) resolved at runtime from
+`@.cursor/skills/deployer-skills/deployer-platform-steering.md`.
+
+### S3 Naming Formulas
+
+| Resource | Formula |
+|----------|---------|
+| S3 bucket | `{account-id}-{env-id}-{name}` |
+| IAM ReadWrite role | `S3-{account-id}-{env-id}-{name}-ReadWrite` |
+| IAM Read role | `S3-{account-id}-{env-id}-{name}-Read` |
+| SA role (IRSA) | Read from ConfigMap `sa-role-{account-id}-{env-id}` (not derived from `{name}`) |
+
+### S3 Example (generic placeholders)
+
+Given `name = images`, the resolved names are:
+- Bucket: `{account-id}-{env-id}-images`
+- ReadWrite role: `S3-{account-id}-{env-id}-images-ReadWrite`
+- Read role: `S3-{account-id}-{env-id}-images-Read`
+
+Do not embed real account IDs, environment IDs, or region values in generated
+files — the skill resolves all values from `deployer-platform-steering.md` at runtime.
+
+### S3 Name Enforcement
+
+If a developer proposes a name that deviates from these formulas, reject it
+inline and provide the corrected name using the appropriate formula substitution.
+Example: if the developer proposes `my-bucket`, reject and respond with the
+correct formula: `{account-id}-{env-id}-my-bucket`.
+
+---
+
+### SQS Naming Formulas
+
+| Resource | Formula |
+|----------|---------|
+| SQS queue name | `{account-id}-{env-id}-{name}` |
+| IAM ReadWrite policy | `SQS-{account-id}-{env-id}-ReadWrite` |
+| IAM Read policy | `SQS-{account-id}-{env-id}-Read` |
+| Queue URL | `https://sqs.{region}.amazonaws.com/{account-id}/{account-id}-{env-id}-{name}` |
+| SA role (IRSA) | Read from ConfigMap `sa-role-{account-id}-{env-id}` (same as S3; not derived from `{name}`) |
+
+> **SQS vs S3 IAM distinction**: SQS policies are environment-scoped, not
+> queue-scoped. LRAH automatically creates both `SQS-{account-id}-{env-id}-Read`
+> and `SQS-{account-id}-{env-id}-ReadWrite` for the environment and attaches them
+> to the SA role. No per-queue IAM selection is required from the developer.
+
+### SQS Queue Name Validation Rules
+
+The logical `{name}` part of the queue name must satisfy all of the following
+before the fully-resolved name `{account-id}-{env-id}-{name}` is used:
+
+| Rule | Constraint |
+|------|-----------|
+| Valid characters | `a-z`, `A-Z`, `0-9`, `-`, `_` only |
+| Maximum total length | Fully-resolved name ≤ 80 characters (including prefix) |
+| Case-sensitive | Queue names are case-sensitive; treat `MyQueue` and `myqueue` as distinct |
+| FIFO suffix | FIFO queues must end in `.fifo`; this suffix counts toward the 80-char limit |
+
+### SQS 10-Queue Advisory
+
+Count only **uncommented** `"<name>" : {}` entries inside the `sqs_queues` block
+in `main.tf` (lines starting with `#` are excluded). If the count is ≥ 9, display:
+
+> "You currently have N queue(s) provisioned. LRAH enforces a maximum of 10 per
+> environment. Adding this queue will bring you to N+1."
+
+This is advisory only; do not block provisioning unless the count would exceed 10.
+
+### SQS Name Enforcement
+
+If a developer proposes a queue `{name}` that would produce a non-conforming
+fully-resolved name, reject it inline, name the specific violated constraint,
+and provide the corrected formula substitution. Example: if the developer
+proposes `my queue` (contains a space), reject and respond:
+
+> "Queue names may only contain `a-z`, `A-Z`, `0-9`, `-`, and `_`. Suggested
+> name: `my-queue` → resolved as `{account-id}-{env-id}-my-queue`."
+
+---
+
+### RDS Naming Formulas
+
+| Resource | Formula |
+|----------|---------|
+| PostgreSQL ConfigMap | `postgresql-databases-{env-id}-{dbname}` |
+| PostgreSQL Secret | `postgresql-roles-{env-id}-{dbname}` |
+| MySQL ConfigMap | `mysql-databases-{env-id}-{dbname}` |
+| MySQL Secret | `mysql-roles-{env-id}-{dbname}` |
+| Secret key (both) | `{env-id}-{dbname}-{rolename}` |
+
+> `{dbname}` is user-provided at skill invocation time. The formula is the canonical pattern; the skill resolves the value at runtime.
+
+### RDS Name Validation Rules
+
+The `{dbname}` portion (Terraform map key) must satisfy:
+
+| Rule | Constraint |
+|------|-----------|
+| Valid characters | Lowercase alphanumeric and hyphens only (`a-z`, `0-9`, `-`) |
+| Leading/trailing hyphens | Not allowed |
+| Scope | Applies to the map key only — LRAH prefixes `{env-id}-` internally for K8s resource names |
+
+### RDS 5-Database Advisory
+
+Count only **uncommented** entries in the `postgresql_databases` or `mysql_databases` block in `main.tf`. If the count is ≥ 4, display:
+
+> "You currently have N database(s) provisioned. The platform enforces a maximum of 5 per environment. Adding this database will bring you to N+1."
+
+This is advisory only; do not block provisioning unless the count would exceed 5.
+
+### RDS Name Enforcement
+
+If a developer proposes a `{dbname}` that violates validation rules, reject it inline, name the specific violated constraint, and provide the corrected form. Example: if the developer proposes `My DB` (contains uppercase and space), reject and respond:
+
+> "Database names may only contain lowercase letters, digits, and hyphens. Suggested name: `my-db`."
+
+---
+
+## Section 2 — IRSA Policy
+
+### Credential Prohibition
+
+Hardcoded AWS credentials are **prohibited** in all contexts:
+- Terraform configurations
+- Kubernetes manifests and environment variables
+- Application source code
+- CI/CD pipeline definitions
+
+Prohibited credential keys (must never appear as values): `AWS_ACCESS_KEY_ID`,
+`AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`, `aws_access_key_id`,
+`aws_secret_access_key`, `aws_session_token`.
+
+If any of these appear as hardcoded values in existing manifests or code, flag
+them and instruct the developer to remove them immediately.
+
+### LRAH Module Auto-Grant
+
+The LRAH Terraform module automatically grants the SA role access to every AWS
+resource added to the corresponding map entry (`s3_buckets`, `sqs_queues`, etc.).
+No additional IAM configuration is required from the developer. Do not instruct
+the developer to create or modify IAM policies manually.
+
+For SQS specifically: LRAH creates both `SQS-{account-id}-{env-id}-Read` and
+`SQS-{account-id}-{env-id}-ReadWrite` policies for the environment and attaches
+them to the existing SA role from ConfigMap `sa-role-{account-id}-{env-id}`.
+No new IAM role is created for SQS access.
+
+---
+
+## Section 3 — Verification Protocol
+
+This protocol applies to all Deployer skills routed through the platform agent. Every
+skill step that generates, modifies, or instructs modification of a file must
+include an explicit **Verify** block and follow this protocol.
+
+### Protocol Flow
+
+```
+Step completes file modification
+  → Re-read target file
+  → Evaluate each verification criterion (binary pass/fail)
+  → ALL pass? → Advance to next step
+  → ANY fail?
+      → Non-retryable condition?
+          → HALT immediately
+          → Report: expected value vs. actual value
+          → Escalate to developer — do not attempt correction
+      → Retryable condition?
+          → Correct the issue
+          → Re-verify (attempt 1 of 2)
+          → Still failing?
+              → Correct the issue
+              → Re-verify (attempt 2 of 2)
+              → Still failing?
+                  → HALT
+                  → Display expected vs. actual for each failing criterion
+                  → Ask developer to resolve manually
+```
+
+### Retry Hard Limit
+
+**Maximum 2 retry attempts per step.** No skill may override this limit.
+After 2 failed retry attempts, halt immediately and escalate.
+
+### Criterion Requirements
+
+All verification criteria must be **deterministic and binary** (pass or fail).
+Subjective assessments such as "looks correct" or "appears to be set" are
+prohibited. Each criterion must have a concrete, testable condition.
+
+### Retryable vs. Non-Retryable Conditions
+
+| Type | Examples | Action |
+|------|----------|--------|
+| Retryable | Expected content missing; content malformed; wrong value substituted | Correct and re-verify (max 2 attempts) |
+| Non-retryable | Target file not found; pre-existing unrelated error; external system failure | HALT immediately — do not attempt correction |
+
+### Verify Block Structure
+
+Each skill step's Verify block must specify:
+1. The pass/fail criteria (one line each, binary)
+2. Which failure conditions are non-retryable for that specific step

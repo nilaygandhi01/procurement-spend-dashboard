@@ -1,0 +1,116 @@
+name: cumminsidp-SCA Scheduled Audit
+
+run-name: 🔍 SCA Scheduled Audit - ${{ github.ref_name }}
+
+on:
+  schedule:
+    - cron: '0 6 * * *'   # daily at 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+  actions: write
+
+jobs:
+  sca-scan:
+    name: SCA - JFrog Xray (Scheduled)
+    runs-on: [gh-larger-linux-mini]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Detect package manager
+        id: detect-pm
+        run: |
+          base="deployer-apps/cumminsidp/src"
+          if [ -f "$base/package-lock.json" ]; then
+            echo "manager=npm" >> "$GITHUB_OUTPUT"
+            echo "lock_path=./$base/package-lock.json" >> "$GITHUB_OUTPUT"
+          elif [ -f "$base/yarn.lock" ]; then
+            echo "manager=yarn" >> "$GITHUB_OUTPUT"
+            echo "lock_path=./$base/yarn.lock" >> "$GITHUB_OUTPUT"
+          else
+            echo "manager=none" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Setup Node.js (npm)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: ${{ steps.detect-pm.outputs.lock_path }}
+        if: steps.detect-pm.outputs.manager == 'npm'
+
+      - name: Setup Node.js (yarn)
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'yarn'
+          cache-dependency-path: ${{ steps.detect-pm.outputs.lock_path }}
+        if: steps.detect-pm.outputs.manager == 'yarn'
+
+      - name: Enable corepack (yarn)
+        run: corepack enable
+        if: steps.detect-pm.outputs.manager == 'yarn'
+
+      - name: Install dependencies
+        run: |
+          cd deployer-apps/cumminsidp/src
+          if [ "${{ steps.detect-pm.outputs.manager }}" = "npm" ]; then
+            npm ci
+          elif [ "${{ steps.detect-pm.outputs.manager }}" = "yarn" ]; then
+            yarn install --frozen-lockfile
+          else
+            echo "No lockfile found (package-lock.json or yarn.lock)." >&2
+            exit 1
+          fi
+
+      - name: Set up JFrog CLI
+        uses: jfrog/setup-jfrog-cli@v4
+        env:
+          JF_URL: https://mckinsey.jfrog.io
+        with:
+          oidc-provider-name: svc-24468-rw
+          oidc-audience: rw
+
+      - name: Verify jq is available
+        run: |
+          command -v jq >/dev/null || { echo '::error::jq not installed'; exit 1; }
+
+      - name: Run Xray dependency audit
+        run: |
+          cd deployer-apps/cumminsidp/src
+          XRAY_JSON="$GITHUB_WORKSPACE/xray-results.json"
+          jf audit --format=json > "$XRAY_JSON"
+          if ! jq . "$XRAY_JSON" >/dev/null 2>&1; then
+            echo "::error::xray-results.json is not valid JSON. JFrog CLI may have written non-JSON lines to stdout alongside the payload; see https://github.com/jfrog/jfrog-cli/issues/1512"
+            exit 1
+          fi
+          CRITICAL=$(jq '(.vulnerabilities // []) | map(select(.severity == "Critical")) | length' "$XRAY_JSON")
+          HIGH=$(jq '(.vulnerabilities // []) | map(select(.severity == "High")) | length' "$XRAY_JSON")
+
+          echo "## SCA Audit Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Severity | Count |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| Critical | $CRITICAL |" >> $GITHUB_STEP_SUMMARY
+          echo "| High | $HIGH |" >> $GITHUB_STEP_SUMMARY
+
+          if [ "$CRITICAL" -gt 0 ] || [ "$HIGH" -gt 0 ]; then
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "> ❌ Gate failed — update or patch the affected dependencies." >> $GITHUB_STEP_SUMMARY
+            echo "::error::Found $CRITICAL critical and $HIGH high vulnerabilities. Check artifact xray-results-scheduled-${GITHUB_RUN_ID} for details."
+            exit 1
+          fi
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "> ✅ No critical or high vulnerabilities found." >> $GITHUB_STEP_SUMMARY
+
+      - name: Upload Xray scan results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: xray-results-scheduled-${{ github.run_id }}
+          path: xray-results.json
+          retention-days: 30

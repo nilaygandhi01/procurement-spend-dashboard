@@ -1,0 +1,118 @@
+---
+description: "Checks and syncs deployer skills at the start of every relevant conversation."
+alwaysApply: true
+---
+
+# Deployer Skill Sync
+
+At the **start of every conversation**, determine whether deployer skills need to be initialized or updated. Follow the logic below.
+
+## Step 1: Check if first run
+
+Check whether `.cursor/skills/deployer-skills/.version` exists using the Read tool.
+
+- **If `.version` does NOT exist** — this is a first run. Go to **Step 3** (Initial Sync).
+- **If `.version` exists** — skills have been synced before. Store its contents (trimmed) as `LOCAL_VERSION`. Go to **Step 2**.
+
+## Step 2: Check if conversation involves deployer skills
+
+Only run the update check if the conversation is relevant. A conversation is relevant if **any** of these conditions are true:
+
+### 2a. Explicit skill references (direct mentions)
+
+- The user mentions deployer skills, sync skills, update skills, refresh skills, or any `deployer-*` skill by name.
+- The user references a file under `.cursor/skills/deployer-skills/`.
+
+### 2b. Intent-based detection (user's goal would trigger a deployer skill)
+
+Check whether the user's prompt matches trigger phrases for any installed deployer skill. Match both imperative commands ("deploy my app") and question forms ("how do I deploy?", "how do I build an application?"). Scan the `description` field in the YAML frontmatter of each `SKILL.md` under `.cursor/skills/deployer-skills/` for "Use when" phrases. Common intent keywords by skill:
+
+| Intent keywords / phrases | Skill that would be triggered |
+|---|---|
+| "deploy", "deploy application", "deploy to production", "deploy v0", "deploy lovable", "how do I deploy", "how to deploy", "ingress host", "subdomain prefix", "Kyverno" | deployer-deploy-application |
+| "dockerize", "containerize", "create Dockerfile", "how do I containerize" | deployer-dockerize-application |
+| "download v0", "pull v0", "import from v0", "v0.dev", "v0 project", "how do I use v0" | deployer-download-v0-project |
+| "download lovable", "import lovable", "import from lovable", "lovable project", "how do I use lovable" | deployer-download-lovable-app |
+| "convert supabase", "convert to postgres", "migrate database", "switch to RDS", "how do I migrate my database" | deployer-convert-supabase-to-postgresql |
+| "execute deployment", "run deployment workflows", "trigger deploy", "how do I run the deployment" | deployer-execute-deployment-workflows |
+| "push to github", "commit and push", "push changes", "how do I push my code" | deployer-push-to-github |
+| "add S3", "create bucket", "object storage", "store files in S3", "S3 access", "how do I add storage", "how do I use S3" | deployer-s3-feature-skill |
+| "add SQS", "create queue", "message queue", "event-driven", "pub/sub", "how do I add a queue", "how do I use SQS" | deployer-sqs-feature-skill |
+| "move secrets", "parameterize API keys", "secrets to vault", "how do I manage secrets", "how do I store secrets" | deployer-move-secrets-to-vault |
+| "configure auth", "manage McKID", "add members", "OIDC", "McKinsey ID", "how do I add authentication", "how do I manage access" | deployer-mckid-manage-stack |
+| "troubleshoot", "app isn't loading", "can't access my app", "app keeps restarting", "503 error", "502 error", "blank page", "deployment failed", "app is down", "why isn't my app working", "how do I fix my app" | deployer-troubleshoot-app |
+| "assess my app", "is my app deployable", "check suitability", "can I deploy this", "evaluate my application", "is my app compatible" | deployer-app-suitability-assessment |
+| "I want to build an app", "create new application", "start a new project", "what kind of app should I build", "which development approach", "build a dashboard", "new app", "how do I build an application" | deployer-app-development |
+| "create data dashboard", "build dashboard with data files", "work with Excel data", "data-enabled application", "sensitive data dashboard", "CSV dashboard" | deployer-app-data-enabled |
+| "list templates", "show available templates", "fetch template", "get starter code", "template registry", "available templates" | deployer-template-registry |
+| "upload data to S3", "sync data files", "push data to production", "move data to S3", "upload files to bucket" | deployer-s3-upload |
+| "convert my app", "make my app compatible", "application conversion" | deployer-app-conversion |
+| "postgresql", "postgres", "add database", "create database", "pg database", "rds database", "connect to postgres", "use postgres", "add postgres", "how do I add a database", "how do I use postgres" | deployer-postgresql-feature-skill |
+| "mysql", "add mysql", "create mysql", "mysql database", "rds mysql", "connect to mysql", "use mysql", "how do I add mysql", "how do I use mysql" | deployer-mysql-feature-skill |
+
+If the user's prompt does not match any of the above — neither explicit references (2a) nor intent keywords (2b) — do nothing. Stop here.
+
+### 2c. Check for update deferral
+
+Before fetching the remote version, check if the user has previously deferred update prompts by reading `.cursor/skills/deployer-skills/.update-deferred`:
+
+- **If the file does not exist**: No deferral active. Proceed to the version check.
+- **If the file exists**: Read its contents as an ISO 8601 timestamp. Compare with the current date/time.
+  - **If the current time is before the deferred-until timestamp**: The user has deferred updates. Silently skip the version check. Do not prompt.
+  - **If the current time is at or past the timestamp**: The deferral has expired. Delete the `.update-deferred` file and proceed to the version check.
+
+### 2d. Fetch and compare versions
+
+If deployer skills are in scope and no active deferral exists, fetch the latest remote version:
+
+```
+gh api repos/McK-Internal/code-beyond-ai-dlc/tags --paginate | jq -r -s 'try ([add | .[].name | select(startswith("@codebeyond/components-"))] | map(ltrimstr("@codebeyond/components-v") | split(".") | map(tonumber)) | sort | last | map(tostring) | join(".") | "@codebeyond/components-v" + .) catch empty'
+```
+
+Store the result as `LATEST_TAG`.
+
+- **If the command fails or returns no valid tag**: Silently skip. Do not interrupt the user.
+- **If `LOCAL_VERSION` equals `LATEST_TAG`**: Do nothing. No output to the user.
+- **If versions differ**: Prompt the user with the AskQuestion tool:
+  - Question: "A new version of deployer skills is available (`<LATEST_TAG>`, currently on `<LOCAL_VERSION>`). Would you like to update?"
+  - Options:
+    1. **"Yes, update now"** — Read and follow the `deployer-skill-manager` SKILL at `.cursor/skills/deployer-skills/deployer-skill-manager/SKILL.md` starting from **Step 5** (legacy cleanup, skills listing, and download).
+    2. **"Skip for now"** — Skip the update for this conversation only. No deferral file is written.
+    3. **"Don't ask for the rest of the day"** — Write the end-of-day timestamp (today at 23:59:59 in the user's local timezone) to `.cursor/skills/deployer-skills/.update-deferred` and skip.
+    4. **"Don't ask for a week"** — Write a timestamp 7 days from now to `.cursor/skills/deployer-skills/.update-deferred` and skip.
+
+  **Writing the deferral file**: Compute the target timestamp and write it. Use the platform-appropriate command:
+
+  **Rest of the day (end-of-day timestamp):**
+  - **macOS:** `echo "$(date -v23H -v59M -v59S +%Y-%m-%dT%H:%M:%S)" > .cursor/skills/deployer-skills/.update-deferred`
+  - **Linux / Git Bash:** `echo "$(date -d 'today 23:59:59' +%Y-%m-%dT%H:%M:%S)" > .cursor/skills/deployer-skills/.update-deferred`
+  - **Windows (PowerShell):** `(Get-Date).Date.AddDays(1).AddSeconds(-1).ToString("yyyy-MM-ddTHH:mm:ss") | Out-File -NoNewline .cursor/skills/deployer-skills/.update-deferred`
+
+  **One week from now:**
+  - **macOS:** `echo "$(date -v+7d -v23H -v59M -v59S +%Y-%m-%dT%H:%M:%S)" > .cursor/skills/deployer-skills/.update-deferred`
+  - **Linux / Git Bash:** `echo "$(date -d '+7 days 23:59:59' +%Y-%m-%dT%H:%M:%S)" > .cursor/skills/deployer-skills/.update-deferred`
+  - **Windows (PowerShell):** `(Get-Date).Date.AddDays(8).AddSeconds(-1).ToString("yyyy-MM-ddTHH:mm:ss") | Out-File -NoNewline .cursor/skills/deployer-skills/.update-deferred`
+
+  Detect the platform from the user's OS (available in the system context) and use the matching command. Both deferral options use end-of-day (`23:59:59`) for consistency.
+
+## Step 3: Initial Sync (first run only)
+
+When `.version` is missing, deployer skills have never been installed. Run the sync automatically — no prompt needed.
+
+Read and follow the `deployer-skill-manager` SKILL at `.cursor/skills/deployer-skills/deployer-skill-manager/SKILL.md`, executing all steps from **Step 1** onward.
+
+After the sync completes, briefly inform the user: "Deployer skills initialized at `<version>`." with the list of installed skill names.
+
+If the sync fails on first run, inform the user of the error so they can fix prerequisites (e.g., `gh` CLI, repo access).
+
+## Step 4: Manual Sync
+
+When the user explicitly requests a sync ("sync skills", "update deployer skills", "refresh skills"), read and follow the `deployer-skill-manager` SKILL at `.cursor/skills/deployer-skills/deployer-skill-manager/SKILL.md`, executing all steps from **Step 1** onward. Proceed without prompting. Manual sync **ignores any active deferral** — if the user explicitly asks, always sync.
+
+## Important
+
+- Steps 2-4 should run **concurrently** with handling the user's request — do not make the user wait.
+- Step 3 (initial sync) runs regardless of conversation topic since there are no skills to use yet.
+- All sync operations require `gh` CLI authenticated with access to `McK-Internal/code-beyond-ai-dlc`.
+- The installed version is tracked in `.cursor/skills/deployer-skills/.version`.
+- The update deferral is tracked in `.cursor/skills/deployer-skills/.update-deferred`. This file should be added to `.gitignore` since it is local preference, not shared configuration.

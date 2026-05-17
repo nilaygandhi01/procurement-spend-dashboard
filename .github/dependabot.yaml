@@ -1,0 +1,42 @@
+version: 2
+registries:
+  tfe:
+    type: terraform-registry
+    url: https://terraform.mckinsey.cloud
+    token: '${{ secrets.DEPENDABOT_TFE_API_RO_TOKEN }}'
+  mck-github:
+    # PAT with read access to private actions in McK-Internal
+    type: git
+    url: https://github.com
+    username: x-access-token
+    password: '${{ secrets.GA_PAT }}'
+updates:
+  - package-ecosystem: 'github-actions'
+    directory: '/'
+    allow:
+      - dependency-name: 'McK-Internal/lrah-control-plane/.github/workflows/*'
+      - dependency-name: 'McK-Internal/github-workflows/.github/workflows/*'
+    groups:
+      control-plane-workflow-updates:
+        patterns:
+          - 'McK-Internal/lrah-control-plane/.github/workflows/*'
+          - 'McK-Internal/github-workflows/.github/workflows/*'
+    commit-message:
+      prefix: 'chore(control-plane-workflows): '
+      include: 'scope'
+    registries:
+      - 'mck-github'
+    schedule:
+      interval: weekly
+  - package-ecosystem: 'terraform'
+    directories:
+      - 'deployer-apps/*/*/iac'
+    commit-message:
+      prefix: 'chore: '
+    schedule:
+      interval: weekly
+      day: friday
+      time: "00:00"
+      timezone: UTC
+    registries:
+      - 'tfe'
