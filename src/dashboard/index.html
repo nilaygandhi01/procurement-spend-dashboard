@@ -3072,14 +3072,18 @@
           <div class="idp-panel" id="ia2-indexes-panel">
             <p class="mb-2 text-xs font-semibold uppercase tracking-wide idp-muted">Indexes</p>
             <p class="mb-3 text-xs leading-snug idp-muted">Built-in PPI series (yearly, rebased to 2024 calendar-year average = 100).</p>
-            <div class="ia2-index-cb-list flex flex-col gap-2">
+            <p class="mb-1.5 text-xs font-medium tabular-nums" style="color: #334155">
+              Selected for chart: <span id="ia-index-count">0</span>
+              <span class="ml-1 font-normal idp-muted">(max 2 PPI indexes)</span>
+            </p>
+            <div class="ia2-index-cb-list flex flex-col gap-2" role="group" aria-label="Built-in PPI indexes">
               <label class="ia2-index-cb-row flex cursor-pointer items-start gap-2 rounded-md px-1 py-1 hover:bg-slate-50">
-                <input type="checkbox" id="ia2-cb-index-WPU10" class="mt-1 h-4 w-4 shrink-0 accent-[#F07F00]" />
-                <span class="text-sm" style="color: #333"><strong>WPU10</strong> — Metals and Metal Products</span>
+                <input type="checkbox" id="ia2-cb-index-WPU10" data-ia-index-code="WPU10" class="mt-1 h-4 w-4 shrink-0 accent-[#F07F00]" />
+                <span class="text-sm" style="color: #333">Metals &amp; Metal Products Index</span>
               </label>
               <label class="ia2-index-cb-row flex cursor-pointer items-start gap-2 rounded-md px-1 py-1 hover:bg-slate-50">
-                <input type="checkbox" id="ia2-cb-index-PCU332332" class="mt-1 h-4 w-4 shrink-0 accent-[#F07F00]" />
-                <span class="text-sm" style="color: #333"><strong>PCU332332</strong> — Fabricated Metal Products</span>
+                <input type="checkbox" id="ia2-cb-index-PCU332332" data-ia-index-code="PCU332332" class="mt-1 h-4 w-4 shrink-0 accent-[#F07F00]" />
+                <span class="text-sm" style="color: #333">Fabricated Metal Products Index</span>
               </label>
             </div>
           </div>
@@ -3119,6 +3123,7 @@
                 <div id="ia-parts-v-window" class="relative px-2 py-1"></div>
               </div>
             </div>
+            <p id="ia-part-list-cap-hint" class="mt-1.5 hidden text-xs leading-snug idp-muted" aria-live="polite"></p>
             <p id="ia-part-data-unavailable" class="hidden rounded border border-amber-200 bg-amber-50 p-3 text-xs" style="color: #92400e" hidden>
               Spend data must load before parts appear here.
               <span class="font-medium">Failed to load spend data. Copy data/outputs/data.json next to this page as data.json</span> (see README) or use “Load spend file”, then retry.
@@ -3374,6 +3379,8 @@
   /** Index Analysis: virtual list + async scan (avoid O(rows) on every paint). */
   var iaPartsDataset = {
     allParts: [],
+    matchIdx: [],
+    displayIdx: [],
     filteredIdx: [],
     partSpendQty: {},
     allowedSet: null,
@@ -3382,6 +3389,8 @@
     building: false,
     buildToken: 0
   };
+  /** Max part rows rendered in the list DOM (full catalog may be up to IDP_IA_MAX_PARTS_CATALOG). */
+  var IDP_IA_PART_RENDER_CAP = 200;
   var IDP_IA_PART_ROW_PX = 32;
   var IDP_IA_PART_OVERSCAN = 20;
   var IDP_IA_PART_VISIBLE = 50;
@@ -9866,6 +9875,84 @@
     return isFinite(n) ? n : null;
   }
 
+  /** Strip % and commas; parse one numeric token (invalid → null). */
+  function rapParsePctToken(tok) {
+    var t, n;
+    if (tok == null) return null;
+    t = String(tok).trim().replace(/%/g, "").replace(/,/g, "");
+    if (t === "") return null;
+    n = parseFloat(t);
+    return isFinite(n) ? n : null;
+  }
+
+  /**
+   * Parse lever % input: empty | single | range | invalid.
+   * Range: { low, high, isRange: true }; single: { low, high, isRange: false }; invalid: { invalid: true }.
+   */
+  function rapParsePctLever(v) {
+    var t, a, b, lo, hi, dash;
+    if (v == null) return null;
+    t = String(v).trim();
+    if (t === "") return null;
+    dash = t.indexOf("-");
+    if (dash >= 0) {
+      a = rapParsePctToken(t.slice(0, dash));
+      b = rapParsePctToken(t.slice(dash + 1));
+      if (a == null || b == null) return { invalid: true };
+      lo = Math.min(a, b);
+      hi = Math.max(a, b);
+      return { low: lo, high: hi, isRange: lo !== hi };
+    }
+    a = rapParsePctToken(t);
+    if (a == null) return { invalid: true };
+    return { low: a, high: a, isRange: false };
+  }
+
+  function rapFmtPctNum(pct) {
+    if (pct == null || !isFinite(pct)) return "—";
+    var t = Math.round(pct * 10) / 10;
+    return t % 1 === 0 ? String(Math.round(t)) : String(t);
+  }
+
+  function rapFmtPctLever(parsed) {
+    if (!parsed || parsed.invalid) return "—";
+    if (parsed.isRange) return rapFmtPctNum(parsed.low) + "-" + rapFmtPctNum(parsed.high) + "%";
+    return rapFmtPctOne(parsed.low);
+  }
+
+  function rapFmtPctRange(low, high) {
+    if (low == null || high == null || !isFinite(low) || !isFinite(high)) return "—";
+    if (low === high) return rapFmtPctOne(low);
+    return rapFmtPctNum(low) + "-" + rapFmtPctNum(high) + "%";
+  }
+
+  function rapUsdBoundsFromPctLever(B, parsed) {
+    if (!parsed || parsed.invalid) return null;
+    return { low: (B * parsed.low) / 100, high: (B * parsed.high) / 100 };
+  }
+
+  function rapFmtUsdBounds(bounds) {
+    if (!bounds || !isFinite(bounds.low) || !isFinite(bounds.high)) return "—";
+    if (bounds.low === bounds.high) return rapFmtUsdM(bounds.low);
+    return rapFmtUsdM(bounds.low) + "-" + rapFmtUsdM(bounds.high);
+  }
+
+  function rapCombinePctLevers(pS, pD) {
+    var lo, hi;
+    if (!pS && !pD) return null;
+    lo = (pS ? pS.low : 0) + (pD ? pD.low : 0);
+    hi = (pS ? pS.high : 0) + (pD ? pD.high : 0);
+    return { low: lo, high: hi, isRange: lo !== hi || (pS && pS.isRange) || (pD && pD.isRange) };
+  }
+
+  function rapCombineUsdBounds(bS, bD) {
+    if (!bS && !bD) return null;
+    return {
+      low: (bS ? bS.low : 0) + (bD ? bD.low : 0),
+      high: (bS ? bS.high : 0) + (bD ? bD.high : 0)
+    };
+  }
+
   function rapFmtUsdM(usd) {
     if (usd == null || !isFinite(usd)) return "—";
     return fmtChartMillions(usd / 1e6);
@@ -9898,9 +9985,7 @@
       a1,
       a2,
       b1,
-      b2,
-      sm,
-      dm;
+      b2;
     if (!o || typeof o !== "object") return out;
     if (o.supply != null && String(o.supply).trim() !== "") out.supply = String(o.supply).trim();
     if (o.demand != null && String(o.demand).trim() !== "") out.demand = String(o.demand).trim();
@@ -9908,18 +9993,16 @@
     a1 = rapParsePct(o.aMin);
     a2 = rapParsePct(o.aMax);
     if ((o.aMin != null && String(o.aMin).trim() !== "") || (o.aMax != null && String(o.aMax).trim() !== "")) {
-      if (a1 != null && a2 != null) sm = (a1 + a2) / 2;
-      else if (a1 != null) sm = a1;
-      else if (a2 != null) sm = a2;
-      if (sm != null) out.supply = String(sm);
+      if (a1 != null && a2 != null) out.supply = a1 === a2 ? String(a1) : String(a1) + "-" + String(a2);
+      else if (a1 != null) out.supply = String(a1);
+      else if (a2 != null) out.supply = String(a2);
     }
     b1 = rapParsePct(o.bMin);
     b2 = rapParsePct(o.bMax);
     if ((o.bMin != null && String(o.bMin).trim() !== "") || (o.bMax != null && String(o.bMax).trim() !== "")) {
-      if (b1 != null && b2 != null) dm = (b1 + b2) / 2;
-      else if (b1 != null) dm = b1;
-      else if (b2 != null) dm = b2;
-      if (dm != null) out.demand = String(dm);
+      if (b1 != null && b2 != null) out.demand = b1 === b2 ? String(b1) : String(b1) + "-" + String(b2);
+      else if (b1 != null) out.demand = String(b1);
+      else if (b2 != null) out.demand = String(b2);
     }
     return out;
   }
@@ -9994,7 +10077,7 @@
   function rapLeverSinglePctTdHtml(kind, nk, suf) {
     return (
       '<td class="border-l border-[#e6e6e6] px-2 py-2 align-middle rap-l2-lever-cell">' +
-      '<input type="number" class="rap-l2-pct rap-pct-input" min="0" max="100" step="any" inputmode="decimal" data-rap-kind="' +
+      '<input type="text" class="rap-l2-pct rap-pct-input" inputmode="decimal" autocomplete="off" placeholder="%" data-rap-kind="' +
       esc(kind) +
       '" data-rap-cat-norm="' +
       esc(nk) +
@@ -10103,29 +10186,35 @@
     var B = parseFloat(tr.getAttribute("data-baseline-usd")) || 0,
       iS = tr.querySelector('[data-rap-f="supply"]'),
       iD = tr.querySelector('[data-rap-f="demand"]'),
-      pS = iS ? rapParsePct(iS.value) : null,
-      pD = iD ? rapParsePct(iD.value) : null,
+      pS = iS ? rapParsePctLever(iS.value) : null,
+      pD = iD ? rapParsePctLever(iD.value) : null,
       uS = tr.querySelector('[data-rap-usd="supply"]'),
       uD = tr.querySelector('[data-rap-usd="demand"]'),
       rp = tr.querySelector(".rap-l2-rap-pct"),
       rm = tr.querySelector(".rap-l2-rap-usd"),
-      mS,
-      mD,
-      sumP,
-      sumM;
-    mS = pS != null && isFinite(pS) ? (B * pS) / 100 : null;
-    mD = pD != null && isFinite(pD) ? (B * pD) / 100 : null;
-    if (uS) uS.textContent = mS != null ? rapFmtUsdM(mS) : "—";
-    if (uD) uD.textContent = mD != null ? rapFmtUsdM(mD) : "—";
-    if (pS == null && pD == null) {
+      okS = pS && !pS.invalid,
+      okD = pD && !pD.invalid,
+      bS,
+      bD,
+      combP,
+      combM;
+    if (okS) {
+      bS = rapUsdBoundsFromPctLever(B, pS);
+      if (uS) uS.textContent = rapFmtUsdBounds(bS);
+    } else if (!(pS && pS.invalid) && uS) uS.textContent = "—";
+    if (okD) {
+      bD = rapUsdBoundsFromPctLever(B, pD);
+      if (uD) uD.textContent = rapFmtUsdBounds(bD);
+    } else if (!(pD && pD.invalid) && uD) uD.textContent = "—";
+    combP = rapCombinePctLevers(okS ? pS : null, okD ? pD : null);
+    combM = rapCombineUsdBounds(okS ? bS : null, okD ? bD : null);
+    if (!combP) {
       if (rp) rp.textContent = "—";
       if (rm) rm.textContent = "—";
       return;
     }
-    sumP = (pS != null ? pS : 0) + (pD != null ? pD : 0);
-    sumM = (mS != null ? mS : 0) + (mD != null ? mD : 0);
-    if (rp) rp.textContent = rapFmtPctOne(sumP);
-    if (rm) rm.textContent = rapFmtUsdM(sumM);
+    if (rp) rp.textContent = rapFmtPctLever(combP);
+    if (rm) rm.textContent = rapFmtUsdBounds(combM);
   }
 
   function rapAggregateFromTbody(kind) {
@@ -10133,8 +10222,12 @@
     if (!tb) return null;
     var trs = tb.querySelectorAll('tr[data-rap-l2-row="1"]'),
       sumB = 0,
-      sumSupplyM = 0,
-      sumDemandM = 0,
+      supplyUsdLow = 0,
+      supplyUsdHigh = 0,
+      demandUsdLow = 0,
+      demandUsdHigh = 0,
+      supplyHasRange = false,
+      demandHasRange = false,
       i,
       tr,
       B,
@@ -10142,31 +10235,89 @@
       iD,
       pS,
       pD,
-      mS,
-      mD;
+      okS,
+      okD,
+      bS,
+      bD;
     for (i = 0; i < trs.length; i++) {
       tr = trs[i];
       B = parseFloat(tr.getAttribute("data-baseline-usd")) || 0;
       sumB += B;
       iS = tr.querySelector('[data-rap-f="supply"]');
       iD = tr.querySelector('[data-rap-f="demand"]');
-      pS = iS ? rapParsePct(iS.value) : null;
-      pD = iD ? rapParsePct(iD.value) : null;
-      mS = pS != null && isFinite(pS) ? (B * pS) / 100 : 0;
-      mD = pD != null && isFinite(pD) ? (B * pD) / 100 : 0;
-      sumSupplyM += mS;
-      sumDemandM += mD;
+      pS = iS ? rapParsePctLever(iS.value) : null;
+      pD = iD ? rapParsePctLever(iD.value) : null;
+      okS = pS && !pS.invalid;
+      okD = pD && !pD.invalid;
+      if (okS) {
+        bS = rapUsdBoundsFromPctLever(B, pS);
+        supplyUsdLow += bS.low;
+        supplyUsdHigh += bS.high;
+        if (pS.isRange) supplyHasRange = true;
+      }
+      if (okD) {
+        bD = rapUsdBoundsFromPctLever(B, pD);
+        demandUsdLow += bD.low;
+        demandUsdHigh += bD.high;
+        if (pD.isRange) demandHasRange = true;
+      }
     }
     if (sumB <= 0) return null;
+    if (supplyUsdLow !== supplyUsdHigh) supplyHasRange = true;
+    if (demandUsdLow !== demandUsdHigh) demandHasRange = true;
     return {
       baseline: sumB,
-      supplyUsdSum: sumSupplyM,
-      demandUsdSum: sumDemandM,
-      rapUsdSum: sumSupplyM + sumDemandM,
-      supplyPctW: (sumSupplyM / sumB) * 100,
-      demandPctW: (sumDemandM / sumB) * 100,
-      rapPctW: ((sumSupplyM + sumDemandM) / sumB) * 100
+      supplyUsdLow: supplyUsdLow,
+      supplyUsdHigh: supplyUsdHigh,
+      demandUsdLow: demandUsdLow,
+      demandUsdHigh: demandUsdHigh,
+      supplyUsdSum: supplyUsdLow,
+      demandUsdSum: demandUsdLow,
+      rapUsdSum: supplyUsdLow + demandUsdLow,
+      supplyHasRange: supplyHasRange,
+      demandHasRange: demandHasRange,
+      supplyPctLow: (supplyUsdLow / sumB) * 100,
+      supplyPctHigh: (supplyUsdHigh / sumB) * 100,
+      demandPctLow: (demandUsdLow / sumB) * 100,
+      demandPctHigh: (demandUsdHigh / sumB) * 100,
+      rapUsdLow: supplyUsdLow + demandUsdLow,
+      rapUsdHigh: supplyUsdHigh + demandUsdHigh,
+      rapPctLow: ((supplyUsdLow + demandUsdLow) / sumB) * 100,
+      rapPctHigh: ((supplyUsdHigh + demandUsdHigh) / sumB) * 100,
+      supplyPctW: (supplyUsdLow / sumB) * 100,
+      demandPctW: (demandUsdLow / sumB) * 100,
+      rapPctW: ((supplyUsdLow + demandUsdLow) / sumB) * 100
     };
+  }
+
+  function rapFmtAggPct(agg, field) {
+    var hasR =
+      field === "supply"
+        ? agg.supplyHasRange
+        : field === "demand"
+          ? agg.demandHasRange
+          : agg.supplyHasRange || agg.demandHasRange || agg.rapUsdLow !== agg.rapUsdHigh,
+      lo = field === "supply" ? agg.supplyPctLow : field === "demand" ? agg.demandPctLow : agg.rapPctLow,
+      hi = field === "supply" ? agg.supplyPctHigh : field === "demand" ? agg.demandPctHigh : agg.rapPctHigh;
+    if (!hasR) {
+      return rapFmtPctOne(field === "supply" ? agg.supplyPctW : field === "demand" ? agg.demandPctW : agg.rapPctW);
+    }
+    return rapFmtPctRange(lo, hi);
+  }
+
+  function rapFmtAggUsd(agg, field) {
+    var hasR =
+      field === "supply"
+        ? agg.supplyHasRange
+        : field === "demand"
+          ? agg.demandHasRange
+          : agg.supplyHasRange || agg.demandHasRange || agg.rapUsdLow !== agg.rapUsdHigh,
+      lo = field === "supply" ? agg.supplyUsdLow : field === "demand" ? agg.demandUsdLow : agg.rapUsdLow,
+      hi = field === "supply" ? agg.supplyUsdHigh : field === "demand" ? agg.demandUsdHigh : agg.rapUsdHigh;
+    if (!hasR) {
+      return rapFmtUsdM(field === "supply" ? agg.supplyUsdSum : field === "demand" ? agg.demandUsdSum : agg.rapUsdSum);
+    }
+    return rapFmtUsdBounds({ low: lo, high: hi });
   }
 
   function rapPillInner(cls, txt) {
@@ -10197,12 +10348,12 @@
       return;
     }
     if (bEl) bEl.textContent = rapFmtUsdM(agg.baseline);
-    if (p1) p1.innerHTML = rapPillInner("rap-pill-navy", rapFmtPctOne(agg.supplyPctW));
-    if (m1) m1.innerHTML = rapPillInner("rap-pill-orange", rapFmtUsdM(agg.supplyUsdSum));
-    if (p2) p2.innerHTML = rapPillInner("rap-pill-navy", rapFmtPctOne(agg.demandPctW));
-    if (m2) m2.innerHTML = rapPillInner("rap-pill-orange", rapFmtUsdM(agg.demandUsdSum));
-    if (pr) pr.innerHTML = rapPillInner("rap-pill-navy", rapFmtPctOne(agg.rapPctW));
-    if (mr) mr.innerHTML = rapPillInner("rap-pill-orange", rapFmtUsdM(agg.rapUsdSum));
+    if (p1) p1.innerHTML = rapPillInner("rap-pill-navy", rapFmtAggPct(agg, "supply"));
+    if (m1) m1.innerHTML = rapPillInner("rap-pill-orange", rapFmtAggUsd(agg, "supply"));
+    if (p2) p2.innerHTML = rapPillInner("rap-pill-navy", rapFmtAggPct(agg, "demand"));
+    if (m2) m2.innerHTML = rapPillInner("rap-pill-orange", rapFmtAggUsd(agg, "demand"));
+    if (pr) pr.innerHTML = rapPillInner("rap-pill-navy", rapFmtAggPct(agg, "rap"));
+    if (mr) mr.innerHTML = rapPillInner("rap-pill-orange", rapFmtAggUsd(agg, "rap"));
   }
 
   function rapUpdateSummaryTable() {
@@ -10224,12 +10375,12 @@
         return;
       }
       tr.querySelector("[data-sum-b]").textContent = rapFmtUsdM(agg.baseline);
-      tr.querySelector("[data-sum-l1p]").innerHTML = rapPillInner("rap-pill-navy", rapFmtPctOne(agg.supplyPctW));
-      tr.querySelector("[data-sum-l1m]").innerHTML = rapPillInner("rap-pill-orange", rapFmtUsdM(agg.supplyUsdSum));
-      tr.querySelector("[data-sum-l2p]").innerHTML = rapPillInner("rap-pill-navy", rapFmtPctOne(agg.demandPctW));
-      tr.querySelector("[data-sum-l2m]").innerHTML = rapPillInner("rap-pill-orange", rapFmtUsdM(agg.demandUsdSum));
-      tr.querySelector("[data-sum-rp]").innerHTML = rapPillInner("rap-pill-navy", rapFmtPctOne(agg.rapPctW));
-      tr.querySelector("[data-sum-rm]").innerHTML = rapPillInner("rap-pill-orange", rapFmtUsdM(agg.rapUsdSum));
+      tr.querySelector("[data-sum-l1p]").innerHTML = rapPillInner("rap-pill-navy", rapFmtAggPct(agg, "supply"));
+      tr.querySelector("[data-sum-l1m]").innerHTML = rapPillInner("rap-pill-orange", rapFmtAggUsd(agg, "supply"));
+      tr.querySelector("[data-sum-l2p]").innerHTML = rapPillInner("rap-pill-navy", rapFmtAggPct(agg, "demand"));
+      tr.querySelector("[data-sum-l2m]").innerHTML = rapPillInner("rap-pill-orange", rapFmtAggUsd(agg, "demand"));
+      tr.querySelector("[data-sum-rp]").innerHTML = rapPillInner("rap-pill-navy", rapFmtAggPct(agg, "rap"));
+      tr.querySelector("[data-sum-rm]").innerHTML = rapPillInner("rap-pill-orange", rapFmtAggUsd(agg, "rap"));
     };
     setRow("direct", dAgg);
     setRow("indirect", iAgg);
@@ -10247,18 +10398,38 @@
       return;
     }
     var sumB = dAgg.baseline + iAgg.baseline,
-      t1 = dAgg.supplyUsdSum + iAgg.supplyUsdSum,
-      t2 = dAgg.demandUsdSum + iAgg.demandUsdSum,
-      trUsd = dAgg.rapUsdSum + iAgg.rapUsdSum,
+      tAgg = {
+        baseline: sumB,
+        supplyUsdLow: dAgg.supplyUsdLow + iAgg.supplyUsdLow,
+        supplyUsdHigh: dAgg.supplyUsdHigh + iAgg.supplyUsdHigh,
+        demandUsdLow: dAgg.demandUsdLow + iAgg.demandUsdLow,
+        demandUsdHigh: dAgg.demandUsdHigh + iAgg.demandUsdHigh,
+        supplyUsdSum: dAgg.supplyUsdSum + iAgg.supplyUsdSum,
+        demandUsdSum: dAgg.demandUsdSum + iAgg.demandUsdSum,
+        rapUsdSum: dAgg.rapUsdSum + iAgg.rapUsdSum,
+        supplyHasRange: dAgg.supplyHasRange || iAgg.supplyHasRange,
+        demandHasRange: dAgg.demandHasRange || iAgg.demandHasRange,
+        supplyPctLow: ((dAgg.supplyUsdLow + iAgg.supplyUsdLow) / sumB) * 100,
+        supplyPctHigh: ((dAgg.supplyUsdHigh + iAgg.supplyUsdHigh) / sumB) * 100,
+        demandPctLow: ((dAgg.demandUsdLow + iAgg.demandUsdLow) / sumB) * 100,
+        demandPctHigh: ((dAgg.demandUsdHigh + iAgg.demandUsdHigh) / sumB) * 100,
+        rapUsdLow: dAgg.rapUsdLow + iAgg.rapUsdLow,
+        rapUsdHigh: dAgg.rapUsdHigh + iAgg.rapUsdHigh,
+        rapPctLow: ((dAgg.rapUsdLow + iAgg.rapUsdLow) / sumB) * 100,
+        rapPctHigh: ((dAgg.rapUsdHigh + iAgg.rapUsdHigh) / sumB) * 100,
+        supplyPctW: ((dAgg.supplyUsdSum + iAgg.supplyUsdSum) / sumB) * 100,
+        demandPctW: ((dAgg.demandUsdSum + iAgg.demandUsdSum) / sumB) * 100,
+        rapPctW: ((dAgg.rapUsdSum + iAgg.rapUsdSum) / sumB) * 100
+      },
       trT2 = sb.querySelector('tr[data-rap-sum="total"]');
     if (trT2 && sumB > 0) {
       trT2.querySelector("[data-sum-b]").textContent = rapFmtUsdM(sumB);
-      trT2.querySelector("[data-sum-l1p]").innerHTML = rapPillInner("rap-pill-navy", rapFmtPctOne((t1 / sumB) * 100));
-      trT2.querySelector("[data-sum-l1m]").innerHTML = rapPillInner("rap-pill-orange", rapFmtUsdM(t1));
-      trT2.querySelector("[data-sum-l2p]").innerHTML = rapPillInner("rap-pill-navy", rapFmtPctOne((t2 / sumB) * 100));
-      trT2.querySelector("[data-sum-l2m]").innerHTML = rapPillInner("rap-pill-orange", rapFmtUsdM(t2));
-      trT2.querySelector("[data-sum-rp]").innerHTML = rapPillInner("rap-pill-navy", rapFmtPctOne((trUsd / sumB) * 100));
-      trT2.querySelector("[data-sum-rm]").innerHTML = rapPillInner("rap-pill-orange", rapFmtUsdM(trUsd));
+      trT2.querySelector("[data-sum-l1p]").innerHTML = rapPillInner("rap-pill-navy", rapFmtAggPct(tAgg, "supply"));
+      trT2.querySelector("[data-sum-l1m]").innerHTML = rapPillInner("rap-pill-orange", rapFmtAggUsd(tAgg, "supply"));
+      trT2.querySelector("[data-sum-l2p]").innerHTML = rapPillInner("rap-pill-navy", rapFmtAggPct(tAgg, "demand"));
+      trT2.querySelector("[data-sum-l2m]").innerHTML = rapPillInner("rap-pill-orange", rapFmtAggUsd(tAgg, "demand"));
+      trT2.querySelector("[data-sum-rp]").innerHTML = rapPillInner("rap-pill-navy", rapFmtAggPct(tAgg, "rap"));
+      trT2.querySelector("[data-sum-rm]").innerHTML = rapPillInner("rap-pill-orange", rapFmtAggUsd(tAgg, "rap"));
     }
   }
 
@@ -10369,10 +10540,24 @@
       '<td class="px-2 py-2 text-right text-xs tabular-nums idp-muted rap-col-rap-bg" data-sum-rm>—</td></tr>';
   }
 
+  function rapCsvPctCells(parsed) {
+    if (!parsed || parsed.invalid) return ["", "", ""];
+    return [rapCsvEscapeCell(parsed.isRange ? parsed.low + "-" + parsed.high : String(parsed.low)), String(parsed.low), String(parsed.high)];
+  }
+
+  function rapCsvUsdCells(bounds) {
+    if (!bounds) return ["", "", ""];
+    return [
+      rapCsvEscapeCell(bounds.low === bounds.high ? (bounds.low / 1e6).toFixed(4) : (bounds.low / 1e6).toFixed(4) + "-" + (bounds.high / 1e6).toFixed(4)),
+      (bounds.low / 1e6).toFixed(4),
+      (bounds.high / 1e6).toFixed(4)
+    ];
+  }
+
   function rapBuildCsvFromDom() {
     var lines = [],
       hdr =
-        "Section,L2 Group,RAP Category,Baseline $M,Supply %,Supply $M,Demand %,Demand $M,Est RAP %,Est RAP $M",
+        "Section,L2 Group,RAP Category,Baseline $M,Supply %,Supply % low,Supply % high,Supply $M,Supply $M low,Supply $M high,Demand %,Demand % low,Demand % high,Demand $M,Demand $M low,Demand $M high,Est RAP %,Est RAP % low,Est RAP % high,Est RAP $M,Est RAP $M low,Est RAP $M high",
       pushL2Rows = function (kind) {
         var tb = $("rap-" + kind + "-body"),
           trs,
@@ -10385,10 +10570,17 @@
           iD,
           pS,
           pD,
-          mS,
-          mD,
-          rp,
-          rm,
+          okS,
+          okD,
+          bS,
+          bD,
+          combP,
+          combM,
+          sPct,
+          dPct,
+          rPct,
+          sUsd,
+          rUsd,
           agg;
         if (!tb) return;
         trs = tb.querySelectorAll('tr[data-rap-l2-row="1"]');
@@ -10399,24 +10591,43 @@
           B = parseFloat(tr.getAttribute("data-baseline-usd")) || 0;
           iS = tr.querySelector('[data-rap-f="supply"]');
           iD = tr.querySelector('[data-rap-f="demand"]');
-          pS = iS ? rapParsePct(iS.value) : null;
-          pD = iD ? rapParsePct(iD.value) : null;
-          mS = pS != null && isFinite(pS) ? (B * pS) / 100 : null;
-          mD = pD != null && isFinite(pD) ? (B * pD) / 100 : null;
-          rp = pS != null || pD != null ? (pS != null ? pS : 0) + (pD != null ? pD : 0) : null;
-          rm = mS != null || mD != null ? (mS != null ? mS : 0) + (mD != null ? mD : 0) : null;
+          pS = iS ? rapParsePctLever(iS.value) : null;
+          pD = iD ? rapParsePctLever(iD.value) : null;
+          okS = pS && !pS.invalid;
+          okD = pD && !pD.invalid;
+          bS = okS ? rapUsdBoundsFromPctLever(B, pS) : null;
+          bD = okD ? rapUsdBoundsFromPctLever(B, pD) : null;
+          combP = rapCombinePctLevers(okS ? pS : null, okD ? pD : null);
+          combM = rapCombineUsdBounds(bS, bD);
+          sPct = okS ? rapCsvPctCells(pS) : ["", "", ""];
+          dPct = okD ? rapCsvPctCells(pD) : ["", "", ""];
+          rPct = combP ? rapCsvPctCells(combP) : ["", "", ""];
+          sUsd = rapCsvUsdCells(bS);
+          rUsd = rapCsvUsdCells(combM);
           lines.push(
             [
               rapCsvEscapeCell(kind),
               rapCsvEscapeCell(l2g.trim()),
               rapCsvEscapeCell(cat.trim()),
               (B / 1e6).toFixed(4),
-              pS != null ? pS : "",
-              mS != null ? (mS / 1e6).toFixed(4) : "",
-              pD != null ? pD : "",
-              mD != null ? (mD / 1e6).toFixed(4) : "",
-              rp != null ? rp : "",
-              rm != null ? (rm / 1e6).toFixed(4) : ""
+              iS && okS ? rapCsvEscapeCell(iS.value.trim()) : "",
+              sPct[1],
+              sPct[2],
+              sUsd[0],
+              sUsd[1],
+              sUsd[2],
+              iD && okD ? rapCsvEscapeCell(iD.value.trim()) : "",
+              dPct[1],
+              dPct[2],
+              rapCsvUsdCells(bD)[0],
+              rapCsvUsdCells(bD)[1],
+              rapCsvUsdCells(bD)[2],
+              rPct[0],
+              rPct[1],
+              rPct[2],
+              rUsd[0],
+              rUsd[1],
+              rUsd[2]
             ].join(",")
           );
         }
@@ -10428,12 +10639,24 @@
               "",
               "TOTAL",
               (agg.baseline / 1e6).toFixed(4),
-              agg.supplyPctW,
-              (agg.supplyUsdSum / 1e6).toFixed(4),
-              agg.demandPctW,
-              (agg.demandUsdSum / 1e6).toFixed(4),
-              agg.rapPctW,
-              (agg.rapUsdSum / 1e6).toFixed(4)
+              rapCsvEscapeCell(rapFmtAggPct(agg, "supply").replace(/%$/, "")),
+              agg.supplyPctLow,
+              agg.supplyPctHigh,
+              rapCsvEscapeCell(rapFmtAggUsd(agg, "supply").replace(/\$/g, "").replace(/M/g, "M")),
+              (agg.supplyUsdLow / 1e6).toFixed(4),
+              (agg.supplyUsdHigh / 1e6).toFixed(4),
+              rapCsvEscapeCell(rapFmtAggPct(agg, "demand").replace(/%$/, "")),
+              agg.demandPctLow,
+              agg.demandPctHigh,
+              rapCsvEscapeCell(rapFmtAggUsd(agg, "demand").replace(/\$/g, "")),
+              (agg.demandUsdLow / 1e6).toFixed(4),
+              (agg.demandUsdHigh / 1e6).toFixed(4),
+              rapCsvEscapeCell(rapFmtAggPct(agg, "rap").replace(/%$/, "")),
+              agg.rapPctLow,
+              agg.rapPctHigh,
+              rapCsvEscapeCell(rapFmtAggUsd(agg, "rap").replace(/\$/g, "")),
+              (agg.rapUsdLow / 1e6).toFixed(4),
+              (agg.rapUsdHigh / 1e6).toFixed(4)
             ].join(",")
           );
         }
@@ -10619,6 +10842,29 @@
   SECTION: INDEX ANALYSIS TAB
   Built-in PPI only (WPU10, PCU332332), yearly, lazy init; rebased to 2024 = 100.
   ============================================ */
+  /** Stubs for upload/fetch paths removed in IA rebuild — keep callers safe. */
+  function idpWireIndexExcelUploadOnce() {}
+  function idpTryFetchDefaultIndexFilesOnce() {
+    try {
+      idpIa2SeedBuiltinCatalogOnce();
+    } catch (eTf) {}
+  }
+  function idpRegisterBuiltinIndexes() {
+    try {
+      idpIa2SeedBuiltinCatalogOnce();
+    } catch (eReg) {}
+  }
+  function renderIndexDropdown() {}
+  function idpIaOnSpendFiltersChanged() {
+    if (typeof currentAppView === "undefined" || currentAppView !== "index-analysis") return;
+    try {
+      idpIaScheduleRefreshPartCheckboxList();
+    } catch (eFilt) {
+      try {
+        if (typeof console !== "undefined" && console.error) console.error("[index-analysis] filter refresh", eFilt);
+      } catch (eL) {}
+    }
+  }
   var IDP_INDEX_LINE_ORANGE = typeof C_ACTION !== "undefined" ? C_ACTION : "#F07F00";
   var IDP_INDEX_LINE_DASH = [5, 5];
   /** Built-in FRED PPI series (raw yearly averages USD index; chart uses 2024 = 100 via idpRebaseIndexYears). */
@@ -10630,6 +10876,44 @@
   var _ia2IndexCbWired = false;
   var _ia2DomWired = false;
   var _idpIaPartCbTimer = null;
+  var _idpIaPartsBuildRetryTimer = null;
+
+  function idpIaSpendRowsReady() {
+    try {
+      syncSliceFromD();
+      return !!(typeof D !== "undefined" && D && ((typeof D.n === "number" && D.n > 0) || (D.rows && D.rows.length > 0)));
+    } catch (eRd) {
+      return false;
+    }
+  }
+
+  function idpSetFp(set) {
+    var a = [];
+    if (!set || !set.size) return "*";
+    set.forEach(function (v) {
+      a.push(String(v));
+    });
+    a.sort();
+    return a.join("\x1f");
+  }
+
+  function idpIaRowDescFromIx(ix) {
+    var r = D.rows && D.rows[ix];
+    if (!r) return "";
+    return String(r.noun || r.material || r.cname || "").trim();
+  }
+
+  /** Catalog row: Spend Review filters + part id + spend or derivable unit price (not PE qty/price gate). */
+  function idpIaRowOkForCatalog(ix, pix) {
+    var sp, q, p;
+    if (D.iPart[ix] !== pix) return false;
+    if (!rowOk(ix)) return false;
+    sp = +(D.spend[ix] != null ? D.spend[ix] : 0);
+    if (isFinite(sp) && sp > 0) return true;
+    q = idpPeRowQty(ix);
+    p = idpPeRowUnitPrice(ix);
+    return q > 0 && isFinite(p) && p > 0;
+  }
 
   function idpNormalizeIndexDisplayName(raw) {
     var s = String(raw || "").trim();
@@ -10733,12 +11017,48 @@
   }
 
   function idpIaFilterFingerprint() {
+    var s;
     try {
       readFiltersFromForm();
-      return JSON.stringify(idpCaptureSpendReviewFilterSnapshot()) + "|n=" + (typeof D !== "undefined" && D && D.n ? D.n : 0);
+      s = idpCaptureSpendReviewFilterSnapshot();
+      return [
+        idpSetFp(s.bu),
+        idpSetFp(s.c1),
+        idpSetFp(s.c2),
+        idpSetFp(s.c3),
+        idpSetFp(s.c4),
+        idpSetFp(s.co),
+        idpSetFp(s.site),
+        idpSetFp(s.suSet),
+        idpSetFp(s.rapCat),
+        s.r0,
+        s.r1,
+        s.timeMode,
+        typeof D !== "undefined" && D && D.n ? D.n : 0
+      ].join("|");
     } catch (eFp) {
       return String(Date.now());
     }
+  }
+
+  function idpIaSchedulePartsBuildWhenReady() {
+    idpIaSetPartsBuildStatus("Loading parts…", true);
+    if (_idpIaPartsBuildRetryTimer) return;
+    function tick() {
+      _idpIaPartsBuildRetryTimer = null;
+      if (typeof currentAppView === "undefined" || currentAppView !== "index-analysis") return;
+      if (typeof window.__idpSpendLoadFatal !== "undefined" && window.__idpSpendLoadFatal) return;
+      if (!idpIaSpendRowsReady()) {
+        _idpIaPartsBuildRetryTimer = setTimeout(tick, 300);
+        return;
+      }
+      try {
+        idpIaStartPartsDatasetBuild();
+      } catch (eR) {
+        if (typeof console !== "undefined" && console.warn) console.warn("[index-analysis] parts build retry", eR);
+      }
+    }
+    _idpIaPartsBuildRetryTimer = setTimeout(tick, 300);
   }
 
   function idpIaSetPartsBuildStatus(msg, show) {
@@ -10754,50 +11074,75 @@
     }
   }
 
+  function idpIaUpdatePartListCapHint() {
+    var el = $("ia-part-list-cap-hint"),
+      nMatch = iaPartsDataset.matchIdx ? iaPartsDataset.matchIdx.length : 0,
+      nShow = iaPartsDataset.displayIdx ? iaPartsDataset.displayIdx.length : 0;
+    if (!el) return;
+    if (!iaPartsDataset.buildComplete || !nMatch) {
+      el.classList.add("hidden");
+      el.setAttribute("hidden", "hidden");
+      return;
+    }
+    el.classList.remove("hidden");
+    el.removeAttribute("hidden");
+    if (nMatch <= IDP_IA_PART_RENDER_CAP) {
+      el.textContent =
+        "Showing " +
+        nMatch +
+        " matching part" +
+        (nMatch === 1 ? "" : "s") +
+        " by spend" +
+        (nMatch < iaPartsDataset.allParts.length ? ". Type in the filter to narrow." : ".");
+    } else {
+      el.textContent =
+        "Showing top " + nShow + " of " + nMatch + " matching parts by spend. Type in the filter to narrow.";
+    }
+  }
+
   function idpIaApplyFilterToFilteredIdx() {
     var filtInp = $("ia-part-filter-input"),
       filt = filtInp ? (filtInp.value || "").trim().toLowerCase() : "",
       i,
       row,
       sc = $("ia-parts-virtual-scroll");
-    iaPartsDataset.filteredIdx = [];
+    iaPartsDataset.matchIdx = [];
     for (i = 0; i < iaPartsDataset.allParts.length; i++) {
       row = iaPartsDataset.allParts[i];
       if (filt) {
         if (String(row.part).toLowerCase().indexOf(filt) < 0 && String(row.desc || "").toLowerCase().indexOf(filt) < 0) continue;
       }
-      iaPartsDataset.filteredIdx.push(i);
+      iaPartsDataset.matchIdx.push(i);
     }
+    iaPartsDataset.displayIdx =
+      iaPartsDataset.matchIdx.length <= IDP_IA_PART_RENDER_CAP
+        ? iaPartsDataset.matchIdx.slice()
+        : iaPartsDataset.matchIdx.slice(0, IDP_IA_PART_RENDER_CAP);
+    iaPartsDataset.filteredIdx = iaPartsDataset.displayIdx;
+    idpIaUpdatePartListCapHint();
     if (sc) sc.scrollTop = 0;
   }
 
   function iaRenderVisibleParts() {
-    var sc = $("ia-parts-virtual-scroll"),
-      vwin = $("ia-parts-v-window"),
+    var vwin = $("ia-parts-v-window"),
       wrap = $("ia-part-checkbox-wrap"),
-      fi = iaPartsDataset.filteredIdx,
-      n = fi.length,
-      rowH = IDP_IA_PART_ROW_PX,
-      st = sc ? sc.scrollTop : 0,
-      vh = sc && sc.clientHeight ? sc.clientHeight : 400,
-      start = Math.floor(st / rowH) - IDP_IA_PART_OVERSCAN,
-      end = Math.ceil((st + vh) / rowH) + IDP_IA_PART_OVERSCAN,
+      fi = iaPartsDataset.displayIdx,
+      n = fi ? fi.length : 0,
       i,
       idx0,
       row,
       cbx,
       lab,
       span,
-      padTop,
-      padBot,
       selSet = {},
       z,
-      np;
+      np,
+      wrapRow;
     if (!vwin) return;
     if (!iaPartsDataset.buildComplete) return;
-    if (start < 0) start = 0;
-    if (end > n) end = n;
     vwin.innerHTML = "";
+    vwin.style.paddingTop = "0";
+    vwin.style.paddingBottom = "0";
     if (!n) {
       if (iaPartsDataset.allParts.length && ($("ia-part-filter-input") && ($("ia-part-filter-input").value || "").trim())) {
         np = document.createElement("p");
@@ -10808,14 +11153,12 @@
       if (wrap) wrap.setAttribute("aria-busy", "false");
       return;
     }
-    padTop = start * rowH;
-    padBot = (n - end) * rowH;
     for (z = 0; z < indexAnalysisPartIxs.length; z++) selSet[indexAnalysisPartIxs[z]] = true;
-    for (i = start; i < end; i++) {
+    for (i = 0; i < n; i++) {
       idx0 = fi[i];
       row = iaPartsDataset.allParts[idx0];
       if (!row) continue;
-      var wrapRow = document.createElement("div");
+      wrapRow = document.createElement("div");
       wrapRow.className = "ia-part-cb-row";
       cbx = document.createElement("input");
       cbx.type = "checkbox";
@@ -10834,28 +11177,12 @@
       wrapRow.appendChild(lab);
       vwin.appendChild(wrapRow);
     }
-    vwin.style.paddingTop = padTop + "px";
-    vwin.style.paddingBottom = padBot + "px";
     if (wrap) wrap.setAttribute("aria-busy", "false");
   }
 
   function idpIaWireVirtualScrollOnce() {
-    var sc;
     if (_idpIaVirtualScrollBound) return;
-    sc = $("ia-parts-virtual-scroll");
-    if (!sc) return;
     _idpIaVirtualScrollBound = true;
-    sc.addEventListener(
-      "scroll",
-      function () {
-        if (_idpIaPartsScrollRaf) cancelAnimationFrame(_idpIaPartsScrollRaf);
-        _idpIaPartsScrollRaf = requestAnimationFrame(function () {
-          _idpIaPartsScrollRaf = null;
-          iaRenderVisibleParts();
-        });
-      },
-      { passive: true }
-    );
   }
 
   function idpSpendMapTopPartIdsHeap(spMap, lim) {
@@ -10913,20 +11240,21 @@
     });
   }
 
-  function idpIaFinalizePartsLabelBatches(sorted, spendByPart, qtyByPart, token, truncInfo) {
+  function idpIaFinalizePartsLabelBatches(sorted, spendByPart, qtyByPart, partMeta, token, truncInfo) {
     var LABEL_CHUNK = 1200,
       labelPos = 0;
     function labelChunk() {
-      var end, pix;
+      var end, pix, meta;
       if (token !== iaPartsDataset.buildToken) return;
       end = Math.min(labelPos + LABEL_CHUNK, sorted.length);
       for (; labelPos < end; labelPos++) {
         pix = sorted[labelPos];
+        meta = partMeta && partMeta[pix] ? partMeta[pix] : null;
         iaPartsDataset.partSpendQty[pix] = { spend: spendByPart[pix] || 0, qty: qtyByPart[pix] || 0 };
         iaPartsDataset.allParts.push({
           pix: pix,
           part: idpPePartDisplayLabel(pix),
-          desc: idpPeChipDesc(pix) || "",
+          desc: (meta && meta.desc) || "",
           spend: spendByPart[pix] || 0,
           qty: qtyByPart[pix] || 0
         });
@@ -10981,11 +11309,17 @@
       idx,
       spendByPart = {},
       qtyByPart = {},
+      partMeta = {},
       pos = 0;
     if (typeof window.__idpSpendLoadFatal !== "undefined" && window.__idpSpendLoadFatal) return;
-    if (!D || !D.n) return;
+    if (!idpIaSpendRowsReady()) {
+      idpIaSchedulePartsBuildWhenReady();
+      return;
+    }
     fp = idpIaFilterFingerprint();
-    if (iaPartsDataset.building) return;
+    if (iaPartsDataset.building) {
+      iaPartsDataset.buildToken++;
+    }
     if (iaPartsDataset.buildComplete && iaPartsDataset.builtKey === fp) {
       idpIaApplyFilterToFilteredIdx();
       iaPartsDataset.allowedSet = {};
@@ -11002,6 +11336,8 @@
     iaPartsDataset.buildToken++;
     token = iaPartsDataset.buildToken;
     iaPartsDataset.allParts = [];
+    iaPartsDataset.matchIdx = [];
+    iaPartsDataset.displayIdx = [];
     iaPartsDataset.filteredIdx = [];
     iaPartsDataset.partSpendQty = {};
     iaPartsDataset.allowedSet = null;
@@ -11024,10 +11360,11 @@
         ix = idx[pos];
         pix = D.iPart[ix];
         if (pix == null || pix <= 0) continue;
-        if (!idpPeRowOk(ix, pix)) continue;
+        if (!idpIaRowOkForCatalog(ix, pix)) continue;
         sp = +(D.spend[ix] != null ? D.spend[ix] : 0);
         if (!isFinite(sp) || sp <= 0) sp = idpPeRowQty(ix) * idpPeRowUnitPrice(ix);
         if (!isFinite(sp)) continue;
+        if (!partMeta[pix]) partMeta[pix] = { desc: idpIaRowDescFromIx(ix) };
         spendByPart[pix] = (spendByPart[pix] || 0) + sp;
         qv = idpPeRowQty(ix);
         qtyByPart[pix] = (qtyByPart[pix] || 0) + (isFinite(qv) ? qv : 0);
@@ -11059,7 +11396,7 @@
           });
           truncInf = null;
         }
-        idpIaFinalizePartsLabelBatches(sortedPix, spendByPart, qtyByPart, token, truncInf);
+        idpIaFinalizePartsLabelBatches(sortedPix, spendByPart, qtyByPart, partMeta, token, truncInf);
       }, 0);
     }
     setTimeout(scanChunk, 0);
@@ -11144,8 +11481,7 @@
     wf =
       typeof window.__idpSpendLoadFatal !== "undefined" &&
       window.__idpSpendLoadFatal &&
-      typeof D !== "undefined" &&
-      (!D || !D.n);
+      !idpIaSpendRowsReady();
     if (wf) {
       if (emptyEl) {
         emptyEl.classList.add("hidden");
@@ -11189,11 +11525,22 @@
       slots,
       fi;
     if (!iaPartsDataset.buildComplete) {
-      window.alert("Could not load parts. Check that data.json is loaded. Reload the page to retry.");
+      if (iaPartsDataset.building) {
+        idpIaSetPartsBuildStatus("Still loading parts…", true);
+        return;
+      }
+      if (typeof console !== "undefined" && console.warn) {
+        console.warn("[index-analysis] parts list not ready yet; starting build");
+      }
+      try {
+        idpIaStartPartsDatasetBuild();
+      } catch (eSa) {
+        if (typeof console !== "undefined" && console.warn) console.warn("[index-analysis] select-all", eSa);
+      }
       return;
     }
     idpIaApplyFilterToFilteredIdx();
-    fi = iaPartsDataset.filteredIdx;
+    fi = iaPartsDataset.matchIdx;
     slots = IDP_IA_MAX_PART_LINES - indexAnalysisPartIxs.length;
     if (slots <= 0) {
       window.alert("At most " + IDP_IA_MAX_PART_LINES + " parts on the chart. Clear a selection to add more.");
@@ -11222,8 +11569,37 @@
   }
 
   function idpIaClearAllParts() {
-    indexAnalysisPartIxs = [];
-    if ($("ia-part-count")) $("ia-part-count").textContent = "0";
+    var i,
+      idx0,
+      row,
+      pix,
+      fi,
+      clearPix = {},
+      keep = [];
+    if (!iaPartsDataset.buildComplete) {
+      indexAnalysisPartIxs = [];
+      if ($("ia-part-count")) $("ia-part-count").textContent = "0";
+      iaRenderVisibleParts();
+      setTimeout(function () {
+        try {
+          renderIndexChart();
+        } catch (eC) {}
+      }, 0);
+      return;
+    }
+    idpIaApplyFilterToFilteredIdx();
+    fi = iaPartsDataset.matchIdx;
+    for (i = 0; i < fi.length; i++) {
+      idx0 = fi[i];
+      row = iaPartsDataset.allParts[idx0];
+      if (row) clearPix[row.pix] = true;
+    }
+    for (i = 0; i < indexAnalysisPartIxs.length; i++) {
+      pix = indexAnalysisPartIxs[i];
+      if (!clearPix[pix]) keep.push(pix);
+    }
+    indexAnalysisPartIxs = keep;
+    if ($("ia-part-count")) $("ia-part-count").textContent = String(indexAnalysisPartIxs.length);
     iaRenderVisibleParts();
     setTimeout(function () {
       try {
@@ -11266,51 +11642,91 @@
     }
   }
 
-  function idpIa2SyncIndexSelectionFromDom() {
-    var codes = typeof IDP_BUILTIN_INDEX_CODES !== "undefined" ? IDP_BUILTIN_INDEX_CODES : [],
-      i,
-      code,
-      el;
-    indexSelectedIndexCodes = [];
-    for (i = 0; i < codes.length; i++) {
-      code = codes[i];
-      el = $("ia2-cb-index-" + code);
-      if (el && el.checked) indexSelectedIndexCodes.push(code);
-    }
+  function idpIa2UpdateIndexSelectionCount() {
+    var el = $("ia-index-count");
+    if (el) el.textContent = String(indexSelectedIndexCodes && indexSelectedIndexCodes.length ? indexSelectedIndexCodes.length : 0);
   }
 
   function idpIa2ApplyIndexSelectionToDom() {
-    var codes = typeof IDP_BUILTIN_INDEX_CODES !== "undefined" ? IDP_BUILTIN_INDEX_CODES : [],
+    var panel = $("ia2-indexes-panel"),
+      cbs,
       i,
       code,
       el;
-    for (i = 0; i < codes.length; i++) {
-      code = codes[i];
+    if (panel) {
+      cbs = panel.querySelectorAll("input[type=checkbox][data-ia-index-code]");
+      for (i = 0; i < cbs.length; i++) {
+        code = cbs[i].getAttribute("data-ia-index-code");
+        if (code) cbs[i].checked = indexSelectedIndexCodes.indexOf(code) >= 0;
+      }
+      return;
+    }
+    for (i = 0; i < (typeof IDP_BUILTIN_INDEX_CODES !== "undefined" ? IDP_BUILTIN_INDEX_CODES : []).length; i++) {
+      code = IDP_BUILTIN_INDEX_CODES[i];
       el = $("ia2-cb-index-" + code);
       if (el) el.checked = indexSelectedIndexCodes.indexOf(code) >= 0;
     }
   }
 
-  function idpIa2WireBuiltinCheckboxesOnce() {
-    var codes = typeof IDP_BUILTIN_INDEX_CODES !== "undefined" ? IDP_BUILTIN_INDEX_CODES : [],
-      i,
-      code,
+  function idpIa2SetIndexCodeSelected(code, checked) {
+    var next = indexSelectedIndexCodes ? indexSelectedIndexCodes.slice() : [],
+      ix,
+      partN,
       el;
-    if (_ia2IndexCbWired) return;
-    _ia2IndexCbWired = true;
-    for (i = 0; i < codes.length; i++) {
-      code = codes[i];
-      el = $("ia2-cb-index-" + code);
-      if (!el) continue;
-      el.addEventListener("change", function () {
-        idpIa2SyncIndexSelectionFromDom();
-        setTimeout(function () {
-          try {
-            renderIndexChart();
-          } catch (eIx) {}
-        }, 0);
-      });
+    if (!code) return;
+    ix = next.indexOf(code);
+    if (checked) {
+      if (ix >= 0) return;
+      if (next.length >= IDP_IA_MAX_INDEX_LINES) {
+        window.alert("At most " + IDP_IA_MAX_INDEX_LINES + " PPI indexes on this chart. Uncheck one first.");
+        idpIa2ApplyIndexSelectionToDom();
+        return;
+      }
+      partN = indexAnalysisPartIxs && indexAnalysisPartIxs.length ? indexAnalysisPartIxs.length : 0;
+      if (partN + next.length + 1 > IDP_IA_MAX_CHART_SERIES) {
+        window.alert("Maximum " + IDP_IA_MAX_CHART_SERIES + " series (parts + indexes). Uncheck some items first.");
+        idpIa2ApplyIndexSelectionToDom();
+        return;
+      }
+      next.push(code);
+    } else {
+      if (ix < 0) return;
+      next.splice(ix, 1);
     }
+    indexSelectedIndexCodes = next;
+    idpIa2ApplyIndexSelectionToDom();
+    idpIa2UpdateIndexSelectionCount();
+    setTimeout(function () {
+      try {
+        renderIndexChart();
+      } catch (eIx) {}
+    }, 0);
+  }
+
+  function idpIa2WireBuiltinCheckboxesOnce() {
+    var panel = $("ia2-indexes-panel");
+    if (!panel) return;
+    if (panel.getAttribute("data-ia-index-delegation") === "1") return;
+    panel.setAttribute("data-ia-index-delegation", "1");
+    panel.addEventListener(
+      "change",
+      function (ev) {
+        var t = ev.target,
+          code;
+        if (!t || !t.getAttribute || t.type !== "checkbox") return;
+        code = t.getAttribute("data-ia-index-code");
+        if (!code) return;
+        try {
+          idpIa2SetIndexCodeSelected(code, !!t.checked);
+        } catch (eCh) {
+          try {
+            if (typeof console !== "undefined" && console.error) console.error("[index-analysis] index checkbox", eCh);
+          } catch (eL) {}
+        }
+      },
+      false
+    );
+    _ia2IndexCbWired = true;
   }
 
   function idpIa2WireDomOnce() {
@@ -11372,7 +11788,6 @@
     try {
       if (typeof currentAppView !== "undefined" && currentAppView !== "index-analysis") return;
       readFiltersFromForm();
-      idpIa2SyncIndexSelectionFromDom();
       yb = idpSpendFilterYearMinMax();
       yMin = yb && isFinite(yb.yMin) ? yb.yMin : 1990;
       yMax = yb && isFinite(yb.yMax) ? yb.yMax : 2100;
@@ -11390,7 +11805,6 @@
         return String(x);
       });
       idpIaSyncPartSelectionOrder();
-      idpIaScheduleRefreshPartCheckboxList();
       emptyEl = $("index-chart-empty");
       cnv = $("index-chart-canvas");
       if (!cnv) return;
@@ -11594,25 +12008,37 @@
 
   function renderIndexAnalysisView() {
     try {
+      try {
+        idpIa2WireBuiltinCheckboxesOnce();
+      } catch (eWire0) {
+        if (typeof console !== "undefined" && console.error) console.error("[index-analysis] wire", eWire0);
+      }
       setTimeout(function () {
         try {
           idpIa2SeedBuiltinCatalogOnce();
         } catch (e0) {
-          if (typeof console !== "undefined" && console.error) console.error("[index-analysis]", e0);
+          if (typeof console !== "undefined" && console.error) console.error("[index-analysis] seed", e0);
+        }
+        try {
+          idpIa2WireDomOnce();
+          idpWireIndexAnalysisPartsOnce();
+        } catch (eWire) {
+          if (typeof console !== "undefined" && console.error) console.error("[index-analysis] wire", eWire);
         }
         setTimeout(function () {
           try {
-            idpIa2WireDomOnce();
-            idpWireIndexAnalysisPartsOnce();
             idpIa2ApplyIndexSelectionToDom();
+            idpIa2UpdateIndexSelectionCount();
             idpIaRefreshPartCheckboxList(false);
           } catch (e1) {
-            if (typeof console !== "undefined" && console.error) console.error("[index-analysis]", e1);
+            if (typeof console !== "undefined" && console.error) console.error("[index-analysis] parts", e1);
           }
           setTimeout(function () {
             try {
               renderIndexChart();
-            } catch (e2) {}
+            } catch (e2) {
+              if (typeof console !== "undefined" && console.error) console.error("[index-analysis] chart", e2);
+            }
           }, 0);
         }, 0);
       }, 0);
@@ -12623,6 +13049,15 @@
         initSingleSourceSortAndExportWireOnce();
         break;
       case "index-analysis":
+        try {
+          idpIa2SeedBuiltinCatalogOnce();
+          idpWireIndexAnalysisPartsOnce();
+          idpIa2WireDomOnce();
+        } catch (eIaInit) {
+          try {
+            if (typeof console !== "undefined" && console.error) console.error("[index-analysis] init", eIaInit);
+          } catch (eLi) {}
+        }
         break;
       case "price-explanation":
         initPriceExplanationWireOnce();
@@ -12847,48 +13282,60 @@
       return;
     }
     if (name === "index-analysis") {
-      idpTeardownHarmonizationView();
-      destroyCleansheetChart();
-      hideAllMain();
-      if (idx) {
-        idx.classList.remove("hidden");
-        idx.setAttribute("aria-hidden", "false");
-      }
-      deactivateSpendReview();
-      if (bO) bO.classList.remove("is-active");
-      if (bPS) bPS.classList.remove("is-active");
-      if (bR) bR.classList.remove("is-active");
-      if (bH) bH.classList.remove("is-active");
-      if (bC) bC.classList.remove("is-active");
-      if (bSS) bSS.classList.remove("is-active");
-      if (bPE) bPE.classList.remove("is-active");
-      if (bIdx) bIdx.classList.add("is-active");
-      if (prevView && prevView !== "index-analysis") {
-        try {
-          window._idpSpendReviewFilterSnapshot = idpCaptureSpendReviewFilterSnapshot();
-        } catch (eCapIdx) {}
-      }
-      fState.bu = new Set();
-      fState.c1 = new Set();
-      fState.c2 = new Set();
-      fState.c3 = new Set();
-      fState.c4 = new Set();
-      fState.co = new Set();
-      fState.site = new Set();
-      fState.suSet = new Set();
-      timeQuickSet("all");
-      populateFilterSelectsFromData();
-      readFiltersFromForm();
-      updateFilterButtonLabels();
-      markTimeQuick();
-      withLoad(function () {
-        try {
-          renderIndexAnalysisView();
-        } catch (eIdx) {
-          if (typeof console !== "undefined" && console.error) console.error(eIdx);
+      try {
+        idpTeardownHarmonizationView();
+        destroyCleansheetChart();
+        hideAllMain();
+        if (idx) {
+          idx.classList.remove("hidden");
+          idx.setAttribute("aria-hidden", "false");
         }
-      });
-      idpNavFinishScroll(name);
+        deactivateSpendReview();
+        if (bO) bO.classList.remove("is-active");
+        if (bPS) bPS.classList.remove("is-active");
+        if (bR) bR.classList.remove("is-active");
+        if (bH) bH.classList.remove("is-active");
+        if (bC) bC.classList.remove("is-active");
+        if (bSS) bSS.classList.remove("is-active");
+        if (bPE) bPE.classList.remove("is-active");
+        if (bIdx) bIdx.classList.add("is-active");
+        if (prevView && prevView !== "index-analysis") {
+          try {
+            window._idpSpendReviewFilterSnapshot = idpCaptureSpendReviewFilterSnapshot();
+          } catch (eCapIdx) {}
+        }
+        fState.bu = new Set();
+        fState.c1 = new Set();
+        fState.c2 = new Set();
+        fState.c3 = new Set();
+        fState.c4 = new Set();
+        fState.co = new Set();
+        fState.site = new Set();
+        fState.suSet = new Set();
+        fState.rapCat = new Set();
+        timeQuickSet("all");
+        withLoad(function () {
+          try {
+            renderIndexAnalysisView();
+          } catch (eIdx) {
+            if (typeof console !== "undefined" && console.error) console.error("[index-analysis tab]", eIdx);
+          }
+        });
+        setTimeout(function () {
+          try {
+            populateFilterSelectsFromData();
+            readFiltersFromForm();
+            updateFilterButtonLabels();
+            markTimeQuick();
+            idpIaOnSpendFiltersChanged();
+          } catch (ePop) {
+            if (typeof console !== "undefined" && console.error) console.error("[index-analysis tab] filters", ePop);
+          }
+        }, 0);
+        idpNavFinishScroll(name);
+      } catch (eIdxTab) {
+        if (typeof console !== "undefined" && console.error) console.error("[index-analysis tab]", eIdxTab);
+      }
       return;
     }
     if (name === "price-explanation") {
@@ -13499,8 +13946,17 @@
         readFiltersFromForm();
         renderRapTab(getFiltered());
       }
-      if (currentAppView === "index-analysis" && typeof renderIndexChart === "function") {
-        renderIndexChart();
+      if (currentAppView === "index-analysis") {
+        try {
+          idpIaOnSpendFiltersChanged();
+        } catch (eIaF) {}
+        if (typeof renderIndexChart === "function") {
+          try {
+            renderIndexChart();
+          } catch (eIaC) {
+            if (typeof console !== "undefined" && console.error) console.error("[index-analysis] chart", eIaC);
+          }
+        }
       }
       idpMarkHarmonizationDirty();
       updateFilterButtonLabels();
@@ -13756,8 +14212,17 @@
     if (currentAppView === "rap") {
       renderRapTab(idx);
     }
-    if (currentAppView === "index-analysis" && typeof renderIndexChart === "function") {
-      renderIndexChart();
+    if (currentAppView === "index-analysis") {
+      try {
+        idpIaOnSpendFiltersChanged();
+      } catch (eIaF2) {}
+      if (typeof renderIndexChart === "function") {
+        try {
+          renderIndexChart();
+        } catch (eIaC2) {
+          if (typeof console !== "undefined" && console.error) console.error("[index-analysis] chart", eIaC2);
+        }
+      }
     }
     if (currentAppView === "price-explanation") {
       idpPeRefreshIfActive();
