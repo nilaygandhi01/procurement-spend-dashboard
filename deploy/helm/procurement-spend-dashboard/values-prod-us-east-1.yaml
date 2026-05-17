@@ -13,7 +13,7 @@ image:
   pullPolicy: IfNotPresent
 
 imagePullSecrets:
-  - name: cumminsidp-jfrog
+  - name: jfrog-cumminsidp-a8dd5-secret
 
 ingress:
   enabled: true
