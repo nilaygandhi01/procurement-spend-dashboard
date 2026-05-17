@@ -16,7 +16,7 @@ CHART_NAME="procurement-spend-dashboard"
 
 # tenant:env:namespace  (extend here when adding more environments)
 ENVS=(
-  "cumminsidp:prod-us-east-1:cumminsidp-prod"
+  "cumminsidp:prod-us-east-1:cumminsidp-a8dd5"
 )
 
 command -v helm >/dev/null 2>&1 || {

@@ -53,7 +53,7 @@ When the chart or env values change:
 ./scripts/render-manifests.sh
 ```
 
-Both run `helm template procurement-spend-dashboard deploy/helm/procurement-spend-dashboard --namespace cumminsidp-prod -f values-prod-us-east-1.yaml`
+Both run `helm template procurement-spend-dashboard deploy/helm/procurement-spend-dashboard --namespace cumminsidp-a8dd5 -f values-prod-us-east-1.yaml`
 and write the result to the deployer-apps path. **Commit the resulting
 diff in the same PR as the chart/values change** so the audit trail
 (reviewed Helm change ↔ applied manifests) stays intact.
@@ -87,7 +87,7 @@ To add another environment (e.g. `prod-eu-west-1` or `nonprod-us-east-1`):
    uses GitHub Enterprise mirroring, set the internal mirror as the
    primary remote for deploy commits and demote the public origin to
    read-only.
-2. Create the namespace (typically `cumminsidp-prod` / `cumminsidp-dev`).
+2. Create the namespace (Deployer-assigned, e.g. `cumminsidp-a8dd5` for prod-us-east-1).
 3. Provision a TLS cert for `cumminsidp.internal.mckinsey.com`
    (or whatever hostname your tenant assigns) and store the K8s secret
    as `cumminsidp-tls` in the namespace.

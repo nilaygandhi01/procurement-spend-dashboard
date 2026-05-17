@@ -7,7 +7,7 @@ ArgoCD sync target for the **`cumminsidp`** Deployer instance, environment
 
 - `procurement-spend-dashboard.yaml` — the rendered Kubernetes manifests
   (Service, Deployment, Ingress, NetworkPolicy) for the procurement
-  spend dashboard, namespace `cumminsidp-prod`.
+  spend dashboard, namespace `cumminsidp-a8dd5`.
 - `kustomization.yaml` — a thin overlay that declares the namespace
   and common labels. ArgoCD detects the kustomization and uses it.
 

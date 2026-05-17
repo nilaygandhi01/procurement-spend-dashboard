@@ -9,7 +9,7 @@ $ChartName = "procurement-spend-dashboard"
 
 # tenant, env, namespace — extend here when adding environments
 $Envs = @(
-  @{ tenant = "cumminsidp"; env = "prod-us-east-1"; ns = "cumminsidp-prod" }
+  @{ tenant = "cumminsidp"; env = "prod-us-east-1"; ns = "cumminsidp-a8dd5" }
 )
 
 if (-not (Get-Command helm -ErrorAction SilentlyContinue)) {
