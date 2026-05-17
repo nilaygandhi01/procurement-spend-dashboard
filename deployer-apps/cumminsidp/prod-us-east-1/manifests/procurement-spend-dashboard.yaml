@@ -69,7 +69,7 @@ spec:
       automountServiceAccountToken: false
       containers:
         - name: dashboard
-          image: "123456789012.dkr.ecr.us-east-1.amazonaws.com/cumminsidp/procurement-spend-dashboard:0.1.0"
+          image: "mckinsey-cummins-idp-dashboard-docker-local.jfrog.io/procurement-spend-dashboard:0.1.0"
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8080
@@ -106,21 +106,11 @@ spec:
             periodSeconds: 10
             timeoutSeconds: 3
           volumeMounts:
-            - name: spend-data
-              mountPath: /usr/share/nginx/html/data.json
-              subPath: data.json
-              readOnly: true
             - name: nginx-cache
               mountPath: /var/cache/nginx
             - name: nginx-run
               mountPath: /var/run
       volumes:
-        - name: spend-data
-          secret:
-            secretName: procurement-spend-data
-            items:
-              - key: data.json
-                path: data.json
         - name: nginx-cache
           emptyDir: {}
         - name: nginx-run
