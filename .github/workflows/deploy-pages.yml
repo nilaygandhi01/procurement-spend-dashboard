@@ -1,10 +1,14 @@
-# Static deploy: built bundle under src/dashboard (index.html, harmonization-client.js, data.json, PPI .xlsx).
-# Repo → Settings → Pages → Build and deployment → Source: GitHub Actions.
-name: Deploy GitHub Pages
+# DISABLED for auto-trigger on 2026-05-17 — Cummins client procurement data
+# must NOT be deployed to GitHub Pages. The McKinsey-internal Deployer K8s
+# PaaS path (see docs/DEPLOYMENT.md → "Deployer K8s PaaS") is the only
+# approved deployment target for this dashboard.
+#
+# The workflow is preserved (workflow_dispatch only) so it can be diffed
+# or referenced, but it will NOT run on push. To fully remove auto-deploy,
+# also disable GitHub Pages in the repo Settings → Pages.
+name: Deploy GitHub Pages (DISABLED — do not enable for client data)
 
 on:
-  push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:

@@ -1,32 +1,151 @@
 # Deploying the dashboard
 
+> **Client-data warning.** This dashboard renders Cummins procurement spend.
+> The only approved hosting target is **McKinsey-internal Deployer K8s PaaS**
+> (instance: `cumminsidp`, Platform McKinsey workspace "Procurement IDP
+> Dashboard"). The GitHub Pages and Netlify paths documented at the bottom
+> of this file are **disabled for client data** and kept only for reference
+> / for non-client demo data on a sanitized repo.
+
 ## Layout
 
 - **Source dashboard**: `src/dashboard/index.html` (+ `harmonization-client.js`, assets).
-- **Built data**: `python src/scripts/refresh_data.py` → `data/outputs/data.json`.
-- **Static bundle**: copy `data.json` and PPI `*.xlsx` from `data/inputs/indexes/` into `src/dashboard/` so same-origin `fetch` works (Netlify / GitHub Actions do this in the build step).
+- **Built data**: `python src/scripts/refresh_data.py` → `data/outputs/data.json`. **Never committed.**
+- **PPI workbooks**: `data/inputs/indexes/*.xlsx` — public FRED data, bundled in container image.
 
-## GitHub Pages
+## Deployer K8s PaaS (approved path)
 
-The **Deploy GitHub Pages** workflow installs dependencies, runs `refresh_data.py`, copies `data.json` and index workbooks into `src/dashboard/`, then publishes **only** `src/dashboard/`.
+### What ships in the image
 
-Requirements for a green build:
+| Layer | Contents |
+|---|---|
+| Static UI | `src/dashboard/` (HTML, JS, CSS) |
+| Reference data | `data/inputs/indexes/*.xlsx` (FRED PPI series, public) |
+| Server | nginx 1.27-alpine on port 8080, non-root |
+| Config | `deploy/nginx/default.conf` (CSP, security headers, healthz) |
 
-- A readable spend workbook (see `src/scripts/refresh_data.py`: `INPUT_XLSX`, or the default filenames under the repo root), and
-- Python dependencies from `requirements.txt`.
+### What does NOT ship in the image
 
-Site URL is typically `https://<user>.github.io/procurement-spend-dashboard/`.
+- `data/outputs/data.json` — mounted at runtime from K8s Secret
+- Source spend workbooks — never leave the analyst laptop / Vault file storage
 
-Root `index.html` in the repo redirects to `src/dashboard/index.html` for local servers started at the repo root; the Pages site root is the contents of `src/dashboard/`, so the main entry is `index.html` on the deployed site.
+### One-time setup in Platform McKinsey
 
-## Netlify
+1. Confirm the `cumminsidp` Deployer instance is bound to this repo
+   (`github.com/nilaygandhi01/procurement-spend-dashboard`). If your team
+   uses GitHub Enterprise mirroring, set the internal mirror as the
+   primary remote for deploy commits and demote the public origin to
+   read-only.
+2. Create the namespace (typically `cumminsidp-prod` / `cumminsidp-dev`).
+3. Provision a TLS cert for `cumminsidp.internal.mckinsey.com`
+   (or whatever hostname your tenant assigns) and store the K8s secret
+   as `cumminsidp-tls` in the namespace.
+4. Wire Cloudflare Access for the hostname:
+   - **Identity provider**: McKID SSO
+   - **Policy**: firm-network only + group `procurement-idp-dashboard`
+   - Update the placeholder annotations in
+     `deploy/helm/procurement-spend-dashboard/values.yaml` with your
+     tenant's exact annotation keys.
+5. Configure External Secrets Operator (or your Deployer-native
+   equivalent) to sync `data.json` from Vault into a K8s Secret named
+   `procurement-spend-data`. Schema:
+   ```yaml
+   apiVersion: external-secrets.io/v1beta1
+   kind: ExternalSecret
+   metadata:
+     name: procurement-spend-data
+   spec:
+     refreshInterval: 1h
+     secretStoreRef:
+       name: vault-cumminsidp
+       kind: SecretStore
+     target:
+       name: procurement-spend-data
+     data:
+       - secretKey: data.json
+         remoteRef:
+           key: secret/cumminsidp/data/data.json
+   ```
 
-`netlify.toml` sets `publish = "src/dashboard"` and a **build** command that runs the pipeline and copies outputs into that folder. Use the Netlify UI or CLI against the repo root.
+### Refreshing the data
+
+Locally on the analyst laptop (firm network only):
 
 ```bash
-npx netlify-cli deploy --prod
+python src/scripts/refresh_data.py
+# → data/outputs/data.json
 ```
 
-## Data sensitivity
+Push the file into Vault (do **not** commit):
 
-Do not make the repo or site public until spend data is cleared for external hosting.
+```bash
+vault kv put secret/cumminsidp/data data.json=@data/outputs/data.json
+```
+
+External Secrets re-syncs into the cluster within the refresh interval
+(default 1h) and the pod auto-rolls because the deployment annotates
+`checksum/data-secret` from the secret name (and ArgoCD rolls on Secret
+content change with `argocd.argoproj.io/sync-options: Replace=true` if
+your tenant configures it).
+
+### Build + push + deploy
+
+The image build / push / ArgoCD sync is driven by Deployer — **not** by
+this repo's GitHub Actions, and **not** locally. From Platform McKinsey:
+
+1. Trigger a build on `deploy/k8s-paas` (or `main` once merged) via the
+   `cumminsidp` Deployer instance.
+2. Deployer runs:
+   - Container build using this repo's `Dockerfile` (root `Dockerfile`,
+     not in `deploy/`).
+   - Trivy / Twistlock image scan (must be 0 critical / 0 high).
+   - Push to the tenant registry (replace `image.repository` in
+     `values.yaml` with the registry path Deployer assigns).
+   - ArgoCD `Application` syncs the Helm chart at
+     `deploy/helm/procurement-spend-dashboard/` against the namespace.
+3. Smoke-check `https://<host>/healthz` and the dashboard at `/index.html`.
+   The data check is: open the dashboard, confirm spend totals on the
+   Overview tab match the refresh log timestamp.
+
+### Why this repo's GH Actions workflow is disabled
+
+`.github/workflows/deploy-pages.yml` was disabled on 2026-05-17 by
+removing its `push:` trigger. The file is kept (workflow_dispatch only)
+so we can diff history. **Do not re-enable for the Cummins-data branch.**
+
+### Why we don't use Netlify either
+
+Netlify is public-internet hosting. Same reason: client data must not
+egress to a third-party provider. The `netlify.toml` is retained only
+in case a sanitized demo fork is ever published.
+
+---
+
+## GitHub Pages (DISABLED — do not enable for client data)
+
+The original instructions are preserved here for reference. **None of
+this is to be used for the Cummins instance.**
+
+- Workflow: `.github/workflows/deploy-pages.yml` (push trigger removed).
+- Publishes `src/dashboard/` to the public Pages URL.
+- Would expose `data.json` and every spend row inside it to the entire
+  internet once Pages is enabled for the repo.
+
+If you fork this repo for a sanitized demo, you can re-add `push:` to
+the workflow on the demo fork only.
+
+## Netlify (DISABLED — do not enable for client data)
+
+Same reasoning as above. `netlify.toml` is kept but should not be
+deployed against any branch that carries real Cummins data.
+
+## Data sensitivity (read me)
+
+- `data/outputs/data.json` is **never** committed and **never** built
+  into a container image.
+- Source spend workbooks under `data/inputs/spend/` are local-only;
+  verify they remain gitignored before any push.
+- The image bundles only public FRED PPI workbooks
+  (`data/inputs/indexes/*.xlsx`).
+- All traffic to the dashboard is gated by Cloudflare Access + McKID SSO
+  at the ingress; the K8s `NetworkPolicy` denies pod egress except DNS.
