@@ -1,0 +1,27 @@
+# ArgoCD sync target for the `cumminsidp` Deployer instance, prod-us-east-1.
+#
+# Contents are rendered from the canonical Helm chart at
+#   deploy/helm/procurement-spend-dashboard/
+# overlaid with
+#   deploy/helm/procurement-spend-dashboard/values-prod-us-east-1.yaml
+#
+# Do not edit the rendered file directly. Regenerate via
+#   scripts/render-manifests.ps1   (Windows)
+#   scripts/render-manifests.sh    (Linux/macOS)
+# and commit the resulting diff. PRs MUST contain both the values
+# change and the corresponding manifests change so the audit trail is
+# intact (what ArgoCD applied equals what was reviewed).
+
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: cumminsidp-prod
+
+resources:
+  - procurement-spend-dashboard.yaml
+
+# Common labels added on top of the chart's labels. Helpful for Argo
+# project / Deployer dashboards filtering by client + env.
+commonLabels:
+  mckinsey.io/deployer-instance: cumminsidp
+  mckinsey.io/env: prod-us-east-1

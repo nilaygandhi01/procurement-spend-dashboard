@@ -1,0 +1,48 @@
+# Environment overlay: prod, AWS us-east-1, tenant `cumminsidp`.
+# Render into deployer-apps/cumminsidp/prod-us-east-1/manifests/ via
+# scripts/render-manifests.ps1 (or .sh). ArgoCD syncs from that rendered
+# path, not directly from this chart.
+
+# Keep names short so K8s object names don't collide / get truncated.
+fullnameOverride: procurement-spend-dashboard
+
+image:
+  # TODO: confirm the exact ECR / Deployer-tenant registry path for the
+  # `cumminsidp` instance in prod-us-east-1. The path below is a
+  # plausible placeholder — replace before tagging an image.
+  repository: 123456789012.dkr.ecr.us-east-1.amazonaws.com/cumminsidp/procurement-spend-dashboard
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+
+imagePullSecrets:
+  - name: ecr-cumminsidp
+
+ingress:
+  enabled: true
+  className: nginx
+  host: cumminsidp.internal.mckinsey.com   # TODO: confirm with Platform McKinsey
+  annotations:
+    cloudflare.access/enabled: "true"
+    cloudflare.access/team-name: "mckinsey"
+    cloudflare.access/application: "cumminsidp"
+    cloudflare.access/policy: "firm-network-mckid-sso"
+    nginx.ingress.kubernetes.io/whitelist-source-range: "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    nginx.ingress.kubernetes.io/force-ssl-redirect: "true"
+  tls:
+    - hosts:
+        - cumminsidp.internal.mckinsey.com
+      secretName: cumminsidp-tls
+
+data:
+  secretName: procurement-spend-data
+  secretKey: data.json
+  mountPath: /usr/share/nginx/html/data.json
+  subPath: data.json
+
+networkPolicy:
+  enabled: true
+  allowDNS: true
+
+autoscaling:
+  enabled: false

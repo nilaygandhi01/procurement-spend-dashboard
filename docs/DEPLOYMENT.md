@@ -15,6 +15,57 @@
 
 ## Deployer K8s PaaS (approved path)
 
+### Repo layout for ArgoCD
+
+```
+deploy/helm/procurement-spend-dashboard/         # canonical Helm chart
+  Chart.yaml
+  values.yaml                                    # defaults
+  values-prod-us-east-1.yaml                     # env overlay (image, host, CIDRs)
+  templates/...
+
+deployer-apps/cumminsidp/prod-us-east-1/manifests/   # ArgoCD sync target
+  procurement-spend-dashboard.yaml               # rendered K8s objects
+  kustomization.yaml                             # namespace + common labels
+  README.md
+
+scripts/
+  render-manifests.sh    # render chart -> deployer-apps/.../manifests
+  render-manifests.ps1
+```
+
+**ArgoCD is configured by the `cumminsidp` Deployer instance to sync from
+`deployer-apps/cumminsidp/prod-us-east-1/manifests/`** — not from the
+chart directory directly. The files under that path are **rendered
+output** committed to git, so reviewers can diff exactly what ArgoCD will
+apply. This avoids depending on `--enable-helm` for kustomize or
+`--application-namespaces` for child Argo `Application` CRs.
+
+When the chart or env values change:
+
+```powershell
+# Windows
+./scripts/render-manifests.ps1
+```
+
+```bash
+# Linux / macOS
+./scripts/render-manifests.sh
+```
+
+Both run `helm template procurement-spend-dashboard deploy/helm/procurement-spend-dashboard --namespace cumminsidp-prod -f values-prod-us-east-1.yaml`
+and write the result to the deployer-apps path. **Commit the resulting
+diff in the same PR as the chart/values change** so the audit trail
+(reviewed Helm change ↔ applied manifests) stays intact.
+
+To add another environment (e.g. `prod-eu-west-1` or `nonprod-us-east-1`):
+
+1. Add `values-<env>.yaml` next to the chart.
+2. Append the tuple to the `ENVS` array in `scripts/render-manifests.{sh,ps1}`.
+3. Run the render script. New manifests land at
+   `deployer-apps/<tenant>/<env>/manifests/`.
+4. Have Platform McKinsey point a new ArgoCD Application at that path.
+
 ### What ships in the image
 
 | Layer | Contents |
