@@ -64,8 +64,12 @@ spec:
         volumeMounts:
         - name: nginx-cache
           mountPath: /var/cache/nginx
+        - name: nginx-run
+          mountPath: /run
       volumes:
       - name: nginx-cache
+        emptyDir: {}
+      - name: nginx-run
         emptyDir: {}
       {{- if and .Values.deployer .Values.deployer.saReadWriteRoleARN }}
       serviceAccountName: {{ include "app.fullname" . }}-sa
