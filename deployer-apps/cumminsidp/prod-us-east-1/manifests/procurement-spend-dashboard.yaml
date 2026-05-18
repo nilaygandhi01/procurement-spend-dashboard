@@ -120,8 +120,28 @@ spec:
               mountPath: /work
       containers:
         - name: dashboard
-          image: "mckinsey-cummins-idp-dashboard-docker-local.jfrog.io/procurement-spend-dashboard:0.1.0"
-          imagePullPolicy: IfNotPresent
+          # Pinned to the immutable commit-specific tag emitted by build
+          # #24 (commit 36f657e — first green build to ship the Tailwind
+          # precompile, nginx real-404 rule, and harmonization-client.js
+          # sanity check). Was `:0.1.0` (mutable floating tag). The float
+          # produced this incident: ArgoCD's pod-replacement event was
+          # the same image:tag string the node had cached locally, so
+          # K8s' default `IfNotPresent` policy skipped pulling the
+          # freshly-built layers from JFrog and the pod came up on stale
+          # bits (view-source on the deployed page still showed the
+          # cdn.tailwindcss.com <script> tag removed at b28f3fb).
+          # Pinning to the SHA-suffixed tag forces a digest-different
+          # image reference, which together with `imagePullPolicy: Always`
+          # below guarantees the kubelet does a fresh registry pull on
+          # the next rollout.
+          image: "mckinsey-cummins-idp-dashboard-docker-local.jfrog.io/procurement-spend-dashboard:0.1.0-36f657e4"
+          # Bumped from IfNotPresent → Always so future `:0.1.0` floats
+          # (and any other tag reuse) can't silently degrade to a cached
+          # node image. The pull cost on this image is negligible (~50 MB)
+          # and the workload is single-replica, so the latency on rollout
+          # is dwarfed by the JFrog network round-trip the imagePullSecret
+          # auth already requires.
+          imagePullPolicy: Always
           ports:
             - containerPort: 8080
               name: http

@@ -17,8 +17,22 @@
 #
 image:
   repository: mckinsey-cummins-idp-dashboard-docker-local.jfrog.io/procurement-spend-dashboard
-  tag: "0.1.0"
-  pullPolicy: IfNotPresent
+  # Pinned to the immutable SHA-suffixed tag emitted by build #24
+  # (commit 36f657e — first green build to ship the Tailwind precompile,
+  # nginx real-404 rule, and harmonization-client.js sanity check).
+  # Was "0.1.0" (mutable floating tag). The float produced this
+  # incident: ArgoCD's pod-replacement event referenced the same
+  # `:0.1.0` string the node had cached locally, so K8s' default
+  # IfNotPresent policy skipped pulling the freshly-built layers and
+  # the pod came up on stale bits. Pinning to a SHA-suffixed tag
+  # forces a digest-different image reference, which together with
+  # `pullPolicy: Always` below guarantees a fresh registry pull on
+  # the next rollout. Keep this value in lockstep with the same field
+  # in procurement-spend-dashboard.yaml (the rendered manifest).
+  tag: "0.1.0-36f657e4"
+  # Bumped from IfNotPresent → Always so future tag floats can't
+  # silently degrade to a cached node image.
+  pullPolicy: Always
 
 cloudflareZone: apps.mckinsey.com
 subdomainPrefix: cummins-idp-procurement
