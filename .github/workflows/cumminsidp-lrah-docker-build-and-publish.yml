@@ -1,253 +1,143 @@
-# name: cumminsidp-Build and Publish
+# Docker image build & publish for the procurement-spend-dashboard
+# static-site nginx container.
+#
+# Why this file exists in its current shape
+# -----------------------------------------
+# The Deployer K8s PaaS control plane originally scaffolded this
+# workflow file with the entire body commented out (every line started
+# with `#`). That scaffold was tailored for a Node.js starter-app under
+# `deployer-apps/cumminsidp/src/` — running npm/yarn, parsing
+# package.json for versioning, etc. — which does not match THIS repo.
+# This repo ships a static-site nginx container built from the root
+# Dockerfile that serves `src/dashboard/`, so the workflow below is
+# tailored accordingly:
+#
+#   * No Node.js / npm / yarn / package.json steps (we have none).
+#   * No JFrog Xray SCA scan (no language-level dependency manifests
+#     to audit).
+#   * No Wiz container scan (intentionally dropped for first-green
+#     rollout per maintainer decision; reintroduce as a blocking step
+#     once WIZCLI_* secrets are confirmed available and signed off).
+#   * Builds from `./Dockerfile` (repo root), targets the JFrog repo
+#     the Helm chart is already pointing at.
+#
+# The original commented-out template is preserved in git history at
+# commits prior to the one that introduced this file body.
 
-# run-name: 🐳 Build & Publish - ${{ github.ref_name }}
+name: cumminsidp-Build and Publish
 
-# on:
-#   workflow_dispatch:
-#   push:
-#     branches:
-#       - 'main'
-#       # Add branches here for auto trigger of docker build and publish
-#       # - 'feature/*'
-#       # - 'hotfix/*'
-#     paths:
-#       - 'deployer-apps/cumminsidp/src/**'
+run-name: "🐳 Build & Publish — ${{ github.ref_name }} (${{ github.sha }})"
 
-# permissions:
-#   id-token: write
-#   contents: read
-#   actions: write
-#   security-events: write
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - 'Dockerfile'
+      - 'deploy/nginx/**'
+      - 'src/**'
+      - '.github/workflows/cumminsidp-lrah-docker-build-and-publish.yml'
 
-# env:
-#   JF_REPO: mckinsey-cummins-idp-dashboard-docker-local.jfrog.io
+permissions:
+  id-token: write     # required by jfrog/setup-jfrog-cli OIDC
+  contents: read
+  actions: write
 
-# jobs:
-#   # SCA gate: Xray audit must pass before image build/publish
-#   sca-scan:
-#     name: SCA - JFrog Xray
-#     runs-on: [gh-larger-linux-mini]
-#     steps:
-#       - name: Checkout code
-#         uses: actions/checkout@v4
+env:
+  JF_REPO: mckinsey-cummins-idp-dashboard-docker-local.jfrog.io
+  IMAGE_NAME: procurement-spend-dashboard
 
-#       - name: Detect package manager
-#         id: detect-pm
-#         run: |
-#           base="deployer-apps/cumminsidp/src"
-#           if [ -f "$base/package-lock.json" ]; then
-#             echo "manager=npm" >> "$GITHUB_OUTPUT"
-#             echo "lock_path=./$base/package-lock.json" >> "$GITHUB_OUTPUT"
-#           elif [ -f "$base/yarn.lock" ]; then
-#             echo "manager=yarn" >> "$GITHUB_OUTPUT"
-#             echo "lock_path=./$base/yarn.lock" >> "$GITHUB_OUTPUT"
-#           else
-#             echo "manager=none" >> "$GITHUB_OUTPUT"
-#           fi
+jobs:
+  docker-build-and-publish:
+    name: Build and Publish Docker Image
+    runs-on: [gh-larger-linux-mini]
+    outputs:
+      image_tag: ${{ steps.version.outputs.tag }}
 
-#       - name: Setup Node.js (npm)
-#         uses: actions/setup-node@v4
-#         with:
-#           node-version: '24'
-#           cache: 'npm'
-#           cache-dependency-path: ${{ steps.detect-pm.outputs.lock_path }}
-#         if: steps.detect-pm.outputs.manager == 'npm'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
-#       - name: Setup Node.js (yarn)
-#         uses: actions/setup-node@v4
-#         with:
-#           node-version: '24'
-#           cache: 'yarn'
-#           cache-dependency-path: ${{ steps.detect-pm.outputs.lock_path }}
-#         if: steps.detect-pm.outputs.manager == 'yarn'
+      - name: Sanity-check Dockerfile exists
+        run: |
+          set -eu
+          test -f Dockerfile || { echo "::error::Dockerfile not found at repo root"; exit 1; }
+          test -f deploy/nginx/default.conf || { echo "::error::deploy/nginx/default.conf not found"; exit 1; }
+          echo "Dockerfile + nginx config present."
 
-#       - name: Enable corepack (yarn)
-#         run: corepack enable
-#         if: steps.detect-pm.outputs.manager == 'yarn'
+      - name: Compute image tag
+        id: version
+        run: |
+          set -eu
+          # Base version comes from the Helm chart so the chart & image
+          # versions stay in lockstep without a second source of truth.
+          BASE_VERSION=$(grep -m1 '^version:' deploy/helm/procurement-spend-dashboard/Chart.yaml | awk '{print $2}' | tr -d '"')
+          if [ -z "$BASE_VERSION" ]; then
+            BASE_VERSION="0.1.0"
+          fi
+          COMMIT_SHA8="${GITHUB_SHA:0:8}"
+          IMMUTABLE_TAG="${BASE_VERSION}-${COMMIT_SHA8}"
+          echo "tag=$IMMUTABLE_TAG"           >> "$GITHUB_OUTPUT"
+          echo "commit_sha8=$COMMIT_SHA8"     >> "$GITHUB_OUTPUT"
+          echo "base_version=$BASE_VERSION"   >> "$GITHUB_OUTPUT"
+          echo "Base version : $BASE_VERSION"
+          echo "Commit SHA8  : $COMMIT_SHA8"
+          echo "Immutable tag: $IMMUTABLE_TAG"
 
-#       - name: Install dependencies
-#         run: |
-#           cd deployer-apps/cumminsidp/src
-#           if [ "${{ steps.detect-pm.outputs.manager }}" = "npm" ]; then
-#             npm ci
-#           elif [ "${{ steps.detect-pm.outputs.manager }}" = "yarn" ]; then
-#             yarn install --frozen-lockfile
-#           else
-#             echo "No lockfile found (package-lock.json or yarn.lock)." >&2
-#             exit 1
-#           fi
+      - name: Set up JFrog CLI (rw scope, OIDC)
+        uses: jfrog/setup-jfrog-cli@v4
+        env:
+          JF_URL: https://mckinsey.jfrog.io
+        with:
+          oidc-provider-name: svc-24468-rw
+          oidc-audience: rw
 
-#       - name: Set up JFrog CLI (rw scope; jf audit is read-only by nature)
-#         uses: jfrog/setup-jfrog-cli@v4
-#         env:
-#           JF_URL: https://mckinsey.jfrog.io
-#         with:
-#           oidc-provider-name: svc-24468-rw
-#           oidc-audience: rw
+      - name: Build Docker image (tagged with immutable + latest)
+        run: |
+          set -eu
+          docker build \
+            --file Dockerfile \
+            --tag "${JF_REPO}/${IMAGE_NAME}:${{ steps.version.outputs.tag }}" \
+            --tag "${JF_REPO}/${IMAGE_NAME}:latest" \
+            .
+          echo "Built image with tags:"
+          echo "  ${JF_REPO}/${IMAGE_NAME}:${{ steps.version.outputs.tag }}"
+          echo "  ${JF_REPO}/${IMAGE_NAME}:latest"
 
-#       - name: Verify jq is available
-#         run: |
-#           command -v jq >/dev/null || { echo '::error::jq not installed'; exit 1; }
+      - name: Push image to JFrog
+        run: |
+          set -eu
+          jf docker push "${JF_REPO}/${IMAGE_NAME}:${{ steps.version.outputs.tag }}"
+          jf docker push "${JF_REPO}/${IMAGE_NAME}:latest"
 
-#       - name: Run Xray dependency audit
-#         run: |
-#           cd deployer-apps/cumminsidp/src
-#           XRAY_JSON="$GITHUB_WORKSPACE/xray-results.json"
-#           jf audit --format=json > "$XRAY_JSON"
-#           if ! jq . "$XRAY_JSON" >/dev/null 2>&1; then
-#             echo "::error::xray-results.json is not valid JSON. JFrog CLI may have written non-JSON lines to stdout alongside the payload; see https://github.com/jfrog/jfrog-cli/issues/1512"
-#             exit 1
-#           fi
-#           CRITICAL=$(jq '(.vulnerabilities // []) | map(select(.severity == "Critical")) | length' "$XRAY_JSON")
-#           HIGH=$(jq '(.vulnerabilities // []) | map(select(.severity == "High")) | length' "$XRAY_JSON")
-#           if [ "$CRITICAL" -gt 0 ] || [ "$HIGH" -gt 0 ]; then
-#             echo "::error::Found $CRITICAL critical and $HIGH high vulnerabilities"
-#             exit 1
-#           fi
-
-#       - name: Upload Xray scan results
-#         uses: actions/upload-artifact@v4
-#         if: always()
-#         with:
-#           name: xray-results
-#           path: xray-results.json
-
-#   docker-build-and-publish:
-#     name: Build and Publish Docker Image
-#     needs: sca-scan
-#     runs-on: [gh-larger-linux-mini]
-#     outputs:
-#       image_tag: ${{ steps.version.outputs.semver }}
-
-#     steps:
-#       - name: Checkout code
-#         uses: actions/checkout@v4
-
-#       - name: Detect package manager
-#         id: detect-pm
-#         run: |
-#           base="deployer-apps/cumminsidp/src"
-#           if [ -f "$base/package-lock.json" ]; then
-#             echo "manager=npm" >> "$GITHUB_OUTPUT"
-#             echo "lock_path=./$base/package-lock.json" >> "$GITHUB_OUTPUT"
-#           elif [ -f "$base/yarn.lock" ]; then
-#             echo "manager=yarn" >> "$GITHUB_OUTPUT"
-#             echo "lock_path=./$base/yarn.lock" >> "$GITHUB_OUTPUT"
-#           else
-#             echo "manager=none" >> "$GITHUB_OUTPUT"
-#           fi
-
-#       - name: Setup Node.js (npm)
-#         uses: actions/setup-node@v4
-#         with:
-#           node-version: '24'
-#           cache: 'npm'
-#           cache-dependency-path: ${{ steps.detect-pm.outputs.lock_path }}
-#         if: steps.detect-pm.outputs.manager == 'npm'
-
-#       - name: Setup Node.js (yarn)
-#         uses: actions/setup-node@v4
-#         with:
-#           node-version: '24'
-#           cache: 'yarn'
-#           cache-dependency-path: ${{ steps.detect-pm.outputs.lock_path }}
-#         if: steps.detect-pm.outputs.manager == 'yarn'
-
-#       - name: Enable corepack (yarn)
-#         run: corepack enable
-#         if: steps.detect-pm.outputs.manager == 'yarn'
-
-#       - name: Install dependencies
-#         run: |
-#           cd deployer-apps/cumminsidp/src
-#           if [ "${{ steps.detect-pm.outputs.manager }}" = "npm" ]; then
-#             npm ci
-#           elif [ "${{ steps.detect-pm.outputs.manager }}" = "yarn" ]; then
-#             yarn install --frozen-lockfile
-#           else
-#             echo "No lockfile found (package-lock.json or yarn.lock)." >&2
-#             exit 1
-#           fi
-
-#       - name: Generate version
-#         id: version
-#         run: |
-#           PACKAGE_VERSION=$(node -p "require('./deployer-apps/cumminsidp/src/package.json').version")
-#           COMMIT_HASH=${GITHUB_SHA:0:8}
-#           SEMVER_VERSION="${PACKAGE_VERSION}-${COMMIT_HASH}"
-
-#           echo "semver=$SEMVER_VERSION" >> $GITHUB_OUTPUT
-#           echo "commit_hash=$COMMIT_HASH" >> $GITHUB_OUTPUT
-#           echo "base_version=$PACKAGE_VERSION" >> $GITHUB_OUTPUT
-
-#           echo "Base version: $PACKAGE_VERSION"
-#           echo "Full version: $SEMVER_VERSION"
-
-#       - name: Run unit tests
-#         id: tests
-#         run: |
-#           cd deployer-apps/cumminsidp/src
-#           if [ "${{ steps.detect-pm.outputs.manager }}" = "npm" ]; then
-#             npm run test:ci 2>&1 | tee test-output.txt
-#           else
-#             yarn test:ci 2>&1 | tee test-output.txt
-#           fi
-
-#           TEST_RESULTS=$(cat test-output.txt)
-#           TESTS_PASSED=$(echo "$TEST_RESULTS" | grep -oP 'Tests:\s+\K\d+(?= passed)' || echo "0")
-#           TESTS_FAILED=$(echo "$TEST_RESULTS" | grep -oP 'Tests:\s+\d+ passed,\s+\K\d+(?= failed)' || echo "0")
-#           TESTS_TOTAL=$(echo "$TEST_RESULTS" | grep -oP 'Tests:\s+\K\d+(?= passed)' || echo "0")
-
-#           echo "tests_passed=$TESTS_PASSED" >> $GITHUB_OUTPUT
-#           echo "tests_failed=$TESTS_FAILED" >> $GITHUB_OUTPUT
-#           echo "tests_total=$TESTS_TOTAL" >> $GITHUB_OUTPUT
-#         env:
-#           NODE_ENV: test
-#           APP_VERSION: ${{ steps.version.outputs.semver }}
-
-#       - name: Set up JFrog CLI for rw account
-#         uses: jfrog/setup-jfrog-cli@v4
-#         env:
-#           JF_URL: https://mckinsey.jfrog.io
-#         with:
-#           oidc-provider-name: svc-24468-rw
-#           oidc-audience: rw
-
-#       - name: Build Docker image with versioned tag
-#         run: |
-#           docker build -t ${{ env.JF_REPO }}/cumminsidp-starter-app:${{ steps.version.outputs.semver }} ./deployer-apps/cumminsidp/src/
-
-#       - name: Install Wiz CLI
-#         run: |
-#           curl -fsSL -o wizcli "https://downloads.wiz.io/v1/wizcli/latest/wizcli-linux-amd64"
-#           chmod +x wizcli
-
-#       - name: Wiz Container Scan
-#         id: wiz-scan
-#         continue-on-error: false
-#         env:
-#           WIZ_CLIENT_ID: ${{ secrets.WIZCLI_CLIENT_ID }}
-#           WIZ_CLIENT_SECRET: ${{ secrets.WIZCLI_CLIENT_SECRET }}
-#         run: |
-#           ./wizcli docker scan \
-#             --image ${{ env.JF_REPO }}/cumminsidp-starter-app:${{ steps.version.outputs.semver }} \
-#             -p "mck-all-vulnerabilities-block-all" \
-#             --policy-hits-only \
-#             --dockerfile "./deployer-apps/cumminsidp/src/Dockerfile" \
-#             --output wiz-output.json,sarif,true
-
-#       - name: Push docker image to Jfrog SaaS using CLI
-#         run: |
-#           jf docker push ${{ env.JF_REPO }}/cumminsidp-starter-app:${{ steps.version.outputs.semver }}
-
-#       - name: Display build summary
-#         if: always()
-#         run: |
-#           echo "## Build Complete" >> $GITHUB_STEP_SUMMARY
-#           echo "" >> $GITHUB_STEP_SUMMARY
-#           echo "**Image:** \`${{ env.JF_REPO }}/cumminsidp-starter-app\`" >> $GITHUB_STEP_SUMMARY
-#           echo "**Version:** \`${{ steps.version.outputs.semver }}\`" >> $GITHUB_STEP_SUMMARY
-#           echo "**Xray SCA:** \`${{ needs.sca-scan.result }}\`" >> $GITHUB_STEP_SUMMARY
-#           echo "**Wiz Scan:** \`${{ steps.wiz-scan.outcome }}\`" >> $GITHUB_STEP_SUMMARY
-#           echo "" >> $GITHUB_STEP_SUMMARY
-#           echo "Ready for deployment" >> $GITHUB_STEP_SUMMARY
+      - name: Build summary
+        if: always()
+        run: |
+          {
+            echo "## Build & Publish — $([ ${{ job.status }} = success ] && echo ':white_check_mark:' || echo ':x:')"
+            echo ""
+            echo "**Repo:** \`${JF_REPO}/${IMAGE_NAME}\`"
+            echo ""
+            echo "**Tags pushed:**"
+            echo "- \`${{ steps.version.outputs.tag }}\` (immutable, points at \`${{ github.sha }}\`)"
+            echo "- \`latest\` (moving)"
+            echo ""
+            echo "### Next step — roll the pod"
+            echo ""
+            echo "The Helm chart's \`image.tag\` is still pinned to the chart's"
+            echo "base version (\`${{ steps.version.outputs.base_version }}\`) and"
+            echo "\`imagePullPolicy: IfNotPresent\`, so a fresh push alone will not"
+            echo "reach the pod. Pick ONE:"
+            echo ""
+            echo "1. **Recommended — bump the chart values.** Update"
+            echo "   \`deploy/helm/procurement-spend-dashboard/values-prod-us-east-1.yaml\`"
+            echo "   and"
+            echo "   \`deployer-apps/cumminsidp/prod-us-east-1/manifests/values.yaml\`"
+            echo "   so \`image.tag\` is \`${{ steps.version.outputs.tag }}\`, then commit."
+            echo "   ArgoCD will detect the manifest change and roll the deployment."
+            echo ""
+            echo "2. **Quick — restart the deployment to re-pull \`latest\`.** Requires"
+            echo "   \`image.tag: latest\` AND \`image.pullPolicy: Always\` in values."
+            echo "   Then \`kubectl rollout restart deployment/procurement-spend-dashboard -n cumminsidp-a8dd5\`."
+          } >> "$GITHUB_STEP_SUMMARY"
