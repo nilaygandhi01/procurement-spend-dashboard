@@ -1,3 +1,4 @@
+# build: force rebuild to apply --no-cache (cdn.tailwindcss.com stale layer)
 # Procurement Spend Dashboard — static site image for Deployer K8s PaaS.
 #
 # Design notes:
