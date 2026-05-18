@@ -40,6 +40,21 @@ spec:
               value: {{ .Values.s3.bucket | quote }}
             - name: OBJECT_KEY
               value: {{ .Values.s3.objectKey | default "data.json" | quote }}
+            # The pod runs as a non-root user (McKinsey PodSecurity
+            # policy); the amazon/aws-cli image's default HOME is /root,
+            # which is owned by uid 0 and unwritable for our uid, so the
+            # AWS CLI crashes with `[Errno 13] Permission denied:
+            # '/root/.aws'` before it even reads IRSA env vars. Pinning
+            # HOME (and the explicit AWS_*_FILE paths as belt-and-
+            # suspenders) to /tmp keeps the CLI's config/credential
+            # cache on the container's writable tmpfs and lets the
+            # initContainer download data.json.
+            - name: HOME
+              value: "/tmp"
+            - name: AWS_CONFIG_FILE
+              value: "/tmp/.aws/config"
+            - name: AWS_SHARED_CREDENTIALS_FILE
+              value: "/tmp/.aws/credentials"
           command: ["/bin/sh","-c"]
           args:
             - |

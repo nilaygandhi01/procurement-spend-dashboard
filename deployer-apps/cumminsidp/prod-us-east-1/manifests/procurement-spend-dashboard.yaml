@@ -87,6 +87,15 @@ spec:
               value: "649941507750-cumminsidp-a8dd5-spend-data"
             - name: OBJECT_KEY
               value: "data.json"
+            # Pin HOME + AWS config paths to /tmp so the AWS CLI (running
+            # as a non-root user) doesn't try to write to /root/.aws and
+            # crash with `[Errno 13] Permission denied: '/root/.aws'`.
+            - name: HOME
+              value: "/tmp"
+            - name: AWS_CONFIG_FILE
+              value: "/tmp/.aws/config"
+            - name: AWS_SHARED_CREDENTIALS_FILE
+              value: "/tmp/.aws/credentials"
           command: ["/bin/sh", "-c"]
           args:
             - |
