@@ -28,6 +28,41 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- if .Values.s3 }}
+      initContainers:
+      - name: fetch-data
+        image: {{ .Values.initImage | default "amazon/aws-cli:2.17.46" }}
+        imagePullPolicy: IfNotPresent
+        env:
+        - name: AWS_REGION
+          value: {{ .Values.s3.region | default "us-east-1" | quote }}
+        - name: AWS_DEFAULT_REGION
+          value: {{ .Values.s3.region | default "us-east-1" | quote }}
+        - name: BUCKET
+          value: {{ .Values.s3.bucket | quote }}
+        - name: OBJECT_KEY
+          value: {{ .Values.s3.objectKey | default "data.json" | quote }}
+        command: ["/bin/sh","-c"]
+        args:
+        - |
+          set -eu
+          aws s3 cp "s3://${BUCKET}/${OBJECT_KEY}" /work/data.json
+          echo "fetched $(wc -c < /work/data.json) bytes"
+        resources:
+          requests:
+            cpu: 100m
+            memory: 256Mi
+          limits:
+            cpu: "1"
+            memory: 1Gi
+        securityContext:
+          allowPrivilegeEscalation: false
+          capabilities:
+            drop: ["ALL"]
+        volumeMounts:
+        - name: app-data
+          mountPath: /work
+      {{- end }}
       containers:
       - image: {{ .Values.image.repository }}:{{ .Values.image.tag }}
         imagePullPolicy: {{ .Values.image.pullPolicy }}
@@ -66,11 +101,22 @@ spec:
           mountPath: /var/cache/nginx
         - name: nginx-run
           mountPath: /run
+        {{- if .Values.s3 }}
+        - name: app-data
+          mountPath: /usr/share/nginx/html/data.json
+          subPath: data.json
+          readOnly: true
+        {{- end }}
       volumes:
       - name: nginx-cache
         emptyDir: {}
       - name: nginx-run
         emptyDir: {}
+      {{- if .Values.s3 }}
+      - name: app-data
+        emptyDir:
+          sizeLimit: 1Gi
+      {{- end }}
       {{- if and .Values.deployer .Values.deployer.saReadWriteRoleARN }}
       serviceAccountName: {{ include "app.fullname" . }}-sa
       automountServiceAccountToken: false

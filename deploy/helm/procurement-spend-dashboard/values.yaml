@@ -2,9 +2,11 @@
 #
 # This chart is intentionally opinionated for client-data hosting:
 #   - Single replica by default (low-traffic internal tool); HPA optional.
-#   - data.json is consumed from a K8s Secret, NEVER baked into the image.
+#   - data.json (~255 MB) is fetched from S3 at pod startup via IRSA,
+#     NEVER baked into the image and NEVER stored as a K8s Secret/ConfigMap.
 #   - Ingress is locked to firm-network + Cloudflare Access (McKID SSO).
-#   - Network policy denies egress except DNS by default.
+#   - Network policy denies egress except DNS + the AWS S3 endpoints needed
+#     for the initContainer fetch.
 
 # ----- Image -----
 # Replace `image.repository` with your Deployer-tenant container registry.
@@ -53,20 +55,29 @@ extraVolumeMounts:
   - name: nginx-run
     mountPath: /var/run
 
-# ----- Sensitive data mount -----
-# The dashboard fetches /data.json at runtime. It is loaded from a K8s
-# Secret in the same namespace. Create the secret OUT OF BAND (do NOT
-# commit it; use Vault → External Secrets, or `kubectl create secret`
-# with the rendered file from your local refresh_data.py run).
+# ----- Spend data (S3) -----
+# data.json is ~255 MB — too large for K8s Secret/ConfigMap (etcd 1 MiB cap).
+# The pod fetches it from S3 at startup via an initContainer using IRSA.
+# Refresh = re-upload the object to the bucket; no chart change needed.
 #
-#   kubectl -n <ns> create secret generic procurement-spend-data \
-#     --from-file=data.json=./data/outputs/data.json
-data:
-  secretName: procurement-spend-data
-  secretKey: data.json
-  # Mount path inside the nginx container (must match nginx root).
-  mountPath: /usr/share/nginx/html/data.json
-  subPath: data.json
+# The bucket is provisioned by the LRAH Terraform module via
+# `deployer-apps/<tenant>/<env>/iac/main.tf` (s3_buckets["spend-data"]).
+# The full AWS bucket name is computed by LRAH as
+#   ${AWS_WORKLOAD_ACCOUNT_ID}-${USER_ENVIRONMENT_ID}-spend-data
+# Set `s3.bucket` in the env overlay (e.g. values-prod-us-east-1.yaml) to the
+# fully resolved name. Leave the top-level `s3` field empty here so the chart
+# can render in non-S3-enabled environments too.
+s3: {}
+
+# AWS CLI image used by the data-fetch initContainer. If your tenant blocks
+# Docker Hub, mirror this to JFrog and override `initImage` in the env overlay.
+initImage: amazon/aws-cli:2.17.46
+
+# IRSA: provide the SA role ARN provisioned by the LRAH module for this env.
+# When set, templates/service-account.yaml renders a ServiceAccount annotated
+# with `eks.amazonaws.com/role-arn`, and the deployment binds to it.
+deployer: {}
+#   saReadWriteRoleARN: arn:aws:iam::<acct>:role/SA-<acct>-<env>-ReadWrite
 
 # ----- Service -----
 service:

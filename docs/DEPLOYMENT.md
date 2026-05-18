@@ -77,13 +77,18 @@ To add another environment (e.g. `prod-eu-west-1` or `nonprod-us-east-1`):
 
 ### What does NOT ship in the image
 
-- `data/outputs/data.json` — mounted at runtime from K8s Secret
+- `data/outputs/data.json` — **fetched from S3 at pod startup** via an
+  `initContainer` (`amazon/aws-cli`) that copies the object into a shared
+  `emptyDir` volume which nginx then serves at `/data.json`. The file is
+  ~255 MB, well above the 1 MiB K8s Secret / ConfigMap etcd limit, so the
+  Secret-based approach used in earlier drafts will not work and has been
+  removed from this chart.
 - Source spend workbooks — never leave the analyst laptop / Vault file storage
 
 ### One-time setup in Platform McKinsey
 
 1. Confirm the `cumminsidp` Deployer instance is bound to this repo
-   (`github.com/nilaygandhi01/procurement-spend-dashboard`). If your team
+   (`github.com/McK-Internal/cummins-idp-dashboard`). If your team
    uses GitHub Enterprise mirroring, set the internal mirror as the
    primary remote for deploy commits and demote the public origin to
    read-only.
@@ -97,26 +102,18 @@ To add another environment (e.g. `prod-eu-west-1` or `nonprod-us-east-1`):
    - Update the placeholder annotations in
      `deploy/helm/procurement-spend-dashboard/values.yaml` with your
      tenant's exact annotation keys.
-5. Configure External Secrets Operator (or your Deployer-native
-   equivalent) to sync `data.json` from Vault into a K8s Secret named
-   `procurement-spend-data`. Schema:
-   ```yaml
-   apiVersion: external-secrets.io/v1beta1
-   kind: ExternalSecret
-   metadata:
-     name: procurement-spend-data
-   spec:
-     refreshInterval: 1h
-     secretStoreRef:
-       name: vault-cumminsidp
-       kind: SecretStore
-     target:
-       name: procurement-spend-data
-     data:
-       - secretKey: data.json
-         remoteRef:
-           key: secret/cumminsidp/data/data.json
+5. Add the S3 bucket to LRAH Terraform (one-time):
+   In `deployer-apps/cumminsidp/prod-us-east-1/iac/main.tf`, the
+   `s3_buckets` map already contains:
+
+   ```hcl
+   "spend-data" : {}
    ```
+
+   Run **Deploy infra** from the Deployer / GitHub Actions UI so the LRAH
+   module provisions the bucket and attaches read+write to the SA role.
+   Resolved AWS bucket name:
+   `649941507750-cumminsidp-a8dd5-spend-data` (region `us-east-1`).
 
 ### Refreshing the data
 
@@ -124,20 +121,29 @@ Locally on the analyst laptop (firm network only):
 
 ```bash
 python src/scripts/refresh_data.py
-# → data/outputs/data.json
+# → data/outputs/data.json   (~255 MB)
 ```
 
-Push the file into Vault (do **not** commit):
+Upload to S3 via the platform's **Upload to S3** workflow:
+
+1. In the GitHub repo go to *Actions → "cumminsidp-prod-us-Upload to S3"*
+   (workflow file: `.github/workflows/cumminsidp-prod-us-east-1-lrah-upload-to-s3.yml`).
+2. Click **Run workflow**, set `bucket: spend-data`, dispatch. The action
+   writes a short-lived STS credential to Vault for the
+   `S3-...-spend-data-S3Uploader` role.
+3. Use the Vault-backed creds (Platform McKinsey UI shows the path) to
+   `aws s3 cp ./data/outputs/data.json s3://649941507750-cumminsidp-a8dd5-spend-data/data.json`
+   from the analyst laptop. (Alternatively use the AWS S3 console in
+   Platform McKinsey if your tenant exposes it.)
+
+Roll the pod so the initContainer re-fetches:
 
 ```bash
-vault kv put secret/cumminsidp/data data.json=@data/outputs/data.json
+kubectl -n cumminsidp-a8dd5 rollout restart deployment/procurement-spend-dashboard
 ```
 
-External Secrets re-syncs into the cluster within the refresh interval
-(default 1h) and the pod auto-rolls because the deployment annotates
-`checksum/data-secret` from the secret name (and ArgoCD rolls on Secret
-content change with `argocd.argoproj.io/sync-options: Replace=true` if
-your tenant configures it).
+(Or trigger an ArgoCD **Hard Refresh + Sync** on the
+`procurement-spend-dashboard` application.)
 
 ### Build + push + deploy
 

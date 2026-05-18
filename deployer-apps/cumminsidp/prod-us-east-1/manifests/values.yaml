@@ -37,7 +37,34 @@ env:
 #   AWS_REGION: us-east-1
 #   # Add your environment variables here
 #
+
+# ----- Spend data (S3) -----
+# data.json is ~255 MB — too large for K8s Secret/ConfigMap (etcd 1 MiB cap).
+# The pod fetches it from S3 at startup via an initContainer using IRSA.
+# Refresh = re-upload the object to the bucket; no chart change needed.
 #
+# Bucket is provisioned by iac/main.tf (s3_buckets["spend-data"]). The full
+# AWS bucket name is computed by LRAH as
+#   ${AWS_WORKLOAD_ACCOUNT_ID}-${USER_ENVIRONMENT_ID}-spend-data
+#   = 649941507750-cumminsidp-a8dd5-spend-data
+s3:
+  bucket: 649941507750-cumminsidp-a8dd5-spend-data
+  objectKey: data.json
+  region: us-east-1
+
+# AWS CLI image for the data-fetch initContainer. If your tenant's image
+# allow-list blocks Docker Hub, mirror this to JFrog and override here:
+#   initImage: mckinsey-cummins-idp-dashboard-docker-local.jfrog.io/aws-cli:2.17.46
+initImage: amazon/aws-cli:2.17.46
+
+# IRSA: the LRAH module provisions one SA role per env and attaches per-bucket
+# policies as buckets are added to `s3_buckets`. Setting this triggers
+# templates/service-account.yaml to create the ServiceAccount with the
+# eks.amazonaws.com/role-arn annotation that the EKS Pod Identity webhook
+# uses to inject AWS_ROLE_ARN / AWS_WEB_IDENTITY_TOKEN_FILE into the pod.
+deployer:
+  saReadWriteRoleARN: arn:aws:iam::649941507750:role/SA-649941507750-cumminsidp-a8dd5-ReadWrite
+
 ## For all databases you define in terraform/main.tf
 #
 ### On AWS RDS:

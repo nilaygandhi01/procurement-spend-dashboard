@@ -1,6 +1,6 @@
 # Secrets / sensitive-data scan — 2026-05-17
 
-Scope: all tracked files in `nilaygandhi01/procurement-spend-dashboard`,
+Scope: all tracked files in `McK-Internal/cummins-idp-dashboard`,
 excluding `node_modules/`. Run against the `deploy/k8s-paas` branch just
 before generating the Deployer K8s PaaS bundle.
 
@@ -25,19 +25,21 @@ before generating the Deployer K8s PaaS bundle.
 |---|---|---|
 | Client name "Cummins" in UI, code, docs | ~25+ files (UI strings, `docs/AUDIT_REPORT.md`, `docs/CHANGES.md`, `README.md`, `src/dashboard/index.html`, `src/scripts/build_spend_data.py`) | **Keep**. Internal tool. Confirms scope at a glance. Do not strip. |
 | FRED PPI workbooks (`PCU*.xlsx`, `WPU*.xlsx`) | `data/inputs/indexes/` | **Public reference data**. Safe to bundle in image (see Dockerfile). |
-| `data/outputs/data.json` (the actual spend payload) | **Untracked**, regenerated locally via `src/scripts/refresh_data.py` | **Never bake into image.** Mounted at runtime from K8s Secret `procurement-spend-data` (see `deploy/helm/procurement-spend-dashboard/values.yaml`). |
+| `data/outputs/data.json` (the actual spend payload) | **Untracked**, regenerated locally via `src/scripts/refresh_data.py` | **Never bake into image.** ~255 MB — too large for K8s Secret/ConfigMap (1 MiB etcd cap). Stored in private S3 (`s3://649941507750-cumminsidp-a8dd5-spend-data/data.json`) and fetched by an `initContainer` into an `emptyDir` at pod startup via IRSA. See `deploy/helm/procurement-spend-dashboard/values.yaml` (`s3:` block). |
 | Source spend workbooks (`data/inputs/spend/*.xlsx`) | Should be **untracked** — verify | Confirm `.gitignore` covers `data/inputs/spend/`. Inputs live on analyst laptops + Vault file storage, never in the repo. |
 
 ## What to move into Vault
 
 Nothing **in code**. The only sensitive payload is `data.json`, and it is
 NOT in code — it is a runtime artifact regenerated from the source spend
-workbook each refresh. Recommended Vault placement:
+workbook each refresh. Recommended placement:
 
-1. **`data.json` (latest build)** → Vault KV (`secret/cumminsidp/data/data.json`)
-   or, more typically, an internal artifact bucket sealed by the
-   Deployer tenant. From there, sync into the K8s Secret
-   `procurement-spend-data` via External Secrets Operator on each refresh.
+1. **`data.json` (latest build)** → private S3 bucket provisioned by LRAH:
+   `s3://649941507750-cumminsidp-a8dd5-spend-data/data.json`. The pod
+   pulls it at startup via an initContainer using IRSA. Vault is **not**
+   used for the file itself; only short-lived STS credentials for the
+   `S3Uploader` role flow through Vault during refresh (see
+   `.github/workflows/cumminsidp-prod-us-east-1-lrah-upload-to-s3.yml`).
 2. **Source spend workbook** → Vault file storage / OneDrive (firm-network)
    only. Never push into this repo.
 
@@ -48,6 +50,7 @@ bundled PPI workbooks via same-origin fetch.
 ## Conclusion
 
 **Repo is clean of hardcoded credentials.** Deployment can proceed via
-Deployer K8s PaaS. The only sensitive artifact is the runtime-mounted
-`data.json`, which is handled via the chart's `data.secretName` value
-and must never be committed.
+Deployer K8s PaaS. The only sensitive artifact is the S3-backed
+`data.json` payload; it never enters the container image, the K8s Secret
+store, or git, and access is gated by the LRAH-provisioned SA role with
+per-bucket IAM policy (`SA-...-cumminsidp-a8dd5-ReadWrite`).

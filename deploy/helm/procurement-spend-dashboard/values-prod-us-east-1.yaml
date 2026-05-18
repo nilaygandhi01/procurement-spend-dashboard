@@ -32,11 +32,15 @@ ingress:
         - cumminsidp.internal.mckinsey.com
       secretName: cumminsidp-tls
 
-data:
-  secretName: procurement-spend-data
-  secretKey: data.json
-  mountPath: /usr/share/nginx/html/data.json
-  subPath: data.json
+# Spend data is fetched from S3 by the initContainer (see values.yaml).
+s3:
+  bucket: 649941507750-cumminsidp-a8dd5-spend-data
+  objectKey: data.json
+  region: us-east-1
+
+# IRSA: the LRAH-provisioned SA role for cumminsidp-a8dd5 prod-us-east-1.
+deployer:
+  saReadWriteRoleARN: arn:aws:iam::649941507750:role/SA-649941507750-cumminsidp-a8dd5-ReadWrite
 
 networkPolicy:
   enabled: true

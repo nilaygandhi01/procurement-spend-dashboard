@@ -2,9 +2,10 @@
 #
 # Design notes:
 #   * Multi-stage build keeps the runtime image minimal (nginx:alpine).
-#   * Sensitive payload (Cummins spend `data.json`) is NOT baked into the
-#     image. It is mounted at runtime from a K8s Secret/ConfigMap at
-#     /usr/share/nginx/html/data.json (see Helm chart `data.secretName`).
+#   * Sensitive payload (Cummins spend `data.json`, ~255 MB) is NOT baked
+#     into the image. An initContainer (`amazon/aws-cli`) downloads it from
+#     S3 into a shared emptyDir at pod startup, and nginx mounts the file
+#     at /usr/share/nginx/html/data.json (see Helm chart `s3:` block).
 #   * Listens on 8080 so the container can run as a non-root user that
 #     cannot bind <1024.
 #   * FRED PPI workbooks (data/inputs/indexes/*.xlsx) ARE bundled — they are
