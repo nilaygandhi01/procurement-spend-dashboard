@@ -51,7 +51,7 @@ module "lrah" {
     // (key: `s3.bucket`). Refresh by re-uploading `data.json`; no chart
     // change required.
     //
-    // `s3_uploader` opts this bucket into the per-bucket
+    // `uploader` opts this bucket into the per-bucket
     //   S3-<account>-<env>-spend-data-S3Uploader
     // role. `ref = "*"` tells the firm `github-oidc-role` module to build
     // a trust policy with StringLike on `repo:<rp_github_repo>:*`, which
@@ -59,8 +59,20 @@ module "lrah" {
     // environment-form (`repo:<repo>:environment:<env>`) OIDC sub claims.
     // The .github/workflows/cumminsidp-prod-us-east-1-lrah-upload-to-s3.yml
     // workflow assumes this role to push the refreshed data.json.
+    //
+    // Field name choice: previous attempt used `s3_uploader = { ref = "*" }`
+    // (snake_case of the `S3Uploader` role suffix). After Deploy infra ran
+    // "Success" against that, the trust policy did not update, suggesting the
+    // LRAH module did not recognise that key (terraform did not error because
+    // the s3_buckets input appears to accept arbitrary keys). The naming
+    // convention used by sibling LRAH inputs in this same main.tf
+    // (e.g. postgresql_databases.<db>.roles.<role>.generate_password,
+    //  mysql_databases.<db>.owner.iam_authentication) is that inner field
+    // names describe the FUNCTION without re-stating the parent map's
+    // resource type. `uploader` follows that convention; `s3_uploader` did
+    // not. Falling back to `uploader`.
     "spend-data" : {
-      s3_uploader = {
+      uploader = {
         ref = "*"
       }
     }

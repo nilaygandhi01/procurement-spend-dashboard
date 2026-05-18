@@ -2,7 +2,7 @@
 #
 # `rp_github_repo` is the `<org>/<repo>` whose GitHub Actions OIDC token
 # is permitted to assume the per-bucket `S3Uploader` role created when a
-# bucket entry in `s3_buckets` opts in via `s3_uploader = { ref = "*" }`.
+# bucket entry in `s3_buckets` opts in via `uploader = { ref = "*" }`.
 #
 # When the lrah-control-plane sets `TF_VAR_rp_github_repo` (or a workspace
 # variable) on the TFE workspace, that takes precedence over this file —
