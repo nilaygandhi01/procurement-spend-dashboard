@@ -15,6 +15,16 @@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <!--
+      Tailwind utility classes are precompiled into /tailwind.css at Docker
+      build time (see Dockerfile `tailwind-build` stage and deploy/tailwind/).
+      This replaces the previous <script src="https://cdn.tailwindcss.com">
+      Play CDN runtime, whose in-browser JIT required CSP 'unsafe-eval'.
+      The link is placed BEFORE the inline <style> block below so the
+      inline rules continue to win specificity ties exactly as they did
+      against the Play CDN's runtime-injected styles.
+    -->
+    <link rel="stylesheet" href="/tailwind.css" />
     <style>
       :root {
         --idp-page: #f2f2f2;
@@ -1785,7 +1795,12 @@
         padding-top: 1rem !important;
       }
     </style>
-    <script src="https://cdn.tailwindcss.com"></script>
+    <!--
+      Tailwind Play CDN intentionally removed. Utility classes are now
+      precompiled to /tailwind.css and loaded via the <link> tag in <head>
+      above. The Play CDN's runtime JIT (`new Function(...)`) required CSP
+      'unsafe-eval'; precompiling keeps the script-src directive tight.
+    -->
     <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0"></script>

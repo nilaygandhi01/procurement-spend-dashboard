@@ -1,0 +1,26 @@
+/*
+ * Tailwind input CSS for the procurement-spend-dashboard static site.
+ *
+ * This file is consumed by the Tailwind standalone CLI at Docker
+ * build time (see Dockerfile `tailwind-build` stage) and the
+ * resulting tailwind.css is shipped alongside index.html. The three
+ * directives below expand to:
+ *
+ *   @tailwind base       — Preflight reset + minimal element styles
+ *                          (h1/h2/h3 unstyled, list-style none, etc.).
+ *                          Inline <style> rules in index.html override
+ *                          these because the <link> tag is placed
+ *                          BEFORE the inline <style> block in <head>.
+ *   @tailwind components — Tailwind's component-layer placeholder.
+ *                          We don't define any custom components yet.
+ *   @tailwind utilities  — Every utility class detected by the
+ *                          scanner against the files listed in the
+ *                          tailwind.config.js `content` array.
+ *
+ * No PostCSS plugins, no @layer overrides, no @apply — we keep this
+ * as a thin shim so the static output stays minimal and the build
+ * step has zero hidden dependencies.
+ */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;

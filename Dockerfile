@@ -11,8 +11,57 @@
 #   * FRED PPI workbooks (data/inputs/indexes/*.xlsx) ARE bundled — they are
 #     public reference data, copied next to index.html so the front-end's
 #     same-origin fetch resolves.
+#   * Tailwind CSS is PRECOMPILED in the `tailwind-build` stage (see
+#     deploy/tailwind/). The Play CDN (cdn.tailwindcss.com) is no longer
+#     loaded at runtime because its in-browser JIT requires CSP
+#     'unsafe-eval', which the nginx CSP intentionally withholds.
 
-# ---- Stage 1: stage static assets ----
+# ---- Stage 1: precompile Tailwind CSS ----
+# Runs the Tailwind standalone CLI against the dashboard sources and
+# produces a single minified tailwind.css that the runtime nginx serves
+# alongside index.html. Standalone CLI = single static binary, so no
+# Node / npm / package.json / node_modules need exist in this repo.
+FROM alpine:3.20 AS tailwind-build
+
+# Pin the Tailwind version so reproducible builds don't drift. v3.4.x is
+# the line the Play CDN serves by default; staying on v3 also lets us
+# keep the classic JS tailwind.config.js (v4 switches to CSS-based config
+# and changes class-name semantics).
+ARG TAILWINDCSS_VERSION=3.4.17
+
+# buildkit-provided: amd64 on GitHub Actions runners, arm64 on Apple
+# Silicon builders. Tailwind ships musl binaries for both.
+ARG TARGETARCH
+
+WORKDIR /build
+
+RUN apk add --no-cache wget ca-certificates \
+ && case "$TARGETARCH" in \
+        amd64) TWARCH="x64" ;; \
+        arm64) TWARCH="arm64" ;; \
+        *) echo "Unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
+    esac \
+ && wget -q -O /usr/local/bin/tailwindcss \
+        "https://github.com/tailwindlabs/tailwindcss/releases/download/v${TAILWINDCSS_VERSION}/tailwindcss-linux-${TWARCH}-musl" \
+ && chmod +x /usr/local/bin/tailwindcss \
+ && /usr/local/bin/tailwindcss --help >/dev/null
+
+# Only bring in what Tailwind needs to scan. Keeping this scoped (rather
+# than COPY . .) means a change to e.g. data/inputs/ won't invalidate
+# the Tailwind layer cache.
+COPY deploy/tailwind/tailwind.config.js ./tailwind.config.js
+COPY deploy/tailwind/input.css ./input.css
+COPY src/dashboard/ ./src/dashboard/
+
+RUN tailwindcss \
+        --config ./tailwind.config.js \
+        --input  ./input.css \
+        --output ./tailwind.css \
+        --minify \
+ && test -s ./tailwind.css \
+ && echo "Tailwind CSS built: $(wc -c < ./tailwind.css) bytes"
+
+# ---- Stage 2: stage static assets ----
 FROM alpine:3.20 AS staging
 
 WORKDIR /staging
@@ -23,11 +72,17 @@ COPY src/dashboard/ /staging/
 # Copy public PPI workbooks next to index.html (same-origin fetch).
 COPY data/inputs/indexes/*.xlsx /staging/
 
-# IMPORTANT: do NOT copy data/outputs/data.json here. It is mounted from a
-# K8s Secret at runtime. The file is also explicitly excluded by
-# .dockerignore as a second line of defence.
+# Drop in the precompiled Tailwind stylesheet from stage 1. The
+# <link rel="stylesheet" href="/tailwind.css"> in index.html resolves
+# against this file at the document root.
+COPY --from=tailwind-build /build/tailwind.css /staging/tailwind.css
 
-# ---- Stage 2: runtime ----
+# IMPORTANT: do NOT copy data/outputs/data.json here. It is fetched from
+# S3 by an initContainer at pod startup (see the file-level comment
+# above and the Helm chart `s3:` block). The file is also explicitly
+# excluded by .dockerignore as a second line of defence.
+
+# ---- Stage 3: runtime ----
 FROM nginx:1.27-alpine
 
 # Drop privileges. The official nginx image runs as root by default; we
