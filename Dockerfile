@@ -189,6 +189,58 @@ RUN set -eu; \
     echo "=== runtime: /usr/share/nginx/html/ contents ==="; \
     ls -la /usr/share/nginx/html/ | head -n 30
 
+# Content-level sanity checks. The earlier `test -s …` guards only
+# verify the files are PRESENT and non-empty; they don't verify the
+# files' CONTENTS match the current source.
+#
+# This block was added after a soul-eroding diagnostic loop in which
+# a deployed pod insisted on serving an index.html that still had
+# `<script src="https://cdn.tailwindcss.com">` in <head> AND an nginx
+# CSP that mentioned neither cdn.jsdelivr.net nor real-404 location
+# rules — despite:
+#
+#   * The source on both `main` and `deploy/k8s-paas` (verified at
+#     HEAD 6531186) NOT containing that <script> tag and having the
+#     `<link rel="stylesheet" href="/tailwind.css">` and the widened
+#     CSP / regex location block from b28f3fb, 4c9d595, and 36f657e.
+#   * Build #24 having been reported as a green build against commit
+#     36f657e, with the immutable tag 0.1.0-36f657e4 supposedly
+#     pushed to JFrog.
+#   * The Helm rendered manifest pinning the dashboard container to
+#     exactly that tag with imagePullPolicy: Always.
+#
+# That can only happen if the image at 0.1.0-36f657e4 in JFrog has
+# stale content — most plausibly a Docker COPY layer cache reuse on
+# the self-hosted runner that returned pre-b28f3fb layers despite a
+# fresh checkout. The guards below convert that silent regression
+# into a hard build break and pinpoint which artifact went wrong.
+#
+# Regex notes — why not just `grep -q 'cdn.tailwindcss.com'`:
+#   index.html keeps a one-line historical comment referencing the
+#   pre-precompile <script src=…cdn.tailwindcss.com…> tag. A naive
+#   substring grep would always match that comment and we'd never
+#   notice when a real <script> tag came back. The patterns below
+#   anchor on `^\s*<script` / `^\s*<link` so they only match an
+#   actual tag at start-of-line, never a comment that mentions the
+#   tag as prose.
+RUN set -eu; \
+    if grep -Eq '^[[:space:]]*<script[^>]*src=("|'"'"')?https?://cdn\.tailwindcss\.com' /usr/share/nginx/html/index.html; then \
+        echo "FATAL: index.html still contains a <script src=https://cdn.tailwindcss.com> tag. Commit b28f3fb (Tailwind precompile cut-over) should have removed it. Either the build context shipped pre-b28f3fb source (rare) or a Docker COPY layer was cache-reused from a pre-b28f3fb image. Re-run the build with --no-cache, or purge the runner's docker buildkit cache: 'docker builder prune -af'."; \
+        echo "--- offending matches ---"; \
+        grep -nE '^[[:space:]]*<script[^>]*src=("|'"'"')?https?://cdn\.tailwindcss\.com' /usr/share/nginx/html/index.html || true; \
+        exit 1; \
+    fi; \
+    echo "Sanity OK: index.html has NO <script src=cdn.tailwindcss.com> tag"; \
+    grep -Eq '^[[:space:]]*<link[^>]*href=("|'"'"')?/tailwind\.css' /usr/share/nginx/html/index.html \
+      || { echo "FATAL: index.html is missing the <link rel=stylesheet href=/tailwind.css> tag added in b28f3fb. Same diagnosis as above — the COPY layer for src/dashboard/ was likely cache-reused from a pre-b28f3fb image."; exit 1; }; \
+    echo "Sanity OK: index.html contains <link href=/tailwind.css>"; \
+    grep -q 'cdn\.jsdelivr\.net' /etc/nginx/conf.d/default.conf \
+      || { echo "FATAL: /etc/nginx/conf.d/default.conf does not contain cdn.jsdelivr.net. The CSP widening from commit 4c9d595 should have added it to script-src so Chart.js can load. If this fails, the COPY of deploy/nginx/default.conf reused a pre-4c9d595 cached layer."; exit 1; }; \
+    echo "Sanity OK: /etc/nginx/conf.d/default.conf CSP allow-lists cdn.jsdelivr.net"; \
+    grep -Fq 'css|js|map|mjs|json' /etc/nginx/conf.d/default.conf \
+      || { echo "FATAL: /etc/nginx/conf.d/default.conf is missing the static-asset extension list from the regex location block added in commit 36f657e (looked for the literal substring 'css|js|map|mjs|json'). Without that block, missing CSS/JS files silently degrade to index.html via the SPA fallback and break the dashboard."; exit 1; }; \
+    echo "Sanity OK: /etc/nginx/conf.d/default.conf has the real-404 regex location block from 36f657e"
+
 # Healthcheck endpoint is the index page itself.
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
