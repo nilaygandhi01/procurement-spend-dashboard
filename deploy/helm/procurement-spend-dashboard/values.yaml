@@ -22,8 +22,13 @@ imagePullSecrets:
 replicaCount: 1
 
 resources:
+  # Namespace LimitRange caps cpu limit:request ratio at 8:1 (admission
+  # error "cpu max limit to request ratio per Container is 8, but
+  # provided ratio is 10.000000"). Request was 50m → ratio 10:1 → blocked.
+  # Bumped request to 75m to give a 6.67:1 ratio (margin under the cap).
+  # Limit kept unchanged to avoid throttling the nginx worker under load.
   requests:
-    cpu: 50m
+    cpu: 75m
     memory: 64Mi
   limits:
     cpu: 500m

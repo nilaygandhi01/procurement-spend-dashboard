@@ -49,8 +49,15 @@ spec:
           aws s3 cp "s3://${BUCKET}/${OBJECT_KEY}" /work/data.json
           echo "fetched $(wc -c < /work/data.json) bytes"
         resources:
+          # Namespace LimitRange caps cpu limit:request ratio at 8:1.
+          # Request was 100m vs limit 1 → 10:1, blocked by admission
+          # ("cpu max limit to request ratio per Container is 8, but
+          # provided ratio is 10.000000"). Bumped request to 150m → 6.67:1.
+          # Limit kept at 1 CPU because this initContainer downloads
+          # ~255 MB from S3 and benefits from full CPU during the
+          # brief transfer.
           requests:
-            cpu: 100m
+            cpu: 150m
             memory: 256Mi
           limits:
             cpu: "1"

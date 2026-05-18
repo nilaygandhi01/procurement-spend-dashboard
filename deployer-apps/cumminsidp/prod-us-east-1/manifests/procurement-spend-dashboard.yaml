@@ -94,8 +94,10 @@ spec:
               aws s3 cp "s3://${BUCKET}/${OBJECT_KEY}" /work/data.json
               echo "fetched $(wc -c < /work/data.json) bytes"
           resources:
+            # cpu request bumped 100m → 150m to satisfy the namespace
+            # LimitRange's 8:1 max cpu limit:request ratio (was 10:1).
             requests:
-              cpu: 100m
+              cpu: 150m
               memory: 256Mi
             limits:
               cpu: "1"
@@ -125,8 +127,10 @@ spec:
             capabilities:
               drop: ["ALL"]
           resources:
+            # cpu request bumped 50m → 75m to satisfy the namespace
+            # LimitRange's 8:1 max cpu limit:request ratio (was 10:1).
             requests:
-              cpu: 50m
+              cpu: 75m
               memory: 64Mi
             limits:
               cpu: 500m
