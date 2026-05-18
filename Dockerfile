@@ -73,6 +73,40 @@ RUN set -eu; \
     /usr/local/bin/tailwindcss --help >/dev/null; \
     echo "Tailwind CLI installed: $(/usr/local/bin/tailwindcss --help 2>&1 | head -n 1)"
 
+# Cache-bust marker (build #24 forensics).
+#
+# Build #24 (commit 36f657e) reported success and even passed the
+# per-stage `test -s …/tailwind.css` and `…/index.html` guards, yet
+# the resulting image at JFrog tag 0.1.0-36f657e4 shipped pre-b28f3fb
+# index.html — proven by ArgoCD pod inspection finding
+# `<script src="https://cdn.tailwindcss.com">` inside the running
+# container's `/usr/share/nginx/html/index.html`. The only mechanism
+# consistent with that outcome is a Docker COPY layer cache reuse on
+# the self-hosted runner: BuildKit (or its content-hashing) saw the
+# `COPY src/dashboard/ …` instruction text unchanged and returned a
+# pre-b28f3fb cached layer instead of restaging from the current host
+# checkout. The existing file-exists checks all passed because the
+# stale layer still produced non-empty index.html / tailwind.css —
+# they only confirmed presence, not content.
+#
+# Defence: an `ARG CACHEBUST` whose value the GHA workflow sets to
+# `${{ github.sha }}` for every build, immediately consumed by a
+# `RUN echo` whose stdout bytes therefore differ per commit. The
+# resulting RUN layer hash changes per commit, which invalidates
+# every layer beneath it (including the COPY src/dashboard/ layer
+# whose stale reuse caused the regression) — BuildKit's cache lookup
+# for any subsequent layer mixes the parent layer hash into its own
+# cache key, so a parent miss forces a fresh COPY even when the
+# content hash of src/dashboard/ would otherwise be considered
+# unchanged.
+#
+# Default `dev-no-cachebust` lets `docker build .` work locally
+# without `--build-arg` (the value just becomes constant across
+# local builds, which is fine because the developer's working copy
+# changes on every test).
+ARG CACHEBUST=dev-no-cachebust
+RUN echo "Cache bust marker (tailwind-build stage): ${CACHEBUST}"
+
 # Only bring in what Tailwind needs to scan. Keeping this scoped
 # (rather than COPY . .) means a change to e.g. data/inputs/ won't
 # invalidate the Tailwind layer cache.
@@ -112,6 +146,14 @@ RUN set -eu; \
 FROM alpine:3.20 AS staging
 
 WORKDIR /staging
+
+# Cache-bust marker — same rationale as the identical block in
+# `tailwind-build` above. Stage-scoped (ARG doesn't cross FROM lines)
+# so we re-declare here. The GHA workflow passes the same
+# CACHEBUST=${{ github.sha }} build-arg, which BuildKit applies to
+# every stage that ARG-declares it.
+ARG CACHEBUST=dev-no-cachebust
+RUN echo "Cache bust marker (staging stage): ${CACHEBUST}"
 
 # Copy the dashboard UI bundle.
 COPY src/dashboard/ /staging/

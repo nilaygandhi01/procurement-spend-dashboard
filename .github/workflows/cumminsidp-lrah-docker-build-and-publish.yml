@@ -97,14 +97,27 @@ jobs:
       - name: Build Docker image (tagged with immutable + latest)
         run: |
           set -eu
+          # `--build-arg CACHEBUST=…` invalidates the source-COPY layers
+          # in the Dockerfile's `tailwind-build` and `staging` stages
+          # (see the `ARG CACHEBUST` declarations in both). Without
+          # this, BuildKit's content-hash-based COPY layer cache on
+          # the self-hosted runner can return a stale pre-fix layer
+          # despite the actions/checkout step having unpacked the new
+          # source — the exact failure mode that produced the stale
+          # 0.1.0-36f657e4 image (build #24, commit 36f657e).
+          # `${{ github.sha }}` is the unique 40-char SHA of the
+          # commit that triggered the workflow, so the resulting RUN
+          # layer hash is guaranteed to differ on every build.
           docker build \
             --file Dockerfile \
+            --build-arg CACHEBUST="${{ github.sha }}" \
             --tag "${JF_REPO}/${IMAGE_NAME}:${{ steps.version.outputs.tag }}" \
             --tag "${JF_REPO}/${IMAGE_NAME}:latest" \
             .
           echo "Built image with tags:"
           echo "  ${JF_REPO}/${IMAGE_NAME}:${{ steps.version.outputs.tag }}"
           echo "  ${JF_REPO}/${IMAGE_NAME}:latest"
+          echo "Cache-bust value used: ${{ github.sha }}"
 
       - name: Push image to JFrog
         run: |
