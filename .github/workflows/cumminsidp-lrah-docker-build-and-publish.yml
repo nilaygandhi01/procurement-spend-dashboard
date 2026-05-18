@@ -94,21 +94,73 @@ jobs:
           oidc-provider-name: svc-24468-rw
           oidc-audience: rw
 
+      - name: Dump build-context source (forensic — proves what the build sees)
+        run: |
+          set -eu
+          # After build #24 shipped an image (0.1.0-36f657e4) whose
+          # /usr/share/nginx/html/index.html still contained the
+          # pre-b28f3fb `<script src="https://cdn.tailwindcss.com">`
+          # tag — even though both `main` and `deploy/k8s-paas` HEAD
+          # had the Tailwind precompile change at b28f3fb — we now
+          # print the first 50 lines of the source the workflow's
+          # checkout step has staged. If those 50 lines DO NOT
+          # contain `<link rel="stylesheet" href="/tailwind.css">`
+          # and DO still contain a literal `<script src=…cdn…>` tag,
+          # then the actions/checkout step itself shipped stale
+          # source (extremely unlikely) and the layer cache theory
+          # is wrong. If they DO contain the new link tag, the build
+          # context is correct and any stale-content-in-image must
+          # be downstream — exactly what `--no-cache` below kills.
+          echo "===== src/dashboard/index.html (first 50 lines of build context) ====="
+          head -n 50 src/dashboard/index.html
+          echo "===== END source-context dump ====="
+          echo ""
+          echo "Sanity-grep on build context:"
+          if grep -nE '^[[:space:]]*<script[^>]*src=["'"'"']?https?://cdn\.tailwindcss\.com' src/dashboard/index.html; then
+            echo "::error::Build context's src/dashboard/index.html still has <script src=cdn.tailwindcss.com> — checkout shipped stale source (this should be impossible if b28f3fb is on this branch)."
+            exit 1
+          fi
+          if ! grep -qE '^[[:space:]]*<link[^>]*href=["'"'"']?/tailwind\.css' src/dashboard/index.html; then
+            echo "::error::Build context's src/dashboard/index.html is missing <link href=/tailwind.css> — checkout shipped stale source."
+            exit 1
+          fi
+          echo "Build context sanity OK — index.html has the b28f3fb shape."
+
       - name: Build Docker image (tagged with immutable + latest)
         run: |
           set -eu
-          # `--build-arg CACHEBUST=…` invalidates the source-COPY layers
-          # in the Dockerfile's `tailwind-build` and `staging` stages
-          # (see the `ARG CACHEBUST` declarations in both). Without
-          # this, BuildKit's content-hash-based COPY layer cache on
-          # the self-hosted runner can return a stale pre-fix layer
-          # despite the actions/checkout step having unpacked the new
-          # source — the exact failure mode that produced the stale
-          # 0.1.0-36f657e4 image (build #24, commit 36f657e).
-          # `${{ github.sha }}` is the unique 40-char SHA of the
-          # commit that triggered the workflow, so the resulting RUN
-          # layer hash is guaranteed to differ on every build.
+          # `--no-cache` is the nuclear option: every layer is built
+          # from scratch, ignoring every cache lookup (BuildKit's
+          # content-hash layer cache, the runner's image cache, and
+          # any per-RUN apt/apk caches the builder might consult).
+          # We adopted it after the cumulative belt-and-suspenders of
+          #
+          #   * ARG CACHEBUST=${{ github.sha }} + RUN echo bytes
+          #     (commit 8a27856)
+          #   * per-stage `test -s …` artifact-presence guards
+          #     (commit 60d9248 + 36f657e)
+          #   * content-level grep assertions on index.html and
+          #     default.conf (commit 29f8a19)
+          #
+          # still left open the failure mode "build reports success
+          # against stale-but-non-empty cached layers" — the symptom
+          # of build #24. With --no-cache the runner has nothing to
+          # reuse and every COPY layer must scan the host source
+          # afresh, which closes the window completely.
+          #
+          # Trade-off: ~30-60 s slower wall-clock per build (full
+          # apk install + Tailwind CLI re-download + full multi-stage
+          # rebuild). For a deploy pipeline that runs only on changes
+          # to Dockerfile / nginx / tailwind / src / helm, that's
+          # well below the noise floor and worth the certainty.
+          #
+          # `--build-arg CACHEBUST=…` is retained as a second line
+          # of defence in case --no-cache is ever reverted in a
+          # future workflow refactor: the ARG-based cache-bust still
+          # forces source-COPY layer invalidation even without
+          # --no-cache.
           docker build \
+            --no-cache \
             --file Dockerfile \
             --build-arg CACHEBUST="${{ github.sha }}" \
             --tag "${JF_REPO}/${IMAGE_NAME}:${{ steps.version.outputs.tag }}" \
