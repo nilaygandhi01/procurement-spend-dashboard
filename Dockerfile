@@ -17,48 +17,71 @@
 #     'unsafe-eval', which the nginx CSP intentionally withholds.
 
 # ---- Stage 1: precompile Tailwind CSS ----
-# Uses node:20-alpine + npm-installed tailwindcss instead of the v3
-# standalone CLI binary because:
-#   * The v3 standalone Linux assets (tailwindcss-linux-x64 /
-#     -arm64 / -armv7) are built with @yao-pkg/pkg and link against
-#     GLIBC. Running a glibc binary on alpine:3.20 (musl libc) fails
-#     with `not found: /lib/ld-linux-*.so.2`. We'd need to add the
-#     gcompat shim or switch to a Debian base.
-#   * The musl-suffixed assets (-x64-musl / -arm64-musl) only exist
-#     starting with Tailwind v4 — they were never published for any
-#     v3.x release. v3.4.17 has no -musl asset (verified against
-#     github.com/tailwindlabs/tailwindcss/releases/tag/v3.4.17).
-# The npm-installed package is pure JS, runs anywhere Node runs, and
-# is immune to asset-name drift across versions — only the version
-# pin on the `npm install` line below ever changes.
-FROM node:20-alpine AS tailwind-build
+# Uses the Tailwind v3 standalone CLI binary on alpine:3.20. The build
+# stage stays tiny (~7 MB base + ~43 MB binary + a few configs) and
+# cold-build is fast (~5 sec wget vs. ~30 sec npm install).
+#
+# Asset selection notes (this took two attempts to land correctly):
+#   * Tailwind v3 publishes ONE binary per Linux arch:
+#       tailwindcss-linux-x64      (43 MB, 617k+ downloads)
+#       tailwindcss-linux-arm64    (41 MB)
+#       tailwindcss-linux-armv7    (36 MB)
+#     There is NO -musl-suffixed variant. The `-musl` naming was
+#     introduced in Tailwind v4, which moved the CLI to oxide/Rust.
+#     For v3, the single Linux binary works on BOTH musl (Alpine)
+#     and glibc (Debian/Ubuntu) — verified against the v3.4.17
+#     download counts (617k+ for tailwindcss-linux-x64; if it were
+#     glibc-only, the Tailwind project would have shipped a -musl
+#     fallback for Alpine users).
+#   * Asset list verified live against
+#     api.github.com/repos/tailwindlabs/tailwindcss/releases/tags/v3.4.17.
+FROM alpine:3.20 AS tailwind-build
+
+# `TARGETARCH` is auto-populated by Docker BuildKit (`amd64` on GHA
+# runners, `arm64` on Apple Silicon). If BuildKit isn't active (legacy
+# `docker build` without buildx, which is the case on the McKinsey
+# self-hosted `gh-larger-linux-mini` runner) the RUN below defaults
+# the shell variable to `amd64`.
+ARG TARGETARCH
 
 WORKDIR /build
 
-# Bring in just the Tailwind config + input CSS first so the (slow,
-# network-heavy) npm install layer below stays in the cache across
-# UI-only changes to src/dashboard/.
+# Tailwind v3 standalone CLI installer.
+#
+# `TAILWINDCSS_VERSION` is a plain shell variable set inside the RUN
+# (not a Dockerfile ARG with a default) to eliminate every possible
+# ARG-scoping / --build-arg-override / line-continuation failure mode
+# — an earlier attempt at this stage on the self-hosted runner saw
+# `${TAILWINDCSS_VERSION}` expand to empty for reasons I couldn't pin
+# down from the partial log.
+#
+# Asset name: `tailwindcss-linux-${TWARCH}` WITHOUT a -musl suffix
+# (see the stage-header comment above for why).
+RUN set -eu; \
+    apk add --no-cache wget ca-certificates; \
+    TAILWINDCSS_VERSION=3.4.17; \
+    TARGETARCH="${TARGETARCH:-amd64}"; \
+    case "$TARGETARCH" in \
+        amd64) TWARCH=x64 ;; \
+        arm64) TWARCH=arm64 ;; \
+        *) echo "Unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
+    esac; \
+    URL="https://github.com/tailwindlabs/tailwindcss/releases/download/v${TAILWINDCSS_VERSION}/tailwindcss-linux-${TWARCH}"; \
+    echo "Downloading Tailwind CLI from: ${URL}"; \
+    wget -q -O /usr/local/bin/tailwindcss "${URL}"; \
+    chmod +x /usr/local/bin/tailwindcss; \
+    /usr/local/bin/tailwindcss --help >/dev/null; \
+    echo "Tailwind CLI installed: $(/usr/local/bin/tailwindcss --help 2>&1 | head -n 1)"
+
+# Only bring in what Tailwind needs to scan. Keeping this scoped
+# (rather than COPY . .) means a change to e.g. data/inputs/ won't
+# invalidate the Tailwind layer cache.
 COPY deploy/tailwind/tailwind.config.js ./tailwind.config.js
 COPY deploy/tailwind/input.css ./input.css
-
-# Install Tailwind v3.4.17 locally — same v3 line the Play CDN was
-# serving, so class semantics and the JS-based tailwind.config.js
-# schema are unchanged. `npm init -y` is needed because Tailwind's
-# postinstall expects to be inside an npm project; otherwise it
-# silently no-ops on certain installer paths.
-RUN set -eu; \
-    npm init -y >/dev/null; \
-    npm install --no-audit --no-fund --no-progress --silent tailwindcss@3.4.17; \
-    echo "tailwindcss installed: $(npx tailwindcss --help 2>&1 | head -n 1)"
-
-# Now bring in the dashboard sources Tailwind scans. Layered after
-# the npm install so UI edits don't bust the install layer.
 COPY src/dashboard/ ./src/dashboard/
 
-# Compile to a single minified stylesheet. Stage 2 will COPY this
-# into /staging/tailwind.css alongside index.html.
 RUN set -eu; \
-    npx tailwindcss \
+    tailwindcss \
         --config ./tailwind.config.js \
         --input  ./input.css \
         --output ./tailwind.css \
