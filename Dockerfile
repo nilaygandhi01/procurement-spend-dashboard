@@ -23,28 +23,46 @@
 # Node / npm / package.json / node_modules need exist in this repo.
 FROM alpine:3.20 AS tailwind-build
 
-# Pin the Tailwind version so reproducible builds don't drift. v3.4.x is
-# the line the Play CDN serves by default; staying on v3 also lets us
-# keep the classic JS tailwind.config.js (v4 switches to CSS-based config
-# and changes class-name semantics).
-ARG TAILWINDCSS_VERSION=3.4.17
-
-# buildkit-provided: amd64 on GitHub Actions runners, arm64 on Apple
-# Silicon builders. Tailwind ships musl binaries for both.
+# `TARGETARCH` is automatically populated by Docker BuildKit (`amd64` on
+# GHA runners, `arm64` on Apple Silicon builders). We `ARG`-declare it
+# so the value can flow into the RUN below; if BuildKit isn't active
+# (legacy `docker build` without buildx) the RUN itself defaults the
+# shell variable to `amd64`, so this works on the McKinsey self-hosted
+# `gh-larger-linux-mini` runner regardless of which builder is in use.
 ARG TARGETARCH
 
 WORKDIR /build
 
-RUN apk add --no-cache wget ca-certificates \
- && case "$TARGETARCH" in \
-        amd64) TWARCH="x64" ;; \
-        arm64) TWARCH="arm64" ;; \
+# Tailwind CLI installer.
+#
+# `TAILWINDCSS_VERSION` is deliberately a plain shell variable set inside
+# the RUN (instead of a Dockerfile ARG with a default) because the first
+# attempt at this stage on the self-hosted runner produced a 404 from
+# github.com/tailwindlabs/.../v/tailwindcss-linux-x64-musl — i.e. the
+# `${TAILWINDCSS_VERSION}` substitution expanded to empty. The exact
+# reason wasn't reproducible from the log alone (stage-scoped ARG with
+# a default value SHOULD survive every builder I know of), but moving
+# the pin into the shell removes the entire class of ARG-scoping /
+# --build-arg-override / line-continuation failure modes. v3.4.17 is
+# the latest v3 stable; both `tailwindcss-linux-x64-musl` and
+# `tailwindcss-linux-arm64-musl` are real release assets for that tag.
+# An `echo` of the constructed URL is included so any future download
+# failure self-diagnoses in one build-log line.
+RUN set -eu; \
+    apk add --no-cache wget ca-certificates; \
+    TAILWINDCSS_VERSION=3.4.17; \
+    TARGETARCH="${TARGETARCH:-amd64}"; \
+    case "$TARGETARCH" in \
+        amd64) TWARCH=x64 ;; \
+        arm64) TWARCH=arm64 ;; \
         *) echo "Unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
-    esac \
- && wget -q -O /usr/local/bin/tailwindcss \
-        "https://github.com/tailwindlabs/tailwindcss/releases/download/v${TAILWINDCSS_VERSION}/tailwindcss-linux-${TWARCH}-musl" \
- && chmod +x /usr/local/bin/tailwindcss \
- && /usr/local/bin/tailwindcss --help >/dev/null
+    esac; \
+    URL="https://github.com/tailwindlabs/tailwindcss/releases/download/v${TAILWINDCSS_VERSION}/tailwindcss-linux-${TWARCH}-musl"; \
+    echo "Downloading Tailwind CLI from: ${URL}"; \
+    wget -q -O /usr/local/bin/tailwindcss "${URL}"; \
+    chmod +x /usr/local/bin/tailwindcss; \
+    /usr/local/bin/tailwindcss --help >/dev/null; \
+    echo "Tailwind CLI installed: $(/usr/local/bin/tailwindcss --help 2>&1 | head -n 1)"
 
 # Only bring in what Tailwind needs to scan. Keeping this scoped (rather
 # than COPY . .) means a change to e.g. data/inputs/ won't invalidate
