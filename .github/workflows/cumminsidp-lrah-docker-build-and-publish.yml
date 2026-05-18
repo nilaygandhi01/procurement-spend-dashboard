@@ -37,7 +37,7 @@ on:
       - 'Dockerfile'
       - 'deploy/nginx/**'
       - 'src/**'
-      - '.github/workflows/cumminsidp-lrah-docker-build-and-publish.yml'
+      - 'deploy/helm/**'
 
 permissions:
   id-token: write     # required by jfrog/setup-jfrog-cli OIDC
