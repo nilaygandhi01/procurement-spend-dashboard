@@ -80,14 +80,33 @@ COPY deploy/tailwind/tailwind.config.js ./tailwind.config.js
 COPY deploy/tailwind/input.css ./input.css
 COPY src/dashboard/ ./src/dashboard/
 
+# Compile + LOUD sanity checks. Build #19 (cf53048) succeeded all the
+# way through this stage but the deployed image had no /tailwind.css,
+# suggesting either (a) the file was produced but content-scanning
+# found nothing (so the output was just a few KB of preflight) or (b)
+# the file was lost between stages by a cache/COPY mishap. The four
+# guards below convert each silent failure mode into a build-failing
+# error with a self-explanatory message.
 RUN set -eu; \
+    echo "=== tailwind-build: workdir contents BEFORE compile ==="; \
+    ls -la /build || true; \
+    echo "=== tailwind-build: dashboard sources Tailwind will scan ==="; \
+    ls -la /build/src/dashboard/ || true; \
+    echo "=== tailwind-build: invoking tailwindcss CLI ==="; \
     tailwindcss \
         --config ./tailwind.config.js \
         --input  ./input.css \
         --output ./tailwind.css \
         --minify; \
-    test -s ./tailwind.css; \
-    echo "Tailwind CSS built: $(wc -c < ./tailwind.css) bytes"
+    test -f ./tailwind.css \
+      || { echo "FATAL: /build/tailwind.css was not created by the CLI"; exit 1; }; \
+    test -s ./tailwind.css \
+      || { echo "FATAL: /build/tailwind.css exists but is EMPTY"; exit 1; }; \
+    SIZE=$(wc -c < ./tailwind.css); \
+    echo "Tailwind CSS built: ${SIZE} bytes"; \
+    grep -q '\.hidden' ./tailwind.css \
+      || { echo "FATAL: /build/tailwind.css does not contain the .hidden utility — content scan likely matched zero source files. Check that tailwind.config.js content[] paths resolve relative to /build (the config file's directory)."; exit 1; }; \
+    echo "Sanity OK: /build/tailwind.css contains .hidden utility (content scan worked)"
 
 # ---- Stage 2: stage static assets ----
 FROM alpine:3.20 AS staging
@@ -105,6 +124,16 @@ COPY data/inputs/indexes/*.xlsx /staging/
 # against this file at the document root.
 COPY --from=tailwind-build /build/tailwind.css /staging/tailwind.css
 
+# Sanity check: confirm tailwind.css landed in /staging/ before the
+# runtime stage tries to pull it in. If this fails, the regression
+# was in the COPY --from=tailwind-build above.
+RUN set -eu; \
+    test -s /staging/tailwind.css \
+      || { echo "FATAL: /staging/tailwind.css is missing or empty after COPY --from=tailwind-build"; exit 1; }; \
+    echo "Sanity OK: /staging/tailwind.css present ($(wc -c < /staging/tailwind.css) bytes)"; \
+    echo "=== staging: /staging/ contents ==="; \
+    ls -la /staging/ | head -n 30
+
 # IMPORTANT: do NOT copy data/outputs/data.json here. It is fetched from
 # S3 by an initContainer at pod startup (see the file-level comment
 # above and the Helm chart `s3:` block). The file is also explicitly
@@ -121,6 +150,20 @@ COPY deploy/nginx/default.conf /etc/nginx/conf.d/default.conf
 
 # Copy static bundle from staging.
 COPY --from=staging /staging/ /usr/share/nginx/html/
+
+# Sanity check: confirm tailwind.css landed at the nginx document root
+# (`root /usr/share/nginx/html;` per deploy/nginx/default.conf). If
+# this fails, the regression was in the COPY --from=staging above.
+# Without this guard, missing the file silently degrades to nginx's
+# SPA fallback serving index.html as a 200 OK for /tailwind.css, which
+# the browser dutifully treats as failed CSS and the page renders
+# unstyled — exactly the failure mode we hit before this check existed.
+RUN set -eu; \
+    test -s /usr/share/nginx/html/tailwind.css \
+      || { echo "FATAL: /usr/share/nginx/html/tailwind.css is missing or empty after COPY --from=staging"; exit 1; }; \
+    echo "Sanity OK: /usr/share/nginx/html/tailwind.css present ($(wc -c < /usr/share/nginx/html/tailwind.css) bytes)"; \
+    echo "=== runtime: /usr/share/nginx/html/ contents ==="; \
+    ls -la /usr/share/nginx/html/ | head -n 30
 
 # Healthcheck endpoint is the index page itself.
 EXPOSE 8080
