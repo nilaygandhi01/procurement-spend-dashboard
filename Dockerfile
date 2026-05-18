@@ -151,17 +151,41 @@ COPY deploy/nginx/default.conf /etc/nginx/conf.d/default.conf
 # Copy static bundle from staging.
 COPY --from=staging /staging/ /usr/share/nginx/html/
 
-# Sanity check: confirm tailwind.css landed at the nginx document root
-# (`root /usr/share/nginx/html;` per deploy/nginx/default.conf). If
-# this fails, the regression was in the COPY --from=staging above.
-# Without this guard, missing the file silently degrades to nginx's
-# SPA fallback serving index.html as a 200 OK for /tailwind.css, which
-# the browser dutifully treats as failed CSS and the page renders
-# unstyled — exactly the failure mode we hit before this check existed.
+# Sanity checks for the two locally-served assets that index.html
+# references (everything else is either inline or fetched from an
+# allow-listed CDN — see deploy/nginx/default.conf script-src/style-src):
+#
+#   /tailwind.css                — Tailwind compile output (built in
+#                                   stage 1, carried through stage 2).
+#   /harmonization-client.js     — Sibling JS module loaded by
+#                                   index.html via a relative <script>
+#                                   tag. Defines the global
+#                                   `HarmonizationClient` IIFE that
+#                                   applyPayloadToD() and 113 other
+#                                   sites in index.html call into; if
+#                                   it's missing, the page reaches the
+#                                   "Processing spend cube / Interning
+#                                   rows…" overlay and then throws on
+#                                   the first HarmonizationClient.*
+#                                   reference, showing a Retry button
+#                                   that never recovers.
+#
+# Without these guards, a missing file silently degrades to nginx's
+# SPA fallback (`try_files $uri $uri/ /index.html;`) serving
+# index.html with Content-Type: text/html in response to a request
+# for a CSS or JS path. The browser then tries to parse HTML as the
+# expected asset type and the page either renders unstyled
+# (CSS case) or stalls on a ReferenceError (JS case).
 RUN set -eu; \
     test -s /usr/share/nginx/html/tailwind.css \
       || { echo "FATAL: /usr/share/nginx/html/tailwind.css is missing or empty after COPY --from=staging"; exit 1; }; \
     echo "Sanity OK: /usr/share/nginx/html/tailwind.css present ($(wc -c < /usr/share/nginx/html/tailwind.css) bytes)"; \
+    test -s /usr/share/nginx/html/harmonization-client.js \
+      || { echo "FATAL: /usr/share/nginx/html/harmonization-client.js is missing or empty after COPY --from=staging"; exit 1; }; \
+    echo "Sanity OK: /usr/share/nginx/html/harmonization-client.js present ($(wc -c < /usr/share/nginx/html/harmonization-client.js) bytes)"; \
+    test -s /usr/share/nginx/html/index.html \
+      || { echo "FATAL: /usr/share/nginx/html/index.html is missing or empty after COPY --from=staging"; exit 1; }; \
+    echo "Sanity OK: /usr/share/nginx/html/index.html present ($(wc -c < /usr/share/nginx/html/index.html) bytes)"; \
     echo "=== runtime: /usr/share/nginx/html/ contents ==="; \
     ls -la /usr/share/nginx/html/ | head -n 30
 
