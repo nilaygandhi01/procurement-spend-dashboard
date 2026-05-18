@@ -29,7 +29,7 @@ image:
   # `pullPolicy: Always` below guarantees a fresh registry pull on
   # the next rollout. Keep this value in lockstep with the same field
   # in procurement-spend-dashboard.yaml (the rendered manifest).
-  tag: "0.1.0-8a278564"
+  tag: "0.1.0-950a83e8"
   # Bumped from IfNotPresent → Always so future tag floats can't
   # silently degrade to a cached node image.
   pullPolicy: Always
