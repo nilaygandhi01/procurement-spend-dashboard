@@ -145,13 +145,62 @@ kubectl -n cumminsidp-a8dd5 rollout restart deployment/procurement-spend-dashboa
 (Or trigger an ArgoCD **Hard Refresh + Sync** on the
 `procurement-spend-dashboard` application.)
 
+### Source of truth
+
+**`main` is the single deploy source of truth for this repo.** Every
+chart/values/manifest change merges into `main`, and ArgoCD's
+`Application.spec.source.targetRevision` for the `procurement-spend-
+dashboard` app points at `main`. The Docker build workflow
+(`cumminsidp-lrah-docker-build-and-publish.yml`) also fires on pushes
+to `main` only.
+
+A historical `deploy/k8s-paas` branch exists from the original Deployer
+scaffold. It's kept in sync with `main` (fast-forward) so old tooling
+that still references it doesn't break, but it is **no longer the
+authoritative deploy branch**. Do not commit fixes only to
+`deploy/k8s-paas` — they will be lost the next time `main` is
+fast-forwarded onto it.
+
+Why this matters: pushes to `main` between 2026-05-17 19:00 and 22:30
+UTC (e.g. `bf5deeb` Docker-build CI fix, `36fe862` nginx /data.json
+fix, `d4a9a87` CPU LimitRange fix) silently never reached ArgoCD
+because the ArgoCD Application was still pointed at the stale
+`deploy/k8s-paas` branch. That ambiguity is closed now.
+
+#### Repointing ArgoCD's `targetRevision` (one-time operation)
+
+If your live ArgoCD Application is still on `deploy/k8s-paas`, repoint
+it once via **one** of the following. The CLI form is the most
+auditable:
+
+```bash
+# Option 1 (preferred): argocd CLI — leaves an audit entry on the App.
+argocd app set procurement-spend-dashboard --revision main
+
+# Option 2: kubectl patch directly against the Application CR.
+kubectl -n argocd patch application procurement-spend-dashboard \
+  --type=merge \
+  -p '{"spec":{"source":{"targetRevision":"main"}}}'
+```
+
+GUI form (Platform McKinsey / ArgoCD UI):
+
+1. Open ArgoCD → application `procurement-spend-dashboard`.
+2. App Details → **Edit** the `Source` panel.
+3. Change `Target Revision` from `deploy/k8s-paas` to `main`.
+4. Save → **Refresh** → **Sync**.
+
+After repointing, the next merge to `main` propagates directly. The
+`deploy/k8s-paas` branch can be archived/deleted at your discretion;
+nothing in this repo depends on it.
+
 ### Build + push + deploy
 
 The image build / push / ArgoCD sync is driven by Deployer — **not** by
 this repo's GitHub Actions, and **not** locally. From Platform McKinsey:
 
-1. Trigger a build on `deploy/k8s-paas` (or `main` once merged) via the
-   `cumminsidp` Deployer instance.
+1. Trigger a build on `main` via the `cumminsidp` Deployer instance.
+   (`main` is the single source of truth; see "Source of truth" below.)
 2. Deployer runs:
    - Container build using this repo's `Dockerfile` (root `Dockerfile`,
      not in `deploy/`).

@@ -1,8 +1,9 @@
 # Secrets / sensitive-data scan — 2026-05-17
 
 Scope: all tracked files in `McK-Internal/cummins-idp-dashboard`,
-excluding `node_modules/`. Run against the `deploy/k8s-paas` branch just
-before generating the Deployer K8s PaaS bundle.
+excluding `node_modules/`. Run against `main` (the deploy source of
+truth — see `docs/DEPLOYMENT.md` "Source of truth") just before
+generating the Deployer K8s PaaS bundle.
 
 ## Patterns checked
 
