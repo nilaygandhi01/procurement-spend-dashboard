@@ -40,6 +40,30 @@ module "lrah" {
   s3_buckets = {
     // create an s3 bucket 'mybucket' with default configuration
     # "mybucket" : {}
+
+    // Procurement Spend Dashboard payload.
+    // Full AWS bucket name resolved by the LRAH module as
+    //   ${AWS_WORKLOAD_ACCOUNT_ID}-${USER_ENVIRONMENT_ID}-spend-data
+    //   = 649941507750-cumminsidp-a8dd5-spend-data
+    // The pod reads `s3://.../data.json` at startup via an initContainer
+    // using IRSA — see deploy/helm/procurement-spend-dashboard/values.yaml
+    // and deployer-apps/cumminsidp/prod-us-east-1/manifests/values.yaml
+    // (key: `s3.bucket`). Refresh by re-uploading `data.json`; no chart
+    // change required.
+    //
+    // `s3_uploader` opts this bucket into the per-bucket
+    //   S3-<account>-<env>-spend-data-S3Uploader
+    // role. `ref = "*"` tells the firm `github-oidc-role` module to build
+    // a trust policy with StringLike on `repo:<rp_github_repo>:*`, which
+    // matches both branch-form (`repo:<repo>:ref:refs/heads/main`) and
+    // environment-form (`repo:<repo>:environment:<env>`) OIDC sub claims.
+    // The .github/workflows/cumminsidp-prod-us-east-1-lrah-upload-to-s3.yml
+    // workflow assumes this role to push the refreshed data.json.
+    "spend-data" : {
+      s3_uploader = {
+        ref = "*"
+      }
+    }
   }
 
   // WARNING: replacing the name of the queues will result in data loss as the queues will be recreated
