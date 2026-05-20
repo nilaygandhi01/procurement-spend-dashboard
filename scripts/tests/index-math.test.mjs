@@ -19,6 +19,8 @@ import assert from "node:assert/strict";
 
 import {
   GRANULARITY,
+  WEIGHTING,
+  AGGREGATION,
   quarterOf,
   periodKeyOf,
   periodSortKey,
@@ -30,7 +32,16 @@ import {
   computePartIndex,
   expandYearlyToQuarterly,
   isInDisplayWindow,
-  isInHalfOpenRange
+  isInHalfOpenRange,
+  aggregateLaspeyres,
+  aggregateSimpleMean,
+  aggregatePooledReweighted,
+  aggregatePartIndexes,
+  parseExcelPivotText,
+  normalizePeriodLabel,
+  diffPartIndexes,
+  computeBaselineCoverage,
+  sumByPeriodAcrossParts
 } from "../../src/dashboard/index-math.mjs";
 
 // --------------------------------------------------------------------------
@@ -342,4 +353,337 @@ test("isInHalfOpenRange treats end as exclusive (Excel AVERAGEIFS convention)", 
   assert.ok(!isInHalfOpenRange("2024-Q2", "2024-Q1", "2024-Q2"));
   // 2024-Q1 IS the inclusive lower bound — must be included
   assert.ok(isInHalfOpenRange("2024-Q1", "2024-Q1", null));
+});
+
+// --------------------------------------------------------------------------
+// WEIGHTING methods
+// --------------------------------------------------------------------------
+
+test("WEIGHTING.QTY matches Σspend/Σqty regardless of row order", () => {
+  const rows = [row(2024, 1, 100, 10), row(2024, 2, 600, 20)];
+  const b = bucketRowsByPeriod(rows, GRANULARITY.YEARLY);
+  const p = weightedUnitPriceByPeriod(b, WEIGHTING.QTY);
+  // (100+600)/(10+20) = 700/30 = 23.333…
+  assert.ok(Math.abs(p["2024"] - 700 / 30) < 1e-9);
+});
+
+test("WEIGHTING.SPEND uses spend as the weight, not quantity", () => {
+  // Row 1: price 10, spend 100 (qty 10).  Row 2: price 30, spend 600 (qty 20).
+  // SPEND-weighted: (10*100 + 30*600) / (100+600) = (1000+18000)/700 = 27.142857…
+  // QTY-weighted:   (100+600)/(10+20) = 23.333…  ← different!
+  const rows = [row(2024, 1, 100, 10), row(2024, 2, 600, 20)];
+  const b = bucketRowsByPeriod(rows, GRANULARITY.YEARLY);
+  const p = weightedUnitPriceByPeriod(b, WEIGHTING.SPEND);
+  assert.ok(Math.abs(p["2024"] - 19000 / 700) < 1e-9);
+});
+
+test("WEIGHTING.SIMPLE returns mean of per-row unit prices (no qty weighting)", () => {
+  // Row 1: price 10.  Row 2: price 30.  Simple mean = 20.
+  // QTY-weighted is 23.33 — pinning them apart proves SIMPLE is not QTY.
+  const rows = [row(2024, 1, 100, 10), row(2024, 2, 600, 20)];
+  const b = bucketRowsByPeriod(rows, GRANULARITY.YEARLY);
+  const p = weightedUnitPriceByPeriod(b, WEIGHTING.SIMPLE);
+  assert.ok(Math.abs(p["2024"] - 20) < 1e-9);
+});
+
+test("WEIGHTING default is QTY when method arg omitted", () => {
+  const rows = [row(2024, 1, 100, 10), row(2024, 2, 600, 20)];
+  const b = bucketRowsByPeriod(rows, GRANULARITY.YEARLY);
+  assert.deepEqual(
+    weightedUnitPriceByPeriod(b),
+    weightedUnitPriceByPeriod(b, WEIGHTING.QTY)
+  );
+});
+
+// --------------------------------------------------------------------------
+// AGGREGATION across parts
+// --------------------------------------------------------------------------
+
+/**
+ * Build two parts with very different baseline spend so we can prove the
+ * weighted aggregator is NOT the same as the simple-mean aggregator.
+ */
+function twoPartFixture() {
+  // Part A: $100K baseline, prices double in 2025 → index 200
+  // Part B: $1M baseline, prices flat in 2025  → index 100
+  const partA = [
+    row(2024, 1, 100000, 1000),  // $100/unit
+    row(2025, 1, 200000, 1000),  // $200/unit
+  ];
+  const partB = [
+    row(2024, 1, 1000000, 10000), // $100/unit
+    row(2025, 1, 1000000, 10000), // $100/unit (flat)
+  ];
+  const bucketsA = bucketRowsByPeriod(partA, GRANULARITY.YEARLY);
+  const bucketsB = bucketRowsByPeriod(partB, GRANULARITY.YEARLY);
+  const perPartBuckets = { A: bucketsA, B: bucketsB };
+  const perPartIndexed = {
+    A: rebaseToBaseline(weightedUnitPriceByPeriod(bucketsA), "2024"),
+    B: rebaseToBaseline(weightedUnitPriceByPeriod(bucketsB), "2024")
+  };
+  return { perPartBuckets, perPartIndexed };
+}
+
+test("aggregateLaspeyres uses base-period spend as fixed weight", () => {
+  const { perPartBuckets, perPartIndexed } = twoPartFixture();
+  // Weights: A=$100K, B=$1M. 2025 indexes: A=200, B=100.
+  // Laspeyres = (200*100k + 100*1M) / (100k + 1M)
+  //           = (20M + 100M) / 1.1M = 120M/1.1M ≈ 109.0909…
+  const r = aggregateLaspeyres(perPartIndexed, perPartBuckets, "2024");
+  assert.equal(r.ok, true);
+  assert.equal(r.indexed["2024"], 100);
+  assert.ok(Math.abs(r.indexed["2025"] - (120e6 / 1.1e6)) < 1e-6);
+  assert.equal(r.contributingParts.length, 2);
+});
+
+test("aggregateSimpleMean is the arithmetic mean — visibly different from Laspeyres", () => {
+  const { perPartIndexed } = twoPartFixture();
+  // Simple mean of part indexes for 2025: (200 + 100) / 2 = 150
+  const r = aggregateSimpleMean(perPartIndexed);
+  assert.equal(r.ok, true);
+  assert.equal(r.indexed["2025"], 150);
+  // …and 150 ≠ 109.09 (the Laspeyres number from the test above).
+});
+
+test("aggregatePooledReweighted treats the basket as one big part", () => {
+  const { perPartBuckets } = twoPartFixture();
+  // Pooled spend 2024 = $100K + $1M = $1.1M;  qty 2024 = 1000 + 10000 = 11000
+  // Pooled price 2024 = 1.1M / 11000 = $100/unit
+  // Pooled spend 2025 = $200K + $1M = $1.2M;  qty 2025 = 11000
+  // Pooled price 2025 = 1.2M / 11000 ≈ $109.09/unit  →  index ≈ 109.0909…
+  const r = aggregatePooledReweighted(perPartBuckets, "2024");
+  assert.equal(r.ok, true);
+  assert.equal(r.indexed["2024"], 100);
+  assert.ok(Math.abs(r.indexed["2025"] - ((1.2e6 / 11000) / (1.1e6 / 11000) * 100)) < 1e-6);
+});
+
+test("aggregatePartIndexes dispatches on AGGREGATION constant", () => {
+  const { perPartBuckets, perPartIndexed } = twoPartFixture();
+  const las = aggregatePartIndexes(perPartBuckets, perPartIndexed, "2024", AGGREGATION.LASPEYRES);
+  const sim = aggregatePartIndexes(perPartBuckets, perPartIndexed, "2024", AGGREGATION.SIMPLE);
+  const pool = aggregatePartIndexes(perPartBuckets, perPartIndexed, "2024", AGGREGATION.POOLED);
+  // All three converge at the baseline (=100) but diverge elsewhere
+  assert.equal(las.indexed["2024"], 100);
+  assert.equal(sim.indexed["2024"], 100);
+  assert.equal(pool.indexed["2024"], 100);
+  assert.notEqual(las.indexed["2025"], sim.indexed["2025"]);
+});
+
+test("aggregateLaspeyres skips parts with no baseline spend", () => {
+  // Part C only has 2025 data — should be excluded entirely from a 2024-
+  // baseline Laspeyres aggregate.
+  const partC = [row(2025, 1, 500, 10)];
+  const bucketsC = bucketRowsByPeriod(partC, GRANULARITY.YEARLY);
+  const perPartBuckets = { C: bucketsC };
+  const perPartIndexed = {
+    C: rebaseToBaseline(weightedUnitPriceByPeriod(bucketsC), "2024")
+  };
+  const r = aggregateLaspeyres(perPartIndexed, perPartBuckets, "2024");
+  assert.equal(r.ok, false); // no contributing parts
+  assert.equal(r.contributingParts.length, 0);
+});
+
+// --------------------------------------------------------------------------
+// computeBaselineCoverage
+// --------------------------------------------------------------------------
+
+test("computeBaselineCoverage reports included-vs-total base spend", () => {
+  // Two parts: A has good baseline data ($100K), B's baseline is empty ($0).
+  const partA = [row(2024, 1, 100000, 1000), row(2025, 1, 200000, 1000)];
+  const partB = [row(2025, 1, 50000, 500)];
+  const bA = bucketRowsByPeriod(partA, GRANULARITY.YEARLY);
+  const bB = bucketRowsByPeriod(partB, GRANULARITY.YEARLY);
+  const perPartBuckets = { A: bA, B: bB };
+  const perPartIndexed = {
+    A: rebaseToBaseline(weightedUnitPriceByPeriod(bA), "2024"),
+    B: rebaseToBaseline(weightedUnitPriceByPeriod(bB), "2024"),
+  };
+  const cov = computeBaselineCoverage(perPartBuckets, perPartIndexed, "2024");
+  // Only A has spend in 2024 → total = $100K; B contributes 0.
+  // A is ok (its baseline math succeeded) → included = $100K.
+  // B is NOT ok (its rebase failed) → contributes 0.
+  // Coverage = 100% of the $100K base spend.
+  assert.equal(cov.totalBaseSpend, 100000);
+  assert.equal(cov.includedBaseSpend, 100000);
+  assert.equal(cov.coveragePct, 100);
+});
+
+// --------------------------------------------------------------------------
+// sumByPeriodAcrossParts
+// --------------------------------------------------------------------------
+
+test("sumByPeriodAcrossParts collapses parts into one tile of {spend,qty}", () => {
+  const { perPartBuckets } = twoPartFixture();
+  const totals = sumByPeriodAcrossParts(perPartBuckets);
+  assert.equal(totals["2024"].spend, 1100000);
+  assert.equal(totals["2024"].qty, 11000);
+  assert.equal(totals["2025"].spend, 1200000);
+  assert.equal(totals["2025"].qty, 11000);
+});
+
+// --------------------------------------------------------------------------
+// normalizePeriodLabel
+// --------------------------------------------------------------------------
+
+test("normalizePeriodLabel accepts wide variety of Excel-friendly forms", () => {
+  assert.equal(normalizePeriodLabel("2024"), "2024");
+  assert.equal(normalizePeriodLabel("2024-Q1"), "2024-Q1");
+  assert.equal(normalizePeriodLabel("2024 Q1"), "2024-Q1");
+  assert.equal(normalizePeriodLabel("Q1 2024"), "2024-Q1");
+  assert.equal(normalizePeriodLabel("Q1-2024"), "2024-Q1");
+  assert.equal(normalizePeriodLabel("Q3-24"), "2024-Q3");
+  assert.equal(normalizePeriodLabel("garbage"), null);
+  assert.equal(normalizePeriodLabel(""), null);
+  assert.equal(normalizePeriodLabel(null), null);
+});
+
+// --------------------------------------------------------------------------
+// parseExcelPivotText
+// --------------------------------------------------------------------------
+
+test("parseExcelPivotText parses tab-separated wide pivot", () => {
+  const txt = [
+    "PartNumber\t2024\t2025\t2026",
+    "ABC-001\t100\t108.2\t112.4",
+    "XYZ-999\t100\t99.7\t103.1",
+  ].join("\n");
+  const r = parseExcelPivotText(txt);
+  assert.deepEqual(r.partOrder, ["ABC-001", "XYZ-999"]);
+  assert.deepEqual(r.periodOrder, ["2024", "2025", "2026"]);
+  assert.equal(r.byPart["ABC-001"]["2025"], 108.2);
+  assert.equal(r.byPart["XYZ-999"]["2026"], 103.1);
+});
+
+test("parseExcelPivotText parses comma-separated quarterly pivot", () => {
+  const txt = [
+    "Part,2024-Q1,2024-Q2,2024-Q3,2024-Q4",
+    "P1,100,105,110,108",
+  ].join("\n");
+  const r = parseExcelPivotText(txt);
+  assert.deepEqual(r.periodOrder, ["2024-Q1", "2024-Q2", "2024-Q3", "2024-Q4"]);
+  assert.equal(r.byPart["P1"]["2024-Q3"], 110);
+});
+
+test("parseExcelPivotText parses long (3-column) format", () => {
+  const txt = [
+    "Part\tPeriod\tIndex",
+    "ABC\t2024\t100",
+    "ABC\t2025\t108.2",
+    "XYZ\t2025\t99.7",
+  ].join("\n");
+  const r = parseExcelPivotText(txt);
+  assert.equal(r.byPart["ABC"]["2024"], 100);
+  assert.equal(r.byPart["ABC"]["2025"], 108.2);
+  assert.equal(r.byPart["XYZ"]["2025"], 99.7);
+});
+
+test("parseExcelPivotText warns but doesn't throw on bad cells", () => {
+  const txt = [
+    "Part\t2024\t2025",
+    "ABC\t100\tnot-a-number",
+  ].join("\n");
+  const r = parseExcelPivotText(txt);
+  assert.equal(r.byPart["ABC"]["2024"], 100);
+  assert.equal(r.byPart["ABC"]["2025"], undefined);
+  assert.ok(r.warnings.length >= 1);
+});
+
+test("parseExcelPivotText empty / whitespace input returns empty result with warning", () => {
+  const r = parseExcelPivotText("   \n\n  ");
+  assert.equal(r.partOrder.length, 0);
+  assert.ok(r.warnings.length >= 1);
+});
+
+// --------------------------------------------------------------------------
+// diffPartIndexes
+// --------------------------------------------------------------------------
+
+test("diffPartIndexes flags matches inside tolerance and mismatches outside", () => {
+  const dash = { A: { "2024": 100, "2025": 108.4 }, B: { "2024": 100, "2025": 95 } };
+  const exc  = { A: { "2024": 100, "2025": 108.2 }, B: { "2024": 100, "2025": 99 } };
+  const r = diffPartIndexes(dash, exc, 0.5);
+  const matchA = r.rows.find((x) => x.partKey === "A" && x.periodKey === "2025");
+  const failB  = r.rows.find((x) => x.partKey === "B" && x.periodKey === "2025");
+  assert.equal(matchA.status, "match");
+  assert.ok(Math.abs(matchA.delta - 0.2) < 1e-9);
+  assert.equal(failB.status, "fail");
+  assert.equal(r.summary.matched, 3);   // A/2024, A/2025, B/2024
+  assert.equal(r.summary.failed, 1);    // B/2025
+});
+
+test("diffPartIndexes reports missing dashboard / missing reference rows", () => {
+  // Dashboard knows A only @2024 and Z only @2024. Reference knows A@2024+2025 and B@2024.
+  //   A/2024 → match (both sides)
+  //   A/2025 → missing-dashboard (only in reference)
+  //   B/2024 → missing-dashboard (only in reference)
+  //   Z/2024 → missing-reference (only in dashboard)
+  const dash = { A: { "2024": 100 },                 Z: { "2024": 100 } };
+  const exc  = { A: { "2024": 100, "2025": 110 },     B: { "2024": 100 } };
+  const r = diffPartIndexes(dash, exc, 0.5);
+  const aMissDash = r.rows.find((x) => x.partKey === "A" && x.periodKey === "2025");
+  const bMissDash = r.rows.find((x) => x.partKey === "B" && x.periodKey === "2024");
+  const zMissRef  = r.rows.find((x) => x.partKey === "Z" && x.periodKey === "2024");
+  assert.equal(aMissDash.status, "missing-dashboard");
+  assert.equal(bMissDash.status, "missing-dashboard");
+  assert.equal(zMissRef.status,  "missing-reference");
+  assert.equal(r.summary.missingDashboard, 2);
+  assert.equal(r.summary.missingReference, 1);
+});
+
+test("diffPartIndexes tracks max abs delta and max abs pct delta", () => {
+  const dash = { A: { "2024": 100, "2025": 130 } };
+  const exc  = { A: { "2024": 100, "2025": 110 } };
+  const r = diffPartIndexes(dash, exc, 0.5);
+  assert.equal(r.summary.maxAbsDelta, 20);
+  assert.ok(Math.abs(r.summary.maxAbsPctDelta - (20 / 110) * 100) < 1e-9);
+  assert.deepEqual(r.summary.maxAbsDeltaRow, { partKey: "A", periodKey: "2025" });
+});
+
+// --------------------------------------------------------------------------
+// Directory-driven PPI index loader — sanity-check the generated JSON pack
+// produced by `py scripts/build-builtin-index-pack.py --write` that the
+// dashboard inlines at build time. We don't import the Python script; we
+// just validate the JSON's shape so a corrupted pack fails CI before it
+// reaches a user's browser.
+// --------------------------------------------------------------------------
+test("generated index pack has the expected 5 new BLS series codes", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const { resolve } = await import("node:path");
+  const path = resolve("data/inputs/index-data/generated-index-pack.json");
+  const raw = await readFile(path, "utf8");
+  const pack = JSON.parse(raw);
+  for (const code of [
+    "PCU3339133391",
+    "PCU333996333996",
+    "WPU1017",
+    "WPU114301",
+    "WPU11430119",
+  ]) {
+    assert.ok(pack[code], `missing entry: ${code}`);
+    const e = pack[code];
+    assert.ok(typeof e.displayName === "string" && e.displayName.length, `${code}: displayName missing`);
+    assert.ok(e.rawByYear && typeof e.rawByYear === "object", `${code}: rawByYear missing`);
+    // Every shipped index has 2024 data (the canonical rebase baseline).
+    const years = Object.keys(e.rawByYear).map((y) => +y).filter(Number.isFinite);
+    assert.ok(years.includes(2024), `${code}: rawByYear lacks 2024 — rebase will fail`);
+  }
+});
+
+test("generated index pack values rebase cleanly to 2024 = 100", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const { resolve } = await import("node:path");
+  const raw = await readFile(resolve("data/inputs/index-data/generated-index-pack.json"), "utf8");
+  const pack = JSON.parse(raw);
+  for (const [code, entry] of Object.entries(pack)) {
+    // Convert string keys to int for rebaseToBaseline().
+    const rawByYear = {};
+    for (const [yk, v] of Object.entries(entry.rawByYear)) rawByYear[+yk] = +v;
+    const rb = rebaseToBaseline(rawByYear, 2024);
+    assert.ok(rb.ok, `${code}: rebaseToBaseline.ok = false`);
+    assert.ok(Math.abs(rb.indexed[2024] - 100) < 1e-9, `${code}: 2024 should rebase to 100, got ${rb.indexed[2024]}`);
+    // No NaNs or infinities.
+    for (const [yk, iv] of Object.entries(rb.indexed)) {
+      assert.ok(Number.isFinite(iv), `${code}: indexed[${yk}] = ${iv} is not finite`);
+    }
+  }
 });

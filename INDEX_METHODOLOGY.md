@@ -33,24 +33,26 @@ The unit test `quarter boundary is half-open` locks this in.
 
 ## 2. Weighted-average unit price (the price metric being indexed)
 
-For each (part, period) bucket the dashboard computes the **volume-weighted
-unit price**:
+For each (part, period) bucket the dashboard computes a per-period unit
+price under one of three **weighting methods**, controlled by the
+Weighting picker in the IA tab. **Default = `qty`.**
 
-```
-weighted_unit_price(part, period) = Σ spend  /  Σ qty
-                                    over all rows where row.part = part
-                                    and row.period = period
-```
+| Method  | UI label                | Formula                                                | Matches Excel                                                |
+|---------|-------------------------|--------------------------------------------------------|--------------------------------------------------------------|
+| `qty`   | Qty-weighted (default)  | `Σ spend / Σ qty`                                      | `AVERAGEIFS(spend, …) / AVERAGEIFS(qty, …)`                  |
+| `spend` | Spend-weighted          | `Σ(unit_price × spend) / Σ spend`                      | `SUMPRODUCT(unit_price, spend) / SUM(spend)` over the window |
+| `simple`| Simple mean             | `mean(unit_price)` over rows                           | `AVERAGEIFS(unit_price, …)`                                  |
 
-This is **not** a simple average of per-row unit prices. With unequal
-quantities the two metrics give different answers; the weighted average is
-the one that ties to total spend, which is what we want for an index. Excel
-users get the same number by writing
-`= AVERAGEIFS(spend, ...) / AVERAGEIFS(qty, ...)` rather than
-`= AVERAGEIFS(unit_price, ...)`.
+`qty` is the only method that ties to total spend, which is what we want
+for a price index. `spend` and `simple` exist for one reason: when an
+external Excel reference disagrees with the dashboard, the Weighting picker
+lets you prove which method the Excel author actually used. The
+**Validation panel** (§10) wires this directly into the diff.
 
-The unit test `weighted average differs from simple average for unequal qty`
-locks this in.
+The unit tests `WEIGHTING.QTY matches Σspend/Σqty …`,
+`WEIGHTING.SPEND uses spend as the weight, not quantity`, and
+`WEIGHTING.SIMPLE returns mean of per-row unit prices` lock in the
+distinct behavior of all three.
 
 ---
 
@@ -137,32 +139,57 @@ sparse-bucket behavior in.
 
 ---
 
-## 6. Multi-part display rule
+## 6. Multi-part display rule & aggregation methods
 
-When the user selects N parts, the chart renders **N independent lines** —
-one per part, each rebased to its own baseline. There is **no basket
-aggregation**.
+When the user selects N parts, the chart's default behavior is to render
+**N independent lines** — one per part, each rebased to its own baseline.
+This is the `Aggregation = Per-part lines` setting.
 
-What that means in practice:
+If the user picks any of the three **basket-aggregation methods**, the
+per-part lines are hidden and a single black aggregate line is drawn instead
+(with PPI series still overlaid). The three methods produce mathematically
+different numbers — picking the right one matters.
 
-- The chart shows price-index trajectories *side by side*, not a portfolio
-  index.
-- It is intentional that two parts can both read 100 at the baseline and
-  cross/diverge afterwards — the chart is showing how each part moved
-  relative to itself, not relative to the basket.
-- Users who want a basket-level index can export to Excel and compute
-  `Σ_all_parts spend / Σ_all_parts qty` per period externally.
+| Method      | Formula (per period)                                                            | When you'd use it                                                                                       |
+|-------------|----------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------|
+| `laspeyres` | `Σ_part [ part_index(period) × baseSpend(part) ] / Σ_part baseSpend(part)`       | "How much would the same basket cost today vs. the baseline?" Fixed weights from baseline period.       |
+| `simple`    | `mean(part_index(period))` over contributing parts                               | Each part gets equal voice — useful for spotting which parts moved without spend bias.                  |
+| `pooled`    | `(Σ_part spend(period) / Σ_part qty(period)) / pooled_price(baseline) × 100`     | "Treat the basket as one big part." Index moves with both price *and* mix shift across periods.         |
 
-The chart subtitle and methodology link make this rule visible to anyone
-reading the chart without context.
+The default is `Per-part lines` (no aggregation), preserving the original
+display. The chart subtitle and the "ⓘ Method" popover document which
+method is active.
+
+**Excluded parts** (those without baseline data) contribute weight zero
+to Laspeyres and aren't counted by Simple-mean; the Totals section reports
+how many parts were excluded and why.
+
+The unit tests `aggregateLaspeyres uses base-period spend as fixed weight`,
+`aggregateSimpleMean is the arithmetic mean — visibly different from Laspeyres`,
+and `aggregatePooledReweighted treats the basket as one big part` lock these in.
 
 ---
 
 ## 7. PPI series in Quarterly mode
 
-The built-in PPI series (currently `WPU10` Metals & Metal Products and
-`PCU332332` Fabricated Metal Products) are loaded as **yearly** averages.
+The built-in PPI series — currently `WPU10` Metals & Metal Products,
+`PCU332332` Fabricated Metal Products, `PCU3339133391` Pump & Compressor
+Manufacturing, `PCU333996333996` Semiconductor (sample), `WPU1017` Steel
+Mill Products, `WPU114301` Engines & Parts (sample), and `WPU11430119`
+Diesel Engines (sample) — are loaded as **yearly** averages.
 There is no quarterly PPI data in this dashboard.
+
+**Adding a new PPI series.** Drop a new BLS workbook (FRED-export style or
+sparse-sample shape — both layouts are detected) into
+`data/inputs/indexes/`, then run:
+
+```
+py scripts/build-builtin-index-pack.py --write   # regenerates data/inputs/index-data/generated-index-pack.json
+py scripts/inline-index-math.py                  # re-inlines the math module into index.html
+```
+
+The next build picks up the new code in `IDP_BUILTIN_INDEX_CODES` and a
+checkbox appears in the Indexes panel automatically (no HTML edits).
 
 In Quarterly mode, each year's yearly PPI value is replicated across that
 year's 4 quarters (a flat step). The chart annotates these lines as
@@ -203,7 +230,140 @@ period keys to draw.
 
 ---
 
-## 9. File map
+## 9. Date-range presets
+
+The Display window section above the chart includes one-click presets that
+compute start/end period keys from the dataset's latest available period:
+
+| Preset           | Yearly mode                | Quarterly mode                                    |
+|------------------|----------------------------|---------------------------------------------------|
+| `Last 4Q`        | Latest year only           | Last 4 quarters available                         |
+| `Last 8Q`        | Last 2 years               | Last 8 quarters available                         |
+| `YTD`            | Latest year only           | Latest year, Q1 through latest available quarter  |
+| `Trailing 24M`   | Last 2 years               | Last 8 quarters (same as Last 8Q)                 |
+| `All`            | No bounds                  | No bounds                                         |
+
+All presets respect the baseline-lock rule — they shift the display window
+only, not the indexing math.
+
+---
+
+## 10. Validation panel (Excel-diff)
+
+The Validation panel sits below the chart. Paste an Excel pivot (wide or
+long format) into the textarea and click **Run diff**.
+
+**Accepted layouts:**
+
+```
+# Wide (header row = periods):
+PartNumber<TAB>2024<TAB>2025<TAB>2026
+ABC-001<TAB>100<TAB>108.2<TAB>112.4
+
+# Long (3 columns):
+Part<TAB>Period<TAB>Index
+ABC-001<TAB>2024<TAB>100
+ABC-001<TAB>2025<TAB>108.2
+```
+
+Separators auto-detect: TAB > comma > 2+ spaces > single space. Period
+labels normalize from `2024`, `2024-Q1`, `2024 Q1`, `Q1 2024`, or `Q1-24`.
+
+**What the diff does:**
+
+1. Parses the paste into `{ partKey: { periodKey: value } }`.
+2. Matches each pasted part number to the dashboard's part dictionary using
+   the same canonicalization rule as Single-Source (case-insensitive,
+   leading-zero-tolerant for all-numeric parts).
+3. For every matched part, computes the dashboard's indexed series at the
+   **currently-active granularity, baseline, AND weighting method**
+   (so toggling the Weighting picker shows you exactly which method matches
+   Excel).
+4. Calls `diffPartIndexes` to produce a row-level report with delta,
+   percent delta, and a status flag (`match` / `fail` / `missing-dashboard`
+   / `missing-reference`). The default tolerance is **0.5 index points**
+   and is editable in the UI.
+5. Surfaces the underlying inputs (`Σspend`, `Σqty`, row count) next to
+   every fail row so you can see *why* the calculation diverged — usually
+   it's a row-count gap (Excel was filtered, dashboard wasn't) or a
+   weighting-method mismatch.
+
+The summary tiles show: rows compared, matched within tolerance, failed,
+missing on each side, plus max absolute delta and max absolute percent
+delta.
+
+PPI series are excluded from the diff — they're indexed from external
+yearly data, not from the spend rows.
+
+---
+
+## 11. Totals tiles & detail table
+
+Two read-only panels sit under the chart and read from the same `frame`
+object the chart just drew from. This guarantees their numbers can never
+drift from what's plotted.
+
+**Totals tiles** — one tile per visible period:
+
+- **Spend** total + period-over-period delta (vs. baseline) in `$` and `%`.
+- **Quantity** total + delta.
+- **Aggregate index** (whatever the active aggregation method produced; the
+  baseline tile always reads `100`).
+- Meta line: parts in scope, parts with valid baseline, **baseline-period
+  spend coverage %** (= included base spend / total selected-parts base
+  spend), and weighting method.
+- Excluded parts are surfaced in a click-to-expand list with the reason
+  (no spend in baseline / baseline price non-finite).
+
+**Detail table** — one row per chart-selected part, columns:
+
+- Part #, Description
+- For each visible period: `index`, `spend`, `qty`
+
+Behavior:
+
+- Sticky header; click any column to sort. Default sort = latest period's
+  spend descending.
+- Text filter narrows visible rows by part number or description.
+- Click a row to toggle that part in/out of the chart.
+- **Export CSV** button downloads the current table view.
+
+Missing values render as `—` (never `0` or `NaN`).
+
+---
+
+## 12. Saved views
+
+The Saved-views panel persists the full IA tab state per browser
+(`localStorage` key `idp_ia_saved_views_v1`). One view captures:
+
+```
+{
+  partKeys: ["ABC-001", ...],   // part-number strings, resolved at load time
+  indexCodes: ["WPU10", ...],   // PPI series checkbox state
+  granularity: "yearly"|"quarterly",
+  baseline:    "2024"|"2024-Q1",
+  weighting:   "qty"|"spend"|"simple",
+  aggregation: "none"|"laspeyres"|"simple"|"pooled",
+  window:      { start: "...", end: "..." }
+}
+```
+
+- **Save as / Overwrite / Rename / Delete** operate on the currently-loaded
+  view.
+- **Set default** marks the view to auto-load whenever the IA tab opens.
+- **Copy share link** base64-encodes the snapshot into `?iaView=` so a
+  teammate opening the link sees the same chart (subject to their browser
+  having access to the same dataset).
+- **Export / Import JSON** round-trip the whole set across browsers.
+
+When loading, any part that no longer exists in the current dataset is
+**reported as a warning** under the panel — never silently dropped from the
+selection.
+
+---
+
+## 13. File map
 
 | File                                       | Purpose                                              |
 |--------------------------------------------|------------------------------------------------------|

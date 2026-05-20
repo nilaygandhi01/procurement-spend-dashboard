@@ -729,6 +729,85 @@
         outline: 2px solid rgba(31, 58, 138, 0.35);
         outline-offset: 2px;
       }
+      /* ============================================================
+         IA tab — pill control bar (used by #ia-display-controls-panel)
+         A compact horizontal control row of segmented pill buttons.
+         The pills mirror .idp-btn-secondary's spacing/radius/font scale
+         so they sit comfortably next to other dashboard controls
+         without introducing a new visual language.
+         ============================================================ */
+      #idp-app .ia-ctrl-field {
+        display: inline-flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 4px;
+      }
+      #idp-app .ia-ctrl-label {
+        font-size: 11px;
+        font-weight: 600;
+        color: #475569;
+        letter-spacing: 0.02em;
+        text-transform: uppercase;
+        line-height: 1;
+        margin: 0;
+      }
+      #idp-app .ia-pill-group {
+        display: inline-flex;
+        flex-wrap: nowrap;
+        align-items: stretch;
+        border: 1px solid #d1d5db;
+        border-radius: 6px;
+        overflow: hidden;
+        background: #fff;
+        line-height: 1;
+      }
+      #idp-app .ia-pill-group .ia-pill {
+        border: 0;
+        border-left: 1px solid #d1d5db;
+        border-radius: 0;
+      }
+      #idp-app .ia-pill-group .ia-pill:first-child { border-left: 0; }
+      #idp-app .ia-pill {
+        box-sizing: border-box;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 6px 10px;
+        font-size: 12px;
+        font-weight: 500;
+        line-height: 1;
+        color: #334155;
+        background: #fff;
+        border: 1px solid #d1d5db;
+        border-radius: 6px;
+        font-family: inherit;
+        cursor: pointer;
+        transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
+      }
+      #idp-app .ia-pill:hover {
+        background: #f1f5f9;
+      }
+      #idp-app .ia-pill.ia-pill-active,
+      #idp-app .ia-pill[aria-pressed="true"] {
+        background: #1F3A8A;
+        color: #fff;
+        border-color: #1F3A8A;
+      }
+      #idp-app .ia-pill.ia-pill-active:hover,
+      #idp-app .ia-pill[aria-pressed="true"]:hover {
+        background: #1e3578;
+      }
+      #idp-app .ia-pill:focus-visible {
+        outline: 2px solid rgba(31, 58, 138, 0.35);
+        outline-offset: 2px;
+      }
+      #idp-app .ia-ctrl-divider {
+        display: inline-block;
+        width: 1px;
+        height: 18px;
+        background: #e2e8f0;
+        margin: 0 4px;
+      }
       .overview-section .section-header {
         font-size: 1.125rem;
         margin: 0 0 var(--idp-space-1);
@@ -1814,10 +1893,796 @@
       so a render call that arrived early gets retried once the module is in.
       The same .mjs file is imported directly by scripts/tests/index-math.test.mjs.
     -->
-    <script type="module">
-      import * as IDP_INDEX_MATH from "./index-math.mjs";
-      window.IDP_INDEX_MATH = IDP_INDEX_MATH;
-      try { window.dispatchEvent(new Event("idp-index-math-ready")); } catch (e) {}
+    <script>
+      /* IDP_INDEX_MATH_INLINE_BEGIN — generated from index-math.mjs by scripts/inline-index-math.py
+       *
+       * DO NOT EDIT THIS BLOCK BY HAND. Source of truth is
+       * src/dashboard/index-math.mjs. Re-run
+       *   py scripts/inline-index-math.py
+       * after any change to that file. The .mjs version is still imported
+       * by scripts/tests/index-math.test.mjs (Node test runner); only the
+       * BROWSER copy is inlined here so the dashboard never has to fetch a
+       * .mjs file at runtime (which broke in production when nginx didn't
+       * advertise a JavaScript MIME type for the .mjs extension).
+       */
+      (function (root) {
+        /*
+         * Index analysis math — pure ES module.
+         *
+         * Imported by both:
+         *  - src/dashboard/index.html (via a <script type="module"> shim that
+         *    assigns to window.IDP_INDEX_MATH so the legacy inline globals
+         *    code can keep using globals without conversion to modules).
+         *  - scripts/tests/index-math.test.mjs (node --test, no DOM).
+         *
+         * See INDEX_METHODOLOGY.md (repo root) for the formal definitions
+         * behind each function below.
+         *
+         * Period-key convention used throughout this module:
+         *   - Yearly      → "YYYY"           e.g. "2024"
+         *   - Quarterly   → "YYYY-Qn"        e.g. "2024-Q1", "2025-Q4"
+         */
+
+        const GRANULARITY = Object.freeze({ YEARLY: "yearly", QUARTERLY: "quarterly" });
+
+        /**
+         * How a bucket's "average unit price" is computed from its rows.
+         *
+         *   QTY    — Σspend / Σqty                       (volume-weighted; default; matches Excel `AVERAGEIFS(spend)/AVERAGEIFS(qty)`)
+         *   SPEND  — Σ(unit_price × spend) / Σspend      (spend-weighted unit price)
+         *   SIMPLE — mean(unit_price) over rows           (unweighted simple average)
+         *
+         * SIMPLE is the metric most Excel users get *by accident* with
+         * `AVERAGEIFS(unit_price_column, …)` and it almost never matches QTY when
+         * quantities are unequal. The picker exists so we can prove parity / surface
+         * which method an external Excel reference is actually using.
+         */
+        const WEIGHTING = Object.freeze({ QTY: "qty", SPEND: "spend", SIMPLE: "simple" });
+
+        /**
+         * How per-part indexes are combined into a single category line.
+         *
+         *   LASPEYRES — Σ(part_index(period) × part_base_spend) / Σ part_base_spend
+         *               Spend-weighted, fixed-basket. Default. Weights are computed
+         *               once from the BASELINE period and held constant — that's what
+         *               makes it Laspeyres (vs. Paasche, which uses current weights).
+         *   SIMPLE    — arithmetic mean of per-part indexes per period.
+         *   POOLED    — pool all selected parts' rows into one mega-bucket per period
+         *               (Σspend across parts / Σqty across parts), then index against
+         *               the same pooled bucket at the baseline. Differs from LASPEYRES
+         *               whenever the mix of parts shifts across periods.
+         *
+         * These three produce mathematically different numbers; the chart subtitle
+         * and methodology doc surface which one is active.
+         */
+        const AGGREGATION = Object.freeze({ LASPEYRES: "laspeyres", SIMPLE: "simple", POOLED: "pooled" });
+
+        /**
+         * Quarter (1..4) for a 1-indexed month (1..12).
+         * Half-open by construction: Jan/Feb/Mar→1, Apr/May/Jun→2, Jul/Aug/Sep→3, Oct/Nov/Dec→4.
+         * A 2024-04-01 row therefore lands in Q2 — matching the Excel
+         * `AVERAGEIFS(..., date_range, ">="&"2024-04-01", date_range, "<"&"2024-07-01")` pattern.
+         */
+        function quarterOf(month1to12) {
+          const m = +month1to12;
+          if (!Number.isFinite(m) || m < 1 || m > 12) return NaN;
+          return Math.floor((m - 1) / 3) + 1;
+        }
+
+        /**
+         * Build the period key a row falls into under the given granularity.
+         * Returns null if the year/month is invalid.
+         */
+        function periodKeyOf(year, month1to12, granularity) {
+          const y = +year;
+          if (!Number.isFinite(y) || y < 1) return null;
+          if (granularity === GRANULARITY.QUARTERLY) {
+            const q = quarterOf(month1to12);
+            if (!Number.isFinite(q)) return null;
+            return y + "-Q" + q;
+          }
+          return String(y);
+        }
+
+        /**
+         * Total-orderable key for sorting/comparing period keys across granularities.
+         * Both yearly "2024" and quarterly "2024-Q3" map onto the same number line
+         * (units = quarters) so we can compare them directly when mixing series.
+         */
+        function periodSortKey(periodKey) {
+          if (typeof periodKey !== "string" || !periodKey) return NaN;
+          const m = periodKey.match(/^(\d{4})(?:-Q([1-4]))?$/);
+          if (!m) return NaN;
+          const y = parseInt(m[1], 10);
+          const q = m[2] ? parseInt(m[2], 10) : 1;
+          return y * 4 + (q - 1);
+        }
+
+        function comparePeriodKeys(a, b) {
+          const ka = periodSortKey(a);
+          const kb = periodSortKey(b);
+          if (ka === kb) return 0;
+          return ka < kb ? -1 : 1;
+        }
+
+        /**
+         * Build an ordered list of every period key between startKey and endKey
+         * (both inclusive) at the requested granularity. Used to lay out the x-axis.
+         *
+         * If start > end, returns an empty array.
+         */
+        function expandPeriodRange(startKey, endKey, granularity) {
+          const out = [];
+          const sm = parsePeriodKey(startKey);
+          const em = parsePeriodKey(endKey);
+          if (!sm || !em) return out;
+          if (granularity === GRANULARITY.QUARTERLY) {
+            let y = sm.year;
+            let q = sm.quarter;
+            const endRank = em.year * 4 + (em.quarter - 1);
+            while (y * 4 + (q - 1) <= endRank) {
+              out.push(y + "-Q" + q);
+              q += 1;
+              if (q > 4) { q = 1; y += 1; }
+            }
+          } else {
+            for (let y = sm.year; y <= em.year; y++) out.push(String(y));
+          }
+          return out;
+        }
+
+        function parsePeriodKey(periodKey) {
+          if (typeof periodKey !== "string" || !periodKey) return null;
+          const m = periodKey.match(/^(\d{4})(?:-Q([1-4]))?$/);
+          if (!m) return null;
+          return { year: parseInt(m[1], 10), quarter: m[2] ? parseInt(m[2], 10) : 1 };
+        }
+
+        /**
+         * Bucket a row stream into { [periodKey]: { spend, qty, sumPrice, sumPriceSpend, rowCount } }.
+         *
+         * Row shape: { year, month, spend, qty }.
+         *   year  — integer YYYY
+         *   month — integer 1..12 (1 = January)
+         *   spend — number (any currency unit, must be consistent across rows)
+         *   qty   — number (units; must be > 0 for the row to count)
+         *
+         * Rows with qty <= 0, non-finite qty/spend, or unparseable period are skipped.
+         *
+         * We accumulate ALL the aggregates needed for every supported WEIGHTING method
+         * up front so callers don't have to re-bucket when toggling weighting:
+         *   - spend, qty           → QTY-weighted unit price (Σspend/Σqty)
+         *   - sumPriceSpend, spend → SPEND-weighted unit price (Σ(price·spend)/Σspend)
+         *   - sumPrice, rowCount   → SIMPLE mean of per-row unit prices
+         *
+         * Partial-period rule (locked in by tests): we emit a bucket as long as ≥ 1
+         * row lands in it with qty > 0. We do NOT require a minimum number of rows
+         * or a minimum number of distinct months within a quarter. This matches the
+         * Excel `AVERAGEIFS` behavior, which averages whatever rows fall in the
+         * date window.
+         */
+        function bucketRowsByPeriod(rows, granularity) {
+          const buckets = Object.create(null);
+          if (!Array.isArray(rows)) return buckets;
+          for (let i = 0; i < rows.length; i++) {
+            const r = rows[i];
+            if (!r) continue;
+            const qty = +r.qty;
+            const spend = +r.spend;
+            if (!Number.isFinite(qty) || qty <= 0) continue;
+            if (!Number.isFinite(spend)) continue;
+            const key = periodKeyOf(r.year, r.month, granularity);
+            if (key == null) continue;
+            let b = buckets[key];
+            if (!b) {
+              b = { spend: 0, qty: 0, sumPrice: 0, sumPriceSpend: 0, rowCount: 0 };
+              buckets[key] = b;
+            }
+            b.spend += spend;
+            b.qty += qty;
+            const price = spend / qty;
+            b.sumPrice += price;
+            b.sumPriceSpend += price * spend;
+            b.rowCount += 1;
+          }
+          return buckets;
+        }
+
+        /**
+         * Period-level "average unit price" under the chosen weighting method.
+         *
+         * Defaults to QTY (volume-weighted) — the only method that matches Excel's
+         * `AVERAGEIFS(spend, …)/AVERAGEIFS(qty, …)` pattern. Other methods are
+         * exposed so the validation panel can prove which method an external Excel
+         * reference is *actually* using when the QTY parity check fails.
+         */
+        function weightedUnitPriceByPeriod(buckets, weightingMethod) {
+          const method = weightingMethod || WEIGHTING.QTY;
+          const out = Object.create(null);
+          if (!buckets) return out;
+          for (const k of Object.keys(buckets)) {
+            const b = buckets[k];
+            if (!b) continue;
+            if (method === WEIGHTING.SPEND) {
+              if (b.spend > 0 && Number.isFinite(b.sumPriceSpend)) out[k] = b.sumPriceSpend / b.spend;
+            } else if (method === WEIGHTING.SIMPLE) {
+              if (b.rowCount > 0 && Number.isFinite(b.sumPrice)) out[k] = b.sumPrice / b.rowCount;
+            } else {
+              if (b.qty > 0 && Number.isFinite(b.spend)) out[k] = b.spend / b.qty;
+            }
+          }
+          return out;
+        }
+
+        /**
+         * Rebase a {period: rawValue} map so that rawByPeriod[baselineKey] = 100.
+         *
+         * IMPORTANT — baseline is computed from the FULL input map, regardless of
+         * any chart display window. Requirement #3: narrowing the chart must NOT
+         * change the baseline. Callers must therefore feed the unfiltered raw map
+         * here, and only apply the display-window filter at render time.
+         *
+         * Returns:
+         *   { ok: true,  indexed: { period: number }, baselineRaw: number, baselineKey }
+         *   { ok: false, indexed: {},                 baselineRaw: NaN,    baselineKey }
+         *
+         * `ok = false` when the baseline period has no data (or zero/negative
+         * weighted price). The caller should suppress that series from the chart
+         * with a "needs a valid baseline" message.
+         */
+        function rebaseToBaseline(rawByPeriod, baselineKey) {
+          if (!rawByPeriod || typeof rawByPeriod !== "object") {
+            return { ok: false, indexed: {}, baselineRaw: NaN, baselineKey: baselineKey };
+          }
+          const baseline = +rawByPeriod[baselineKey];
+          if (!Number.isFinite(baseline) || baseline <= 0) {
+            return { ok: false, indexed: {}, baselineRaw: NaN, baselineKey: baselineKey };
+          }
+          const indexed = Object.create(null);
+          for (const k of Object.keys(rawByPeriod)) {
+            const v = +rawByPeriod[k];
+            if (Number.isFinite(v) && v > 0) indexed[k] = (v / baseline) * 100;
+          }
+          return { ok: true, indexed: indexed, baselineRaw: baseline, baselineKey: baselineKey };
+        }
+
+        /**
+         * Convenience pipeline: rows → bucketed → weighted → rebased.
+         *
+         * Equivalent to: rebaseToBaseline(weightedUnitPriceByPeriod(
+         *                  bucketRowsByPeriod(rows, granularity), weighting), baselineKey).
+         *
+         * `weightingMethod` is optional; defaults to QTY.
+         */
+        function computePartIndex(rows, granularity, baselineKey, weightingMethod) {
+          return rebaseToBaseline(
+            weightedUnitPriceByPeriod(bucketRowsByPeriod(rows, granularity), weightingMethod),
+            baselineKey
+          );
+        }
+
+        /* ============================================================================
+         * AGGREGATION across multiple parts → one category-level index line.
+         * The three methods can produce materially different numbers; the chart
+         * subtitle surfaces which one is active and the methodology doc documents
+         * the formulas. See AGGREGATION constant above.
+         * ============================================================================ */
+
+        /**
+         * Spend-weighted Laspeyres aggregator (default).
+         *
+         *   agg_index(period) = Σ_part [ part_index(part, period) × baseSpend(part) ] / Σ_part baseSpend(part)
+         *
+         * Weights are computed ONCE from the baseline period and held constant for
+         * every other period. Parts with no baseline data contribute weight 0 and
+         * are therefore silently dropped — the per-part "excluded" report should
+         * surface them separately so the user knows why coverage is < 100%.
+         *
+         * Inputs:
+         *   perPartIndexed     — { [partKey]: { ok, indexed: { [period]: number } } }
+         *   perPartBuckets     — { [partKey]: { [period]: { spend, qty, … } } }  ← bucketed under the active granularity
+         *   baselineKey        — period key whose spend defines the weights
+         *
+         * Returns:
+         *   { ok, indexed: { [period]: number }, totalBaseSpend, contributingParts }
+         */
+        function aggregateLaspeyres(perPartIndexed, perPartBuckets, baselineKey) {
+          const indexed = Object.create(null);
+          const contributing = [];
+          let totalW = 0;
+          if (!perPartIndexed || !perPartBuckets) return { ok: false, indexed, totalBaseSpend: 0, contributingParts: [] };
+          const partKeys = Object.keys(perPartIndexed);
+          const weights = Object.create(null);
+          for (let i = 0; i < partKeys.length; i++) {
+            const pk = partKeys[i];
+            const r = perPartIndexed[pk];
+            if (!r || !r.ok) continue;
+            const baseBucket = perPartBuckets[pk] ? perPartBuckets[pk][baselineKey] : null;
+            const w = baseBucket && Number.isFinite(baseBucket.spend) && baseBucket.spend > 0 ? baseBucket.spend : 0;
+            if (w <= 0) continue;
+            weights[pk] = w;
+            totalW += w;
+            contributing.push(pk);
+          }
+          if (totalW <= 0) return { ok: false, indexed, totalBaseSpend: 0, contributingParts: [] };
+          const sums = Object.create(null);
+          for (let i = 0; i < contributing.length; i++) {
+            const pk = contributing[i];
+            const w = weights[pk];
+            const ind = perPartIndexed[pk].indexed || {};
+            for (const period of Object.keys(ind)) {
+              const v = +ind[period];
+              if (!Number.isFinite(v)) continue;
+              let s = sums[period];
+              if (!s) { s = { num: 0, den: 0 }; sums[period] = s; }
+              s.num += v * w;
+              s.den += w;
+            }
+          }
+          for (const period of Object.keys(sums)) {
+            const s = sums[period];
+            if (s.den > 0) indexed[period] = s.num / s.den;
+          }
+          return { ok: true, indexed, totalBaseSpend: totalW, contributingParts: contributing };
+        }
+
+        /**
+         * Simple-mean aggregator: arithmetic mean of per-part indexes per period.
+         * Equal weight to every contributing part — heavily distorted by tiny parts.
+         */
+        function aggregateSimpleMean(perPartIndexed) {
+          const indexed = Object.create(null);
+          const contributing = [];
+          if (!perPartIndexed) return { ok: false, indexed, totalBaseSpend: 0, contributingParts: [] };
+          const partKeys = Object.keys(perPartIndexed);
+          const sums = Object.create(null);
+          for (let i = 0; i < partKeys.length; i++) {
+            const pk = partKeys[i];
+            const r = perPartIndexed[pk];
+            if (!r || !r.ok) continue;
+            contributing.push(pk);
+            const ind = r.indexed || {};
+            for (const period of Object.keys(ind)) {
+              const v = +ind[period];
+              if (!Number.isFinite(v)) continue;
+              let s = sums[period];
+              if (!s) { s = { num: 0, n: 0 }; sums[period] = s; }
+              s.num += v;
+              s.n += 1;
+            }
+          }
+          if (!contributing.length) return { ok: false, indexed, totalBaseSpend: 0, contributingParts: [] };
+          for (const period of Object.keys(sums)) {
+            const s = sums[period];
+            if (s.n > 0) indexed[period] = s.num / s.n;
+          }
+          return { ok: true, indexed, totalBaseSpend: 0, contributingParts: contributing };
+        }
+
+        /**
+         * Pooled-reweighted aggregator: sum spend & qty across ALL parts per period,
+         * then index against the same pooled bucket at the baseline. This is
+         * equivalent to "treat the basket as one big part" — the index moves with
+         * both price and mix.
+         *
+         *   pooled_price(period) = Σ_part spend(part, period) / Σ_part qty(part, period)
+         *   agg_index(period)    = pooled_price(period) / pooled_price(baseline) × 100
+         */
+        function aggregatePooledReweighted(perPartBuckets, baselineKey, weightingMethod) {
+          const indexed = Object.create(null);
+          const contributing = [];
+          if (!perPartBuckets) return { ok: false, indexed, totalBaseSpend: 0, contributingParts: [] };
+          const pooled = Object.create(null);
+          const partKeys = Object.keys(perPartBuckets);
+          for (let i = 0; i < partKeys.length; i++) {
+            const pk = partKeys[i];
+            const buckets = perPartBuckets[pk];
+            if (!buckets) continue;
+            let partContributed = false;
+            for (const period of Object.keys(buckets)) {
+              const b = buckets[period];
+              if (!b) continue;
+              let p = pooled[period];
+              if (!p) {
+                p = { spend: 0, qty: 0, sumPrice: 0, sumPriceSpend: 0, rowCount: 0 };
+                pooled[period] = p;
+              }
+              p.spend += +b.spend || 0;
+              p.qty += +b.qty || 0;
+              p.sumPrice += +b.sumPrice || 0;
+              p.sumPriceSpend += +b.sumPriceSpend || 0;
+              p.rowCount += +b.rowCount || 0;
+              partContributed = true;
+            }
+            if (partContributed) contributing.push(pk);
+          }
+          const rebased = rebaseToBaseline(weightedUnitPriceByPeriod(pooled, weightingMethod), baselineKey);
+          if (!rebased.ok) return { ok: false, indexed, totalBaseSpend: 0, contributingParts: contributing };
+          const baseSpend = pooled[baselineKey] && Number.isFinite(pooled[baselineKey].spend) ? pooled[baselineKey].spend : 0;
+          return { ok: true, indexed: rebased.indexed, totalBaseSpend: baseSpend, contributingParts: contributing };
+        }
+
+        /**
+         * Single entry point for "give me the category line".
+         *
+         * Inputs:
+         *   perPartBuckets   — { [partKey]: bucketsByPeriod }
+         *   perPartIndexed   — { [partKey]: { ok, indexed } } (already rebased to baselineKey)
+         *   baselineKey      — period key the per-part series are anchored to
+         *   aggregationMethod — AGGREGATION value
+         *   weightingMethod  — only used by POOLED (Laspeyres/Simple operate on already-indexed values)
+         */
+        function aggregatePartIndexes(perPartBuckets, perPartIndexed, baselineKey, aggregationMethod, weightingMethod) {
+          const m = aggregationMethod || AGGREGATION.LASPEYRES;
+          if (m === AGGREGATION.SIMPLE) return aggregateSimpleMean(perPartIndexed);
+          if (m === AGGREGATION.POOLED) return aggregatePooledReweighted(perPartBuckets, baselineKey, weightingMethod);
+          return aggregateLaspeyres(perPartIndexed, perPartBuckets, baselineKey);
+        }
+
+        /* ============================================================================
+         * EXCEL DIFF (Validation panel)
+         * ============================================================================ */
+
+        /**
+         * Parse a pasted block of Excel/CSV text into { [partKey]: { [periodKey]: number } }.
+         *
+         * Two accepted layouts (we sniff the first non-blank line):
+         *
+         * (A) Wide / pivot — header row lists period columns:
+         *     PartNumber  2024  2025  2026
+         *     ABC-001     100   108.2 112.4
+         *     XYZ-999     100    99.7 103.1
+         *
+         * (B) Long — three columns regardless of order: part, period, index value.
+         *     We detect "long" when there are exactly 3 columns AND the header (if
+         *     any) doesn't look like period codes.
+         *
+         * Separators auto-detected: tab > comma > 2+ spaces > single space.
+         *
+         * Period strings normalized:
+         *   "2024"           → "2024"
+         *   "2024 Q1"        → "2024-Q1"
+         *   "2024-Q1"        → "2024-Q1"
+         *   "Q1 2024"        → "2024-Q1"
+         *   "Q1-24"          → "2024-Q1" (assumes 20YY for 2-digit years)
+         *
+         * Returns:
+         *   { byPart: { partKey: { periodKey: number } }, partOrder: [...], periodOrder: [...], warnings: [...] }
+         *
+         * Best-effort and forgiving — bad lines are skipped with a warning, never throw.
+         */
+        function parseExcelPivotText(text) {
+          const byPart = Object.create(null);
+          const partOrder = [];
+          const periodSet = Object.create(null);
+          const warnings = [];
+          if (typeof text !== "string" || !text.trim()) {
+            return { byPart, partOrder, periodOrder: [], warnings: ["Empty input."] };
+          }
+          const lines = text.split(/\r?\n/).map((l) => l.replace(/^\uFEFF/, "")).filter((l) => l.trim().length > 0);
+          if (!lines.length) return { byPart, partOrder, periodOrder: [], warnings: ["No non-blank lines."] };
+          const sepRe = lines[0].indexOf("\t") >= 0 ? /\t/ : lines[0].indexOf(",") >= 0 ? /,/ : /\s{2,}|\s+/;
+          const split = (line) => line.split(sepRe).map((c) => c.trim());
+          const header = split(lines[0]);
+          const headerLooksLikePeriods = header.slice(1).some((h) => normalizePeriodLabel(h) != null);
+          const isLong = header.length === 3 && !headerLooksLikePeriods;
+          const ensurePart = (raw) => {
+            const key = String(raw == null ? "" : raw).trim();
+            if (!key) return null;
+            if (!byPart[key]) { byPart[key] = Object.create(null); partOrder.push(key); }
+            return key;
+          };
+          const putValue = (partKey, periodKey, rawVal) => {
+            const v = parseFloat(String(rawVal).replace(/[, ]/g, ""));
+            if (!Number.isFinite(v)) {
+              warnings.push("Non-numeric value for " + partKey + " @ " + periodKey + ": " + rawVal);
+              return;
+            }
+            byPart[partKey][periodKey] = v;
+            periodSet[periodKey] = true;
+          };
+          if (isLong) {
+            let startIdx = 0;
+            const h0 = (header[0] || "").toLowerCase();
+            if (/part|sku|item/.test(h0)) startIdx = 1;
+            for (let i = startIdx; i < lines.length; i++) {
+              const cells = split(lines[i]);
+              if (cells.length < 3) { warnings.push("Skipped (too few cells): " + lines[i]); continue; }
+              const partKey = ensurePart(cells[0]);
+              const periodKey = normalizePeriodLabel(cells[1]);
+              if (!partKey || !periodKey) { warnings.push("Skipped (bad part/period): " + lines[i]); continue; }
+              putValue(partKey, periodKey, cells[2]);
+            }
+          } else {
+            const periodKeys = [];
+            for (let c = 1; c < header.length; c++) {
+              const p = normalizePeriodLabel(header[c]);
+              periodKeys.push(p);
+              if (!p) warnings.push("Header column #" + (c + 1) + " (" + header[c] + ") didn't look like a period and was skipped.");
+            }
+            for (let i = 1; i < lines.length; i++) {
+              const cells = split(lines[i]);
+              if (!cells.length) continue;
+              const partKey = ensurePart(cells[0]);
+              if (!partKey) { warnings.push("Skipped (blank part): " + lines[i]); continue; }
+              for (let c = 1; c < cells.length && c < header.length; c++) {
+                const periodKey = periodKeys[c - 1];
+                if (!periodKey) continue;
+                if (cells[c] === "" || cells[c] == null) continue;
+                putValue(partKey, periodKey, cells[c]);
+              }
+            }
+          }
+          const periodOrder = Object.keys(periodSet).sort(comparePeriodKeys);
+          return { byPart, partOrder, periodOrder, warnings };
+        }
+
+        /**
+         * Normalize a free-form period label to a canonical period key.
+         * Returns null if it can't be parsed.
+         */
+        function normalizePeriodLabel(s) {
+          if (s == null) return null;
+          const str = String(s).trim();
+          if (!str) return null;
+          let m = str.match(/^(\d{4})$/);
+          if (m) return m[1];
+          m = str.match(/^(\d{4})[\s\-]?Q([1-4])$/i);
+          if (m) return m[1] + "-Q" + m[2];
+          m = str.match(/^Q([1-4])[\s\-]?(\d{4})$/i);
+          if (m) return m[2] + "-Q" + m[1];
+          m = str.match(/^Q([1-4])[\s\-]?(\d{2})$/i);
+          if (m) {
+            const yy = parseInt(m[2], 10);
+            const fullY = yy >= 70 ? 1900 + yy : 2000 + yy;
+            return fullY + "-Q" + m[1];
+          }
+          return null;
+        }
+
+        /**
+         * Diff dashboard-computed indexes against reference (e.g. Excel) values.
+         *
+         * Inputs:
+         *   dashboardByPart — { [partKey]: { [periodKey]: number } }
+         *   excelByPart     — same shape; usually the output of parseExcelPivotText
+         *   tolerance       — abs delta (index points) above which a row is "fail"; default 0.5
+         *
+         * Returns:
+         *   {
+         *     rows: [ { partKey, periodKey, dashboard, reference, delta, absDelta, pctDelta, status: "match"|"fail"|"missing-dashboard"|"missing-reference" }, ... ],
+         *     summary: { compared, matched, failed, missingDashboard, missingReference, maxAbsDelta, maxAbsDeltaRow, maxAbsPctDelta, maxAbsPctDeltaRow }
+         *   }
+         *
+         * Rows are produced for every (part, period) appearing in EITHER side so the
+         * user can see coverage holes (e.g. a part in Excel that the dashboard
+         * couldn't price). `pctDelta` is computed against the reference where possible.
+         */
+        function diffPartIndexes(dashboardByPart, excelByPart, tolerance) {
+          const tol = Number.isFinite(+tolerance) ? +tolerance : 0.5;
+          const rows = [];
+          const summary = {
+            compared: 0,
+            matched: 0,
+            failed: 0,
+            missingDashboard: 0,
+            missingReference: 0,
+            tolerance: tol,
+            maxAbsDelta: 0,
+            maxAbsDeltaRow: null,
+            maxAbsPctDelta: 0,
+            maxAbsPctDeltaRow: null
+          };
+          const dash = dashboardByPart || Object.create(null);
+          const exc = excelByPart || Object.create(null);
+          const partKeys = uniqueSortedKeys(dash, exc);
+          for (const partKey of partKeys) {
+            const dPeriods = dash[partKey] || Object.create(null);
+            const ePeriods = exc[partKey] || Object.create(null);
+            const periodKeys = uniqueSortedKeys(dPeriods, ePeriods).sort(comparePeriodKeys);
+            for (const periodKey of periodKeys) {
+              const dVal = Number.isFinite(+dPeriods[periodKey]) ? +dPeriods[periodKey] : null;
+              const eVal = Number.isFinite(+ePeriods[periodKey]) ? +ePeriods[periodKey] : null;
+              const row = { partKey, periodKey, dashboard: dVal, reference: eVal, delta: null, absDelta: null, pctDelta: null, status: "" };
+              if (dVal == null && eVal == null) continue;
+              if (dVal == null) {
+                row.status = "missing-dashboard";
+                summary.missingDashboard += 1;
+              } else if (eVal == null) {
+                row.status = "missing-reference";
+                summary.missingReference += 1;
+              } else {
+                row.delta = dVal - eVal;
+                row.absDelta = Math.abs(row.delta);
+                row.pctDelta = eVal !== 0 ? (row.delta / eVal) * 100 : null;
+                summary.compared += 1;
+                if (row.absDelta <= tol) {
+                  row.status = "match";
+                  summary.matched += 1;
+                } else {
+                  row.status = "fail";
+                  summary.failed += 1;
+                }
+                if (row.absDelta > summary.maxAbsDelta) {
+                  summary.maxAbsDelta = row.absDelta;
+                  summary.maxAbsDeltaRow = { partKey, periodKey };
+                }
+                if (row.pctDelta != null && Math.abs(row.pctDelta) > summary.maxAbsPctDelta) {
+                  summary.maxAbsPctDelta = Math.abs(row.pctDelta);
+                  summary.maxAbsPctDeltaRow = { partKey, periodKey };
+                }
+              }
+              rows.push(row);
+            }
+          }
+          return { rows, summary };
+        }
+
+        function uniqueSortedKeys() {
+          const set = Object.create(null);
+          for (let i = 0; i < arguments.length; i++) {
+            const o = arguments[i];
+            if (!o) continue;
+            for (const k of Object.keys(o)) set[k] = true;
+          }
+          return Object.keys(set);
+        }
+
+        /* ============================================================================
+         * COVERAGE & SUMMARY HELPERS — feed the totals tiles and detail table.
+         * ============================================================================ */
+
+        /**
+         * For a set of parts, compute "what fraction of base-period spend is
+         * represented by the parts that have a valid baseline index" — i.e. that
+         * actually contribute to the aggregate. Surfaces the gap caused by missing-
+         * baseline parts.
+         *
+         * Inputs:
+         *   perPartBuckets — { [partKey]: bucketsByPeriod }
+         *   perPartIndexed — { [partKey]: { ok, indexed } }
+         *   baselineKey    — period whose spend forms the denominator
+         *
+         * Returns: { totalBaseSpend, includedBaseSpend, coveragePct }
+         */
+        function computeBaselineCoverage(perPartBuckets, perPartIndexed, baselineKey) {
+          let total = 0, included = 0;
+          if (perPartBuckets) {
+            for (const pk of Object.keys(perPartBuckets)) {
+              const b = perPartBuckets[pk] ? perPartBuckets[pk][baselineKey] : null;
+              const s = b && Number.isFinite(b.spend) ? b.spend : 0;
+              if (s > 0) total += s;
+            }
+          }
+          if (perPartIndexed) {
+            for (const pk of Object.keys(perPartIndexed)) {
+              const r = perPartIndexed[pk];
+              if (!r || !r.ok) continue;
+              const b = perPartBuckets && perPartBuckets[pk] ? perPartBuckets[pk][baselineKey] : null;
+              const s = b && Number.isFinite(b.spend) ? b.spend : 0;
+              if (s > 0) included += s;
+            }
+          }
+          return {
+            totalBaseSpend: total,
+            includedBaseSpend: included,
+            coveragePct: total > 0 ? (included / total) * 100 : 0
+          };
+        }
+
+        /**
+         * Sum spend / qty across parts per period — used by the totals-tile row
+         * regardless of which aggregation method is selected for the index line.
+         * Returns { [periodKey]: { spend, qty } }.
+         */
+        function sumByPeriodAcrossParts(perPartBuckets) {
+          const out = Object.create(null);
+          if (!perPartBuckets) return out;
+          for (const pk of Object.keys(perPartBuckets)) {
+            const buckets = perPartBuckets[pk];
+            if (!buckets) continue;
+            for (const period of Object.keys(buckets)) {
+              const b = buckets[period];
+              if (!b) continue;
+              let o = out[period];
+              if (!o) { o = { spend: 0, qty: 0 }; out[period] = o; }
+              o.spend += +b.spend || 0;
+              o.qty += +b.qty || 0;
+            }
+          }
+          return out;
+        }
+
+        /**
+         * Replicate a yearly-indexed series (e.g. PPI) across each year's 4 quarters
+         * for display in Quarterly mode. The underlying PPI raw data is only
+         * published yearly, so we render a flat step (Q1..Q4 of year Y all share
+         * the yearly Y value). The chart legend documents this.
+         */
+        function expandYearlyToQuarterly(indexedByYear) {
+          const out = Object.create(null);
+          if (!indexedByYear || typeof indexedByYear !== "object") return out;
+          for (const yk of Object.keys(indexedByYear)) {
+            const y = parseInt(yk, 10);
+            if (!Number.isFinite(y)) continue;
+            const v = +indexedByYear[yk];
+            if (!Number.isFinite(v)) continue;
+            for (let q = 1; q <= 4; q++) out[y + "-Q" + q] = v;
+          }
+          return out;
+        }
+
+        /**
+         * Inclusive display-window check for the chart x-axis.
+         * Used at render time only — never during baseline computation.
+         */
+        function isInDisplayWindow(periodKey, startKeyOrNull, endKeyOrNull) {
+          const k = periodSortKey(periodKey);
+          if (!Number.isFinite(k)) return false;
+          if (startKeyOrNull != null) {
+            const s = periodSortKey(startKeyOrNull);
+            if (Number.isFinite(s) && k < s) return false;
+          }
+          if (endKeyOrNull != null) {
+            const e = periodSortKey(endKeyOrNull);
+            if (Number.isFinite(e) && k > e) return false;
+          }
+          return true;
+        }
+
+        /**
+         * Half-open range check: includes start, excludes end. Provided as a
+         * standalone helper so tests can pin down the >=start AND <end_exclusive
+         * semantics that match Excel's `DATE(2024,4,1)` exclusive-upper-bound
+         * pattern. The dashboard does its bucketing via quarterOf(month) which
+         * is half-open by construction; this helper exists so we can assert on
+         * the rule directly in unit tests rather than only via its consequence.
+         */
+        function isInHalfOpenRange(periodKey, startKeyOrNull, endKeyExclusiveOrNull) {
+          const k = periodSortKey(periodKey);
+          if (!Number.isFinite(k)) return false;
+          if (startKeyOrNull != null) {
+            const s = periodSortKey(startKeyOrNull);
+            if (Number.isFinite(s) && k < s) return false;
+          }
+          if (endKeyExclusiveOrNull != null) {
+            const e = periodSortKey(endKeyExclusiveOrNull);
+            if (Number.isFinite(e) && k >= e) return false;
+          }
+          return true;
+        }
+
+        root.IDP_INDEX_MATH = {
+      AGGREGATION: AGGREGATION,
+      GRANULARITY: GRANULARITY,
+      WEIGHTING: WEIGHTING,
+      aggregateLaspeyres: aggregateLaspeyres,
+      aggregatePartIndexes: aggregatePartIndexes,
+      aggregatePooledReweighted: aggregatePooledReweighted,
+      aggregateSimpleMean: aggregateSimpleMean,
+      bucketRowsByPeriod: bucketRowsByPeriod,
+      comparePeriodKeys: comparePeriodKeys,
+      computeBaselineCoverage: computeBaselineCoverage,
+      computePartIndex: computePartIndex,
+      diffPartIndexes: diffPartIndexes,
+      expandPeriodRange: expandPeriodRange,
+      expandYearlyToQuarterly: expandYearlyToQuarterly,
+      isInDisplayWindow: isInDisplayWindow,
+      isInHalfOpenRange: isInHalfOpenRange,
+      normalizePeriodLabel: normalizePeriodLabel,
+      parseExcelPivotText: parseExcelPivotText,
+      parsePeriodKey: parsePeriodKey,
+      periodKeyOf: periodKeyOf,
+      periodSortKey: periodSortKey,
+      quarterOf: quarterOf,
+      rebaseToBaseline: rebaseToBaseline,
+      sumByPeriodAcrossParts: sumByPeriodAcrossParts,
+      uniqueSortedKeys: uniqueSortedKeys,
+      weightedUnitPriceByPeriod: weightedUnitPriceByPeriod
+        };
+        try { root.dispatchEvent(new Event("idp-index-math-ready")); } catch (e) {}
+      })(typeof window !== "undefined" ? window : globalThis);
+      /* IDP_INDEX_MATH_INLINE_END */
     </script>
     <script>
       /* ============================================
@@ -3093,26 +3958,19 @@
         <div class="mb-3 border-b border-[#E6E6E6] pb-2">
           <h2 class="m-0 text-base font-semibold" style="color: #333">Index Analysis</h2>
           <p class="mt-0.5 text-xs leading-snug idp-muted">
-            Plot weighted-average unit price of selected parts against built-in PPI indexes. Baseline and granularity are configurable below — see <a href="../../INDEX_METHODOLOGY.md" class="underline">INDEX_METHODOLOGY.md</a> for the math.
+            Plot weighted-average unit price of selected parts against built-in PPI indexes. Baseline, granularity, weighting, and aggregation are all configurable below; a detail table, totals tiles, and Excel-diff panel sit underneath the chart. Saved views persist per browser. See <a href="../../INDEX_METHODOLOGY.md" class="underline">INDEX_METHODOLOGY.md</a> for the math.
           </p>
         </div>
         <div id="index-content-area" class="flex flex-col gap-4">
           <div class="idp-panel" id="ia2-indexes-panel">
             <p class="mb-2 text-xs font-semibold uppercase tracking-wide idp-muted">Indexes</p>
-            <p class="mb-3 text-xs leading-snug idp-muted">Built-in PPI series. PPI raw data is yearly only; in Quarterly view each year's value is flat-stepped across its 4 quarters.</p>
+            <p class="mb-3 text-xs leading-snug idp-muted">Built-in PPI series. PPI raw data is yearly only; in Quarterly view each year's value is flat-stepped across its 4 quarters. Drop a new <code>.xlsx</code> into <code>data/inputs/indexes/</code>, run <code>py scripts/build-builtin-index-pack.py --write</code>, then <code>py scripts/inline-index-math.py</code> — it will appear here.</p>
             <p class="mb-1.5 text-xs font-medium tabular-nums" style="color: #334155">
               Selected for chart: <span id="ia-index-count">0</span>
               <span class="ml-1 font-normal idp-muted">(max 2 PPI indexes)</span>
             </p>
-            <div class="ia2-index-cb-list flex flex-col gap-2" role="group" aria-label="Built-in PPI indexes">
-              <label class="ia2-index-cb-row flex cursor-pointer items-start gap-2 rounded-md px-1 py-1 hover:bg-slate-50">
-                <input type="checkbox" id="ia2-cb-index-WPU10" data-ia-index-code="WPU10" class="mt-1 h-4 w-4 shrink-0 accent-[#F07F00]" />
-                <span class="text-sm" style="color: #333">Metals &amp; Metal Products Index</span>
-              </label>
-              <label class="ia2-index-cb-row flex cursor-pointer items-start gap-2 rounded-md px-1 py-1 hover:bg-slate-50">
-                <input type="checkbox" id="ia2-cb-index-PCU332332" data-ia-index-code="PCU332332" class="mt-1 h-4 w-4 shrink-0 accent-[#F07F00]" />
-                <span class="text-sm" style="color: #333">Fabricated Metal Products Index</span>
-              </label>
+            <div id="ia2-index-cb-list" class="ia2-index-cb-list flex flex-col gap-2" role="group" aria-label="Built-in PPI indexes">
+              <p class="text-xs idp-muted" id="ia2-index-cb-empty">Loading indexes…</p>
             </div>
           </div>
           <div class="idp-panel" id="ia-parts-panel">
@@ -3159,56 +4017,118 @@
             <p id="ia-part-checkbox-empty" class="hidden text-sm idp-muted">No parts in the current filtered slice. Adjust Spend Review filters or search.</p>
           </div>
           <div class="idp-panel" id="ia-display-controls-panel">
-            <p class="mb-2 text-xs font-semibold uppercase tracking-wide idp-muted">Chart controls</p>
-            <div class="grid grid-cols-1 gap-4 md:grid-cols-3">
-              <div>
-                <p class="mb-1 text-xs font-medium" style="color: #334155">Granularity</p>
-                <div role="radiogroup" aria-label="Chart granularity" class="inline-flex overflow-hidden rounded-md border border-[#E6E6E6]">
-                  <label class="cursor-pointer">
-                    <input type="radio" name="ia-granularity" value="yearly" id="ia-gran-yearly" class="peer sr-only" checked />
-                    <span class="block px-3 py-1.5 text-xs font-medium peer-checked:bg-[#1F3A8A] peer-checked:text-white" style="color: #334155">Yearly</span>
-                  </label>
-                  <label class="cursor-pointer border-l border-[#E6E6E6]">
-                    <input type="radio" name="ia-granularity" value="quarterly" id="ia-gran-quarterly" class="peer sr-only" />
-                    <span class="block px-3 py-1.5 text-xs font-medium peer-checked:bg-[#1F3A8A] peer-checked:text-white" style="color: #334155">Quarterly</span>
-                  </label>
+            <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <p class="m-0 text-xs font-semibold uppercase tracking-wide idp-muted">Chart controls</p>
+              <button type="button" id="ia-method-info-btn" class="idp-btn-secondary px-2 py-1 text-xs font-medium" aria-haspopup="dialog" aria-controls="ia-method-info-popover" title="What math is being computed?">
+                ⓘ Method
+              </button>
+            </div>
+            <!--
+              Compact horizontal control bar. Each control is a single
+              field (label + segmented buttons) so the whole row wraps
+              gracefully on narrow screens without each control's pills
+              stacking vertically.
+            -->
+            <div class="ia-controls-row flex flex-wrap items-end gap-x-4 gap-y-2">
+              <div class="ia-ctrl-field">
+                <label class="ia-ctrl-label">Granularity</label>
+                <div role="radiogroup" aria-label="Chart granularity" class="ia-pill-group" id="ia-granularity-group">
+                  <button type="button" class="ia-pill ia-pill-active" data-ia-granularity="yearly" aria-pressed="true">Yearly</button>
+                  <button type="button" class="ia-pill" data-ia-granularity="quarterly" aria-pressed="false">Quarterly</button>
+                  <input type="hidden" id="ia-granularity-value" value="yearly" />
                 </div>
               </div>
-              <div>
-                <p class="mb-1 text-xs font-medium" style="color: #334155">Baseline</p>
-                <div role="radiogroup" aria-label="Baseline period" class="inline-flex flex-wrap overflow-hidden rounded-md border border-[#E6E6E6]">
-                  <label class="cursor-pointer">
-                    <input type="radio" name="ia-baseline" value="2024" id="ia-baseline-fy2024" class="peer sr-only" checked />
-                    <span class="block px-3 py-1.5 text-xs font-medium peer-checked:bg-[#1F3A8A] peer-checked:text-white" style="color: #334155">FY 2024 = 100</span>
-                  </label>
-                  <label class="cursor-pointer border-l border-[#E6E6E6]">
-                    <input type="radio" name="ia-baseline" value="2024-Q1" id="ia-baseline-q12024" class="peer sr-only" />
-                    <span class="block px-3 py-1.5 text-xs font-medium peer-checked:bg-[#1F3A8A] peer-checked:text-white" style="color: #334155">Q1 2024 = 100</span>
-                  </label>
+              <div class="ia-ctrl-field">
+                <label class="ia-ctrl-label">Baseline</label>
+                <div role="radiogroup" aria-label="Baseline period" class="ia-pill-group" id="ia-baseline-group">
+                  <button type="button" class="ia-pill ia-pill-active" data-ia-baseline="2024" aria-pressed="true">FY 2024 = 100</button>
+                  <button type="button" class="ia-pill" data-ia-baseline="2024-Q1" aria-pressed="false">Q1 2024 = 100</button>
+                  <input type="hidden" id="ia-baseline-value" value="2024" />
                 </div>
-                <p class="mt-1 text-[11px] idp-muted" id="ia-baseline-hint">Q1 2024 baseline only applies to part lines in Quarterly mode; PPI indexes always use their FY 2024 baseline (no quarterly PPI data).</p>
               </div>
-              <div>
-                <p class="mb-1 text-xs font-medium" style="color: #334155">Display window</p>
+              <div class="ia-ctrl-field">
+                <label class="ia-ctrl-label">Weighting</label>
+                <div role="radiogroup" aria-label="Weighting method" class="ia-pill-group" id="ia-weighting-group" title="How each bucket's average unit price is computed.">
+                  <button type="button" class="ia-pill ia-pill-active" data-ia-weighting="qty" aria-pressed="true" title="Σspend ÷ Σqty — matches Excel AVERAGEIFS(spend)/AVERAGEIFS(qty)">Qty-wtd</button>
+                  <button type="button" class="ia-pill" data-ia-weighting="spend" aria-pressed="false" title="Σ(unit_price × spend) ÷ Σspend">Spend-wtd</button>
+                  <button type="button" class="ia-pill" data-ia-weighting="simple" aria-pressed="false" title="mean of per-row unit prices">Simple</button>
+                  <input type="hidden" id="ia-weighting-value" value="qty" />
+                </div>
+              </div>
+              <div class="ia-ctrl-field">
+                <label class="ia-ctrl-label">Aggregation</label>
+                <div role="radiogroup" aria-label="Aggregation method" class="ia-pill-group" id="ia-aggregation-group" title="How selected parts are combined into a single category line.">
+                  <button type="button" class="ia-pill ia-pill-active" data-ia-aggregation="none" aria-pressed="true" title="One line per selected part (current behavior)">Per-part</button>
+                  <button type="button" class="ia-pill" data-ia-aggregation="laspeyres" aria-pressed="false" title="Σ(part_index × base_spend) / Σ base_spend — fixed-basket, spend-weighted">Laspeyres</button>
+                  <button type="button" class="ia-pill" data-ia-aggregation="simple" aria-pressed="false" title="Arithmetic mean of per-part indexes — equal weight per part">Simple</button>
+                  <button type="button" class="ia-pill" data-ia-aggregation="pooled" aria-pressed="false" title="Pool all selected parts into one mega-bucket per period, then index">Pooled</button>
+                  <input type="hidden" id="ia-aggregation-value" value="none" />
+                </div>
+              </div>
+              <div class="ia-ctrl-field min-w-0 flex-1">
+                <label class="ia-ctrl-label">Display window</label>
                 <div class="flex flex-wrap items-center gap-1.5">
                   <label class="sr-only" for="ia-window-start">Start period</label>
-                  <select id="ia-window-start" class="rounded-md border border-[#E6E6E6] px-2 py-1.5 text-xs" style="color: #334155">
+                  <select id="ia-window-start" class="rounded-md border border-[#E6E6E6] px-2 py-1 text-xs" style="color: #334155; line-height: 1.4">
                     <option value="">All (from start)</option>
                   </select>
                   <span class="text-xs idp-muted">→</span>
                   <label class="sr-only" for="ia-window-end">End period</label>
-                  <select id="ia-window-end" class="rounded-md border border-[#E6E6E6] px-2 py-1.5 text-xs" style="color: #334155">
+                  <select id="ia-window-end" class="rounded-md border border-[#E6E6E6] px-2 py-1 text-xs" style="color: #334155; line-height: 1.4">
                     <option value="">All (to end)</option>
                   </select>
-                  <button type="button" id="ia-window-reset" class="idp-btn-secondary shrink-0 px-2 py-1 text-xs">Reset</button>
+                  <button type="button" id="ia-window-reset" class="ia-pill" title="Reset display window to all periods">Reset</button>
+                  <span class="ia-ctrl-divider" aria-hidden="true"></span>
+                  <span id="ia-window-presets" role="group" aria-label="Display window presets" class="flex flex-wrap items-center gap-1">
+                    <button type="button" data-ia-preset="last4q" class="ia-pill">Last 4Q</button>
+                    <button type="button" data-ia-preset="last8q" class="ia-pill">Last 8Q</button>
+                    <button type="button" data-ia-preset="ytd" class="ia-pill">YTD</button>
+                    <button type="button" data-ia-preset="t24m" class="ia-pill">Trailing 24M</button>
+                    <button type="button" data-ia-preset="all" class="ia-pill">All</button>
+                  </span>
                 </div>
-                <p class="mt-1 text-[11px] idp-muted">Narrowing this window never changes the baseline — only what's drawn.</p>
               </div>
             </div>
-            <p id="ia-active-config-note" class="mt-3 text-[11px] idp-muted" aria-live="polite"></p>
+            <p class="mt-2 text-[11px] idp-muted" id="ia-baseline-hint">Q1 2024 baseline only applies to part lines in Quarterly mode; PPI indexes always use their FY 2024 baseline. Display window does not affect the baseline.</p>
+            <!-- The visible "Active config" note now lives under the chart title (see ia-chart-subtitle). This element stays for backward compat with code that still writes to it. -->
+            <p id="ia-active-config-note" class="hidden" aria-hidden="true"></p>
+          </div>
+          <div class="idp-panel hidden" id="ia-method-info-popover" role="dialog" aria-label="Active calculation method">
+            <div class="mb-2 flex items-center justify-between">
+              <p class="m-0 text-xs font-semibold uppercase tracking-wide idp-muted">Active calculation method</p>
+              <button type="button" id="ia-method-info-close" class="idp-btn-secondary px-2 py-0.5 text-[11px]">Close</button>
+            </div>
+            <div id="ia-method-info-body" class="text-xs leading-relaxed" style="color: #334155"></div>
+            <p class="mt-2 text-[11px] idp-muted">For formulas and edge-case rules see <a href="../../INDEX_METHODOLOGY.md" class="underline">INDEX_METHODOLOGY.md</a>.</p>
+          </div>
+          <div class="idp-panel" id="ia-saved-views-panel">
+            <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <p class="m-0 text-xs font-semibold uppercase tracking-wide idp-muted">Saved views</p>
+              <span class="text-[11px] idp-muted" id="ia-saved-views-status">No saved views yet.</span>
+            </div>
+            <div class="flex flex-wrap items-center gap-1.5">
+              <label class="sr-only" for="ia-saved-views-select">Load saved view</label>
+              <select id="ia-saved-views-select" class="rounded-md border border-[#E6E6E6] px-2 py-1.5 text-xs" style="color: #334155; min-width: 14rem">
+                <option value="">— Load a saved view —</option>
+              </select>
+              <button type="button" id="ia-saved-views-save" class="idp-btn-secondary px-2 py-1 text-xs" title="Save current state as a new view">Save as…</button>
+              <button type="button" id="ia-saved-views-overwrite" class="idp-btn-secondary px-2 py-1 text-xs" disabled title="Overwrite the loaded view with current state">Overwrite</button>
+              <button type="button" id="ia-saved-views-rename" class="idp-btn-secondary px-2 py-1 text-xs" disabled>Rename</button>
+              <button type="button" id="ia-saved-views-delete" class="idp-btn-secondary px-2 py-1 text-xs" disabled>Delete</button>
+              <button type="button" id="ia-saved-views-default" class="idp-btn-secondary px-2 py-1 text-xs" disabled title="Open this view automatically when the IA tab loads">Set default</button>
+              <button type="button" id="ia-saved-views-share" class="idp-btn-secondary px-2 py-1 text-xs" title="Copy a shareable link encoding the current state">Copy share link</button>
+              <button type="button" id="ia-saved-views-export" class="idp-btn-secondary px-2 py-1 text-xs">Export JSON</button>
+              <button type="button" id="ia-saved-views-import" class="idp-btn-secondary px-2 py-1 text-xs">Import JSON</button>
+              <input type="file" id="ia-saved-views-import-file" class="hidden" accept=".json,application/json" />
+            </div>
+            <p id="ia-saved-views-warn" class="mt-1.5 hidden text-[11px]" style="color: #92400e" aria-live="polite"></p>
+            <p class="mt-1 text-[11px] idp-muted">Captures: selected parts &amp; PPI indexes, granularity, baseline, display window, weighting, aggregation. Stored in this browser (localStorage); export/import to share across browsers.</p>
           </div>
           <div class="idp-panel idp-index-chart-panel w-full max-w-full min-w-0 mb-0">
-            <p class="mb-2 text-xs font-semibold uppercase tracking-wide idp-muted">Chart</p>
+            <div class="mb-2 flex flex-wrap items-baseline justify-between gap-2">
+              <p class="m-0 text-xs font-semibold uppercase tracking-wide idp-muted">Chart</p>
+              <p id="ia-chart-subtitle" class="m-0 text-[11px] idp-muted" aria-live="polite"></p>
+            </div>
             <div id="index-chart-container" class="relative flex min-h-[500px] w-full max-w-full flex-col rounded-lg border border-[#E6E6E6] bg-white p-3 shadow-sm">
               <p id="index-chart-empty" class="pointer-events-none absolute inset-0 z-0 flex items-center justify-center px-4 text-center text-sm idp-muted">
                 Select parts and/or indexes above to compare.
@@ -3216,6 +4136,80 @@
               <div id="index-chart-canvas-wrap" class="relative z-[1] w-full min-h-[440px] flex-1">
                 <canvas id="index-chart-canvas" class="chart-hidden block max-w-full"></canvas>
               </div>
+            </div>
+          </div>
+          <div class="idp-panel" id="ia-totals-panel">
+            <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <p class="m-0 text-xs font-semibold uppercase tracking-wide idp-muted">Totals &amp; coverage</p>
+              <p id="ia-totals-config-tag" class="m-0 text-[11px] idp-muted"></p>
+            </div>
+            <div id="ia-totals-tiles-wrap" class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+              <p class="col-span-full text-sm idp-muted" id="ia-totals-empty">Select parts to see totals.</p>
+            </div>
+            <div id="ia-totals-meta" class="mt-3 flex flex-wrap items-center gap-3 text-[11px]" style="color: #334155"></div>
+            <details id="ia-totals-excluded-details" class="mt-2 hidden text-[11px]">
+              <summary class="cursor-pointer font-medium" style="color: #334155">Excluded parts (and why)</summary>
+              <ul id="ia-totals-excluded-list" class="mt-1 list-disc pl-5"></ul>
+            </details>
+          </div>
+          <div class="idp-panel" id="ia-detail-table-panel">
+            <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <p class="m-0 text-xs font-semibold uppercase tracking-wide idp-muted">Detail table</p>
+              <div class="flex items-center gap-1.5">
+                <input type="text" id="ia-detail-table-filter" class="rounded-md border border-[#E6E6E6] px-2 py-1 text-xs" style="color: #334155; min-width: 12rem" placeholder="Filter parts in table…" />
+                <button type="button" id="ia-detail-table-export-csv" class="idp-btn-secondary px-2 py-1 text-xs">Export CSV</button>
+              </div>
+            </div>
+            <p class="mb-2 text-[11px] idp-muted">Click a row to toggle that part in the chart above. Sticky header; click any column to sort.</p>
+            <div id="ia-detail-table-empty" class="text-sm idp-muted">Select parts to see the detail table.</div>
+            <div id="ia-detail-table-wrap" class="hidden overflow-auto rounded border border-[#E6E6E6]" style="max-height: 460px">
+              <table id="ia-detail-table" class="w-full text-left text-xs tabular-nums" style="color: #334155">
+                <thead id="ia-detail-table-head" class="sticky top-0 z-[1] bg-[#fafafa]"></thead>
+                <tbody id="ia-detail-table-body"></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="idp-panel" id="ia-validation-panel">
+            <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <p class="m-0 text-xs font-semibold uppercase tracking-wide idp-muted">Validation vs. Excel reference</p>
+              <p class="m-0 text-[11px] idp-muted">Paste an Excel pivot to diff against dashboard values.</p>
+            </div>
+            <div class="grid grid-cols-1 gap-3 md:grid-cols-3">
+              <div class="md:col-span-2">
+                <label for="ia-validation-input" class="block text-[11px] font-medium" style="color: #334155">Paste pivot (TSV / CSV)</label>
+                <textarea id="ia-validation-input" rows="6" class="mt-1 w-full rounded-md border border-[#E6E6E6] p-2 font-mono text-[11px]" style="color: #334155" placeholder="PartNumber&#9;2024&#9;2025&#9;2026&#10;ABC-001&#9;100&#9;108.2&#9;112.4&#10;XYZ-999&#9;100&#9;99.7&#9;103.1&#10;&#10;…also accepts long format: Part&#9;Period&#9;Index"></textarea>
+                <p class="mt-1 text-[10px] idp-muted">Accepts wide (header row = periods) or long (3 columns: Part, Period, Index). Period labels can be "2024", "2024-Q1", "2024 Q1", "Q1 2024", or "Q1-24".</p>
+              </div>
+              <div>
+                <label for="ia-validation-tolerance" class="block text-[11px] font-medium" style="color: #334155">Tolerance (index points)</label>
+                <input id="ia-validation-tolerance" type="number" step="0.01" min="0" value="0.5" class="mt-1 w-full rounded-md border border-[#E6E6E6] px-2 py-1.5 text-xs" style="color: #334155" />
+                <div class="mt-2 flex flex-wrap items-center gap-1.5">
+                  <button type="button" id="ia-validation-run" class="idp-btn-primary px-2.5 py-1 text-xs font-semibold">Run diff</button>
+                  <button type="button" id="ia-validation-clear" class="idp-btn-secondary px-2.5 py-1 text-xs">Clear</button>
+                </div>
+                <p class="mt-2 text-[10px] idp-muted">Diff runs against the dashboard's per-part indexes at the currently-active granularity / baseline / weighting. PPI series are excluded from the diff.</p>
+              </div>
+            </div>
+            <div id="ia-validation-summary" class="mt-3 hidden grid grid-cols-2 gap-2 sm:grid-cols-5 text-xs"></div>
+            <div id="ia-validation-warnings" class="mt-2 hidden text-[11px]" style="color: #92400e"></div>
+            <div id="ia-validation-results-wrap" class="mt-3 hidden overflow-auto rounded border border-[#E6E6E6]" style="max-height: 360px">
+              <table id="ia-validation-results" class="w-full text-left text-xs tabular-nums" style="color: #334155">
+                <thead class="sticky top-0 z-[1] bg-[#fafafa]">
+                  <tr>
+                    <th class="px-2 py-1.5 font-medium">Part</th>
+                    <th class="px-2 py-1.5 font-medium">Period</th>
+                    <th class="px-2 py-1.5 text-right font-medium">Dashboard</th>
+                    <th class="px-2 py-1.5 text-right font-medium">Reference</th>
+                    <th class="px-2 py-1.5 text-right font-medium">Δ (pts)</th>
+                    <th class="px-2 py-1.5 text-right font-medium">Δ %</th>
+                    <th class="px-2 py-1.5 font-medium">Status</th>
+                    <th class="px-2 py-1.5 text-right font-medium">Σspend (period)</th>
+                    <th class="px-2 py-1.5 text-right font-medium">Σqty (period)</th>
+                    <th class="px-2 py-1.5 text-right font-medium">Rows (period)</th>
+                  </tr>
+                </thead>
+                <tbody id="ia-validation-results-body"></tbody>
+              </table>
             </div>
           </div>
         </div>
@@ -10945,8 +11939,8 @@
   var IDP_INDEX_LINE_ORANGE = typeof C_ACTION !== "undefined" ? C_ACTION : "#F07F00";
   var IDP_INDEX_LINE_DASH = [5, 5];
   /** Built-in FRED PPI series (raw yearly averages USD index; chart uses 2024 = 100 via idpRebaseIndexYears). */
-  var IDP_BUILTIN_INDEX_CODES = ["WPU10", "PCU332332"];
-  var IDP_BUILTIN_INDEX_PACK = {"WPU10":{"displayName":"Metals and Metal Products","pointCount":1203,"rawByYear":{"1926":13.725,"1927":12.875,"1928":12.866667,"1929":13.341667,"1930":12.016667,"1931":10.783333,"1932":9.916667,"1933":10.133333,"1934":11.2,"1935":11.191667,"1936":11.416667,"1937":13.066667,"1938":12.591667,"1939":12.483333,"1940":12.516667,"1941":12.758333,"1942":12.958333,"1943":12.908333,"1944":12.916667,"1945":13.108333,"1946":14.666667,"1947":18.191667,"1948":20.716667,"1949":20.891667,"1950":22.0,"1951":24.483333,"1952":24.491667,"1953":25.275,"1954":25.516667,"1955":27.225,"1956":29.566667,"1957":30.141667,"1958":29.975,"1959":30.633333,"1960":30.65,"1961":30.458333,"1962":30.233333,"1963":30.275,"1964":31.108333,"1965":31.975,"1966":32.783333,"1967":33.183333,"1968":33.991667,"1969":35.958333,"1970":38.675,"1971":39.366667,"1972":40.933333,"1973":44.016667,"1974":56.991667,"1975":61.558333,"1976":64.95,"1977":69.3,"1978":75.316667,"1979":85.983333,"1980":94.966667,"1981":99.591667,"1982":99.991667,"1983":101.85,"1984":104.791667,"1985":104.391667,"1986":103.166667,"1987":107.125,"1988":118.683333,"1989":124.075,"1990":122.925,"1991":120.233333,"1992":119.208333,"1993":119.233333,"1994":124.783333,"1995":134.525,"1996":130.983333,"1997":131.758333,"1998":127.766667,"1999":124.625,"2000":128.041667,"2001":125.391667,"2002":125.933333,"2003":129.233333,"2004":149.625,"2005":160.8,"2006":181.625,"2007":193.466667,"2008":213.025,"2009":186.808333,"2010":207.6,"2011":225.941667,"2012":219.85,"2013":213.5,"2014":215.033333,"2015":200.258333,"2016":194.35,"2017":207.8,"2018":223.6,"2019":221.266667,"2020":219.9,"2021":293.778583,"2022":326.733333,"2023":310.905083,"2024":308.814333,"2025":329.524917,"2026":366.881333}},"PCU332332":{"displayName":"Fabricated Metal Products","pointCount":496,"rawByYear":{"1984":100.0,"1985":100.591667,"1986":100.941667,"1987":102.1,"1988":107.425,"1989":112.55,"1990":115.108333,"1991":116.583333,"1992":117.233333,"1993":118.225,"1994":120.3,"1995":124.841667,"1996":126.191667,"1997":127.583333,"1998":128.683333,"1999":129.108333,"2000":130.325,"2001":131.008333,"2002":131.691667,"2003":132.891667,"2004":141.333333,"2005":149.466667,"2006":155.666667,"2007":162.325,"2008":174.375,"2009":175.216667,"2010":176.541667,"2011":182.758333,"2012":185.441667,"2013":186.4,"2014":188.425,"2015":189.1,"2016":188.816667,"2017":191.791667,"2018":199.983333,"2019":204.575,"2020":205.791667,"2021":230.157583,"2022":268.328917,"2023":277.782167,"2024":283.920167,"2025":297.40625,"2026":308.573333}}};
+  var IDP_BUILTIN_INDEX_CODES = ["WPU10", "PCU332332", "PCU3339133391", "PCU333996333996", "WPU1017", "WPU114301", "WPU11430119"];
+  var IDP_BUILTIN_INDEX_PACK = {"WPU10":{"displayName":"Metals and Metal Products","pointCount":1203,"rawByYear":{"1926":13.725,"1927":12.875,"1928":12.866667,"1929":13.341667,"1930":12.016667,"1931":10.783333,"1932":9.916667,"1933":10.133333,"1934":11.2,"1935":11.191667,"1936":11.416667,"1937":13.066667,"1938":12.591667,"1939":12.483333,"1940":12.516667,"1941":12.758333,"1942":12.958333,"1943":12.908333,"1944":12.916667,"1945":13.108333,"1946":14.666667,"1947":18.191667,"1948":20.716667,"1949":20.891667,"1950":22.0,"1951":24.483333,"1952":24.491667,"1953":25.275,"1954":25.516667,"1955":27.225,"1956":29.566667,"1957":30.141667,"1958":29.975,"1959":30.633333,"1960":30.65,"1961":30.458333,"1962":30.233333,"1963":30.275,"1964":31.108333,"1965":31.975,"1966":32.783333,"1967":33.183333,"1968":33.991667,"1969":35.958333,"1970":38.675,"1971":39.366667,"1972":40.933333,"1973":44.016667,"1974":56.991667,"1975":61.558333,"1976":64.95,"1977":69.3,"1978":75.316667,"1979":85.983333,"1980":94.966667,"1981":99.591667,"1982":99.991667,"1983":101.85,"1984":104.791667,"1985":104.391667,"1986":103.166667,"1987":107.125,"1988":118.683333,"1989":124.075,"1990":122.925,"1991":120.233333,"1992":119.208333,"1993":119.233333,"1994":124.783333,"1995":134.525,"1996":130.983333,"1997":131.758333,"1998":127.766667,"1999":124.625,"2000":128.041667,"2001":125.391667,"2002":125.933333,"2003":129.233333,"2004":149.625,"2005":160.8,"2006":181.625,"2007":193.466667,"2008":213.025,"2009":186.808333,"2010":207.6,"2011":225.941667,"2012":219.85,"2013":213.5,"2014":215.033333,"2015":200.258333,"2016":194.35,"2017":207.8,"2018":223.6,"2019":221.266667,"2020":219.9,"2021":293.778583,"2022":326.733333,"2023":310.905083,"2024":308.814333,"2025":329.524917,"2026":366.881333}},"PCU332332":{"displayName":"Fabricated Metal Products","pointCount":496,"rawByYear":{"1984":100.0,"1985":100.591667,"1986":100.941667,"1987":102.1,"1988":107.425,"1989":112.55,"1990":115.108333,"1991":116.583333,"1992":117.233333,"1993":118.225,"1994":120.3,"1995":124.841667,"1996":126.191667,"1997":127.583333,"1998":128.683333,"1999":129.108333,"2000":130.325,"2001":131.008333,"2002":131.691667,"2003":132.891667,"2004":141.333333,"2005":149.466667,"2006":155.666667,"2007":162.325,"2008":174.375,"2009":175.216667,"2010":176.541667,"2011":182.758333,"2012":185.441667,"2013":186.4,"2014":188.425,"2015":189.1,"2016":188.816667,"2017":191.791667,"2018":199.983333,"2019":204.575,"2020":205.791667,"2021":230.157583,"2022":268.328917,"2023":277.782167,"2024":283.920167,"2025":297.40625,"2026":308.573333}},"PCU3339133391":{"displayName":"Pump and Compressor Manufacturing","pointCount":24,"rawByYear":{"2003":100.0,"2004":102.216667,"2005":108.408333,"2006":112.625,"2007":117.891667,"2008":123.65,"2009":127.458333,"2010":128.958333,"2011":133.391667,"2012":137.216667,"2013":140.166667,"2014":143.483333,"2015":145.975,"2016":147.458333,"2017":150.125,"2018":155.15,"2019":158.883333,"2020":161.533333,"2021":168.081333,"2022":192.573083,"2023":210.903667,"2024":221.715333,"2025":232.5555,"2026":240.296333}},"PCU333996333996":{"displayName":"Semiconductor index sample","pointCount":3,"rawByYear":{"2024":94.683333,"2025":99.9875,"2026":103.55}},"WPU1017":{"displayName":"Metals and Metal Products: Steel Mill Products","pointCount":88,"rawByYear":{"1939":9.908333,"1940":9.891667,"1941":9.966667,"1942":10.0,"1943":10.0,"1944":10.0,"1945":10.225,"1946":11.141667,"1947":13.033333,"1948":14.858333,"1949":16.116667,"1950":16.983333,"1951":18.316667,"1952":18.725,"1953":20.166667,"1954":21.108333,"1955":22.116667,"1956":23.933333,"1957":26.275,"1958":27.183333,"1959":27.6,"1960":27.558333,"1961":27.441667,"1962":27.4,"1963":27.591667,"1964":27.808333,"1965":27.916667,"1966":28.275,"1967":28.591667,"1968":29.325,"1969":30.691667,"1970":32.666667,"1971":35.175,"1972":37.341667,"1973":38.358333,"1974":48.641667,"1975":56.425,"1976":60.033333,"1977":65.775,"1978":72.808333,"1979":80.241667,"1980":86.591667,"1981":96.591667,"1982":100.0,"1983":100.925,"1984":104.716667,"1985":104.741667,"1986":99.75,"1987":102.316667,"1988":110.708333,"1989":114.516667,"1990":112.141667,"1991":109.475,"1992":106.375,"1993":108.175,"1994":113.425,"1995":120.141667,"1996":115.6,"1997":116.366667,"1998":113.833333,"1999":105.325,"2000":108.358333,"2001":101.283333,"2002":104.825,"2003":109.533333,"2004":147.183333,"2005":159.675,"2006":174.15,"2007":182.908333,"2008":220.6,"2009":165.241667,"2010":191.691667,"2011":216.208333,"2012":207.991667,"2013":194.95,"2014":200.158333,"2015":177.116667,"2016":167.816667,"2017":187.383333,"2018":211.1,"2019":204.058333,"2020":184.458333,"2021":350.87175,"2022":381.543667,"2023":319.609417,"2024":291.383917,"2025":298.426083,"2026":324.008}},"WPU114301":{"displayName":"Engines and parts index","pointCount":3,"rawByYear":{"2024":101.66,"2025":107.355,"2026":111.18}},"WPU11430119":{"displayName":"Diesel engines PPI sub-index","pointCount":3,"rawByYear":{"2024":99.666667,"2025":105.25,"2026":109.0}}};
 
 
   var _ia2BuiltinSeeded = false;
@@ -11806,9 +12800,53 @@
     _ia2IndexCbWired = true;
   }
 
+  /**
+   * Render one checkbox per code in IDP_BUILTIN_INDEX_CODES inside
+   * #ia2-index-cb-list. Replaces the hand-maintained 2-checkbox markup
+   * that used to live in the HTML so adding a new index is a data-only
+   * change (drop xlsx → run scripts/build-builtin-index-pack.py →
+   * scripts/inline-index-math.py).
+   */
+  function idpIa2PopulateIndexCheckboxesOnce() {
+    var host = $("ia2-index-cb-list");
+    if (!host) return;
+    if (host.getAttribute("data-ia-populated") === "1") return;
+    try {
+      idpIa2SeedBuiltinCatalogOnce();
+    } catch (eS0) {}
+    var codes = (typeof IDP_BUILTIN_INDEX_CODES !== "undefined" && IDP_BUILTIN_INDEX_CODES) || [];
+    if (!codes.length) return;
+    function esc(s) {
+      return String(s == null ? "" : s)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+    var html = "", i, code, meta, label, points, pack;
+    pack = typeof IDP_BUILTIN_INDEX_PACK !== "undefined" && IDP_BUILTIN_INDEX_PACK ? IDP_BUILTIN_INDEX_PACK : {};
+    for (i = 0; i < codes.length; i++) {
+      code = String(codes[i]);
+      meta = (idpExcelIndexCatalog && idpExcelIndexCatalog[code]) || pack[code] || {};
+      label = esc(meta.displayName || code);
+      points = meta.rawByYear ? Object.keys(meta.rawByYear).length : meta.pointCount || 0;
+      html +=
+        '<label class="ia2-index-cb-row flex cursor-pointer items-start gap-2 rounded-md px-1 py-1 hover:bg-slate-50">' +
+        '<input type="checkbox" id="ia2-cb-index-' + esc(code) + '" data-ia-index-code="' + esc(code) + '" class="mt-1 h-4 w-4 shrink-0 accent-[#F07F00]" />' +
+        '<span class="flex flex-col leading-tight">' +
+        '<span class="text-sm" style="color: #333">' + label + '</span>' +
+        '<span class="text-[10px] idp-muted">' + esc(code) + (points ? ' · ' + points + 'y' : '') + '</span>' +
+        '</span>' +
+        '</label>';
+    }
+    host.innerHTML = html;
+    host.setAttribute("data-ia-populated", "1");
+  }
+
   function idpIa2WireDomOnce() {
     if (_ia2DomWired) return;
     _ia2DomWired = true;
+    idpIa2PopulateIndexCheckboxesOnce();
     idpIa2WireBuiltinCheckboxesOnce();
   }
 
@@ -11838,7 +12876,15 @@
   var iaBaselineKey = "2024";
   var iaDisplayStartKey = null;
   var iaDisplayEndKey = null;
+  var iaWeightingMethod = "qty";       // "qty" | "spend" | "simple"
+  var iaAggregationMethod = "none";    // "none" | "laspeyres" | "simple" | "pooled"
   var _iaControlsWired = false;
+  var _iaSavedViewsActiveId = null;    // currently-loaded view id (null = unsaved state)
+  /** Last computed render frame, made global so the detail table / totals
+   *  tiles / validation panel can all read from the same source of truth
+   *  the chart just drew from — no risk of math drift across panels. */
+  var _iaLastFrame = null;
+  var _iaDetailTableSort = { key: null, dir: -1 }; // -1 = desc
 
   function idpIaMath() { return typeof window !== "undefined" ? window.IDP_INDEX_MATH : null; }
 
@@ -11936,14 +12982,42 @@
   }
 
   function idpIaUpdateActiveConfigNote() {
-    var el = $("ia-active-config-note"), parts = [], baselineLabel;
-    if (!el) return;
+    var parts = [], baselineLabel, txt;
     baselineLabel = iaBaselineKey === "2024-Q1" ? "Q1 2024 = 100" : "FY 2024 = 100";
-    parts.push("Active: " + (iaGranularity === "quarterly" ? "Quarterly" : "Yearly") + " · " + baselineLabel);
-    if (iaDisplayStartKey || iaDisplayEndKey) {
-      parts.push("Window: " + (iaDisplayStartKey || "start") + " → " + (iaDisplayEndKey || "end") + " (baseline still computed from full data).");
+    parts.push((iaGranularity === "quarterly" ? "Quarterly" : "Yearly") + " · " + baselineLabel);
+    parts.push("Weighting: " + idpIaWeightingLabel(iaWeightingMethod));
+    if (iaAggregationMethod && iaAggregationMethod !== "none") {
+      parts.push("Aggregate: " + idpIaAggLabel(iaAggregationMethod).replace(/^Aggregate · /, ""));
+    } else {
+      parts.push("Aggregate: per-part lines");
     }
-    el.textContent = parts.join(" — ");
+    if (iaDisplayStartKey || iaDisplayEndKey) {
+      parts.push("Window: " + (iaDisplayStartKey || "start") + " → " + (iaDisplayEndKey || "end") + " (baseline locked)");
+    }
+    txt = parts.join(" · ");
+    // Primary location for the status line: subtitle under the Chart panel title.
+    var subEl = $("ia-chart-subtitle");
+    if (subEl) subEl.textContent = txt;
+    // Keep the legacy hidden node in sync for any older selectors that still read it.
+    var legacy = $("ia-active-config-note");
+    if (legacy) legacy.textContent = txt;
+  }
+
+  /** Subtitle text for the Chart.js chart, rendered just under the title. */
+  function idpIaBuildChartSubtitle(frame) {
+    var bits = [];
+    if (frame.config.aggregation === "none") {
+      bits.push("Per-part lines (no basket aggregation).");
+    } else if (frame.parts.partIxs.length > 1) {
+      bits.push(idpIaAggLabel(frame.config.aggregation) + " line — per-part lines hidden.");
+    } else {
+      bits.push("Per-part line (only 1 part selected; aggregation has no effect).");
+    }
+    bits.push(idpIaWeightingLabel(frame.config.weighting) + ".");
+    if (frame.config.granularity === "quarterly") {
+      bits.push("PPI series flat-stepped Q1→Q4.");
+    }
+    return bits.join(" ");
   }
 
   /** If Q1 2024 baseline is selected but granularity is Yearly, the only sensible
@@ -11955,32 +13029,69 @@
     return iaBaselineKey || "2024";
   }
 
+  /**
+   * Internal helper: update a pill-button group so only the button whose
+   * data-attr value matches is .ia-pill-active. Keeps aria-pressed in
+   * sync. Used both by the user-click handlers and by snapshot/preset
+   * restores so saved views visually reflect the loaded state.
+   */
+  function idpIaPillSetActive(groupId, dataAttr, value) {
+    var group = $(groupId);
+    if (!group) return;
+    var btns = group.querySelectorAll("button[" + dataAttr + "]");
+    for (var i = 0; i < btns.length; i++) {
+      var isMatch = btns[i].getAttribute(dataAttr) === String(value);
+      if (isMatch) btns[i].classList.add("ia-pill-active");
+      else btns[i].classList.remove("ia-pill-active");
+      btns[i].setAttribute("aria-pressed", isMatch ? "true" : "false");
+    }
+    var hidden = group.querySelector("input[type=hidden]");
+    if (hidden) hidden.value = value;
+  }
+
   function idpIaWireDisplayControlsOnce() {
-    var radiosG, radiosB, startSel, endSel, resetBtn, i;
+    var startSel, endSel, resetBtn, presetBtns, i;
     if (_iaControlsWired) return;
     _iaControlsWired = true;
-    radiosG = document.querySelectorAll('input[name="ia-granularity"]');
-    radiosB = document.querySelectorAll('input[name="ia-baseline"]');
     startSel = $("ia-window-start");
     endSel = $("ia-window-end");
     resetBtn = $("ia-window-reset");
-    for (i = 0; i < radiosG.length; i++) {
-      radiosG[i].addEventListener("change", function () {
-        if (!this.checked) return;
-        iaGranularity = this.value === "quarterly" ? "quarterly" : "yearly";
-        idpIaPopulateWindowSelects();
+    presetBtns = document.querySelectorAll('[data-ia-preset]');
+    /*
+     * Pill-button click delegation. Each control is a row of buttons with
+     * data-ia-{control}="value"; clicking activates that pill, updates
+     * the matching state variable, re-renders the chart, and persists
+     * via idpIaSavedViewsUpdateActiveIdFromState (called downstream).
+     */
+    function wirePillGroup(groupId, dataAttr, onChange) {
+      var group = $(groupId);
+      if (!group) return;
+      group.addEventListener("click", function (ev) {
+        var btn = ev.target.closest ? ev.target.closest("button[" + dataAttr + "]") : null;
+        if (!btn || !group.contains(btn)) return;
+        ev.preventDefault();
+        var v = btn.getAttribute(dataAttr);
+        idpIaPillSetActive(groupId, dataAttr, v);
+        try { onChange(v); } catch (e) {
+          try { if (typeof console !== "undefined" && console.error) console.error("[index-analysis] pill change", groupId, e); } catch (eL) {}
+        }
         idpIaUpdateActiveConfigNote();
-        try { renderIndexChart(); } catch (e) {}
+        try { renderIndexChart(); } catch (e2) {}
       });
     }
-    for (i = 0; i < radiosB.length; i++) {
-      radiosB[i].addEventListener("change", function () {
-        if (!this.checked) return;
-        iaBaselineKey = this.value === "2024-Q1" ? "2024-Q1" : "2024";
-        idpIaUpdateActiveConfigNote();
-        try { renderIndexChart(); } catch (e) {}
-      });
-    }
+    wirePillGroup("ia-granularity-group", "data-ia-granularity", function (v) {
+      iaGranularity = v === "quarterly" ? "quarterly" : "yearly";
+      idpIaPopulateWindowSelects();
+    });
+    wirePillGroup("ia-baseline-group", "data-ia-baseline", function (v) {
+      iaBaselineKey = v === "2024-Q1" ? "2024-Q1" : "2024";
+    });
+    wirePillGroup("ia-weighting-group", "data-ia-weighting", function (v) {
+      iaWeightingMethod = (v === "spend" || v === "simple") ? v : "qty";
+    });
+    wirePillGroup("ia-aggregation-group", "data-ia-aggregation", function (v) {
+      iaAggregationMethod = (v === "laspeyres" || v === "simple" || v === "pooled") ? v : "none";
+    });
     if (startSel) startSel.addEventListener("change", function () {
       iaDisplayStartKey = this.value || null;
       idpIaUpdateActiveConfigNote();
@@ -12000,6 +13111,29 @@
       idpIaUpdateActiveConfigNote();
       try { renderIndexChart(); } catch (e2) {}
     });
+    for (i = 0; i < presetBtns.length; i++) {
+      presetBtns[i].addEventListener("click", function (e) {
+        e.preventDefault();
+        var preset = this.getAttribute("data-ia-preset");
+        idpIaApplyWindowPreset(preset);
+      });
+    }
+    // Method-info popover toggle
+    var methodInfoBtn = $("ia-method-info-btn");
+    var methodInfoPopover = $("ia-method-info-popover");
+    var methodInfoClose = $("ia-method-info-close");
+    if (methodInfoBtn && methodInfoPopover) {
+      methodInfoBtn.addEventListener("click", function () {
+        methodInfoPopover.classList.toggle("hidden");
+        idpIaUpdateMethodInfoBody();
+      });
+    }
+    if (methodInfoClose && methodInfoPopover) {
+      methodInfoClose.addEventListener("click", function () { methodInfoPopover.classList.add("hidden"); });
+    }
+    idpIaValidationWire();
+    idpIaSavedViewsWire();
+    idpIaDetailTableWire();
     // Re-render once the math module finishes loading (handles tab-opened-very-early case)
     try {
       window.addEventListener("idp-index-math-ready", function () {
@@ -12008,11 +13142,102 @@
     } catch (e) {}
   }
 
+  /**
+   * Build the master "frame" object that every IA panel (chart, totals tiles,
+   * detail table, validation diff) reads from. Computing this once per render
+   * eliminates math drift across panels.
+   *
+   * Returns null if the math module isn't loaded yet.
+   *
+   * Shape:
+   *   {
+   *     config:  { granularity, baselineKey, weighting, aggregation, displayStartKey, displayEndKey, baselineLabel },
+   *     periods: { all: [...], visible: [...] },         ← visible = display-window filtered
+   *     parts:   {
+   *       partIxs: [partIx, ...],                       ← chart-selected, capped to IDP_IA_MAX_PART_LINES
+   *       buckets: { [partIx]: { [period]: { spend, qty, sumPrice, sumPriceSpend, rowCount } } },
+   *       indexed: { [partIx]: { ok, indexed: { [period]: number }, baselineRaw, baselineKey } },
+   *       baseSpend: { [partIx]: number },              ← spend in baselineKey period
+   *       excluded: [ { partIx, reason } ],             ← parts with no valid baseline
+   *     },
+   *     aggregate: { ok, indexed, totalBaseSpend, contributingParts } | null,
+   *     totals:  { [period]: { spend, qty } },          ← Σ across selected parts
+   *     coverage:{ totalBaseSpend, includedBaseSpend, coveragePct }
+   *   }
+   */
+  function idpIaBuildFrame() {
+    var M = idpIaMath();
+    if (!M) return null;
+    var gran = iaGranularity === "quarterly" ? "quarterly" : "yearly";
+    var baselineKey = idpIaEffectiveBaselineKey();
+    var baselineLabel = baselineKey === "2024-Q1" ? "Q1 2024 = 100" : "FY 2024 = 100";
+    var weighting = iaWeightingMethod || "qty";
+    var aggregation = iaAggregationMethod || "none";
+    var allPeriods = idpIaCollectAvailablePeriods(gran);
+    var visiblePeriods = allPeriods.filter(function (p) {
+      return M.isInDisplayWindow(p, iaDisplayStartKey, iaDisplayEndKey);
+    });
+    idpIaSyncPartSelectionOrder();
+    var partIxs = (indexAnalysisPartIxs || []).slice(0, IDP_IA_MAX_PART_LINES);
+    var perPartBuckets = Object.create(null);
+    var perPartIndexed = Object.create(null);
+    var perPartBaseSpend = Object.create(null);
+    var excluded = [];
+    for (var i = 0; i < partIxs.length; i++) {
+      var pIx = partIxs[i];
+      var rows = idpIaCollectPartRows(pIx);
+      var buckets = M.bucketRowsByPeriod(rows, gran);
+      perPartBuckets[pIx] = buckets;
+      var rebased = M.rebaseToBaseline(M.weightedUnitPriceByPeriod(buckets, weighting), baselineKey);
+      perPartIndexed[pIx] = rebased;
+      var bb = buckets[baselineKey];
+      var bs = bb && isFinite(bb.spend) ? bb.spend : 0;
+      perPartBaseSpend[pIx] = bs;
+      if (!rebased.ok) {
+        excluded.push({ partIx: pIx, reason: bs > 0 ? "Baseline price not finite or zero." : "No qty/spend in " + baselineLabel + "." });
+      }
+    }
+    var aggregate = null;
+    if (aggregation !== "none" && partIxs.length > 0) {
+      try {
+        aggregate = M.aggregatePartIndexes(perPartBuckets, perPartIndexed, baselineKey, aggregation, weighting);
+      } catch (e) { aggregate = null; }
+    }
+    var totals = M.sumByPeriodAcrossParts(perPartBuckets);
+    var coverage = M.computeBaselineCoverage(perPartBuckets, perPartIndexed, baselineKey);
+    return {
+      config: {
+        granularity: gran, baselineKey: baselineKey, baselineLabel: baselineLabel,
+        weighting: weighting, aggregation: aggregation,
+        displayStartKey: iaDisplayStartKey, displayEndKey: iaDisplayEndKey
+      },
+      periods: { all: allPeriods, visible: visiblePeriods },
+      parts: { partIxs: partIxs, buckets: perPartBuckets, indexed: perPartIndexed, baseSpend: perPartBaseSpend, excluded: excluded },
+      aggregate: aggregate,
+      totals: totals,
+      coverage: coverage
+    };
+  }
+
+  /** Friendly label for an aggregation method (used in legend & tooltips). */
+  function idpIaAggLabel(method) {
+    if (method === "laspeyres") return "Aggregate · Laspeyres (spend-weighted)";
+    if (method === "simple") return "Aggregate · Simple mean of part indexes";
+    if (method === "pooled") return "Aggregate · Pooled re-weighted (Σspend ÷ Σqty)";
+    return "";
+  }
+
+  /** Friendly label for a weighting method. */
+  function idpIaWeightingLabel(method) {
+    if (method === "spend") return "Spend-weighted unit price";
+    if (method === "simple") return "Simple mean of unit prices";
+    return "Volume-weighted (Σspend ÷ Σqty)";
+  }
+
   function renderIndexChart() {
     var dashTpl = IDP_INDEX_LINE_DASH,
       datasets,
       chartLabels,
-      allPeriods,
       visiblePeriods,
       emptyEl,
       cnv,
@@ -12045,9 +13270,9 @@
       dsI,
       di,
       val,
-      gran,
       effectiveBaseline,
       baselineLabel,
+      frame,
       M;
     try {
       if (typeof currentAppView !== "undefined" && currentAppView !== "index-analysis") return;
@@ -12063,26 +13288,19 @@
         if (cnv) cnv.classList.add("chart-hidden");
         return;
       }
-      gran = iaGranularity === "quarterly" ? "quarterly" : "yearly";
-      effectiveBaseline = idpIaEffectiveBaselineKey();
-      baselineLabel = (effectiveBaseline === "2024-Q1") ? "Q1 2024 = 100" : "FY 2024 = 100";
-      // Build the candidate x-axis from what's actually in the dataset (so
-      // empty 2025 stays in if data exists but no part picked, etc.) and then
-      // narrow it to the user's display window (inclusive on both ends).
-      allPeriods = idpIaCollectAvailablePeriods(gran);
-      visiblePeriods = allPeriods.filter(function (p) {
-        return M.isInDisplayWindow(p, iaDisplayStartKey, iaDisplayEndKey);
-      });
+      frame = idpIaBuildFrame();
+      _iaLastFrame = frame;
+      visiblePeriods = frame.periods.visible;
+      effectiveBaseline = frame.config.baselineKey;
+      baselineLabel = frame.config.baselineLabel;
       chartLabels = visiblePeriods.map(function (p) {
-        // Yearly stays "2024"; quarterly "2024-Q1" displays as "2024 Q1"
         return p.indexOf("-Q") > 0 ? p.replace("-Q", " Q") : p;
       });
-      idpIaSyncPartSelectionOrder();
       emptyEl = $("index-chart-empty");
       cnv = $("index-chart-canvas");
       if (!cnv) return;
       idxCount = indexSelectedIndexCodes && indexSelectedIndexCodes.length;
-      chartNeeded = (indexAnalysisPartIxs && indexAnalysisPartIxs.length > 0) || idxCount > 0;
+      chartNeeded = (frame.parts.partIxs.length > 0) || idxCount > 0;
       if (!chartNeeded) {
         destroyIndexChart();
         if (emptyEl) {
@@ -12090,21 +13308,22 @@
           emptyEl.textContent = "Select parts and/or indexes above to compare (" + baselineLabel + " baseline).";
         }
         cnv.classList.add("chart-hidden");
+        idpIaRenderTotalsTiles(frame);
+        idpIaRenderDetailTable(frame);
+        idpIaUpdateMethodInfoBody();
         return;
       }
-      // Probe whether any series has data — note we check the FULL period set,
-      // not just the visible window, because a series with all values inside
-      // the baseline year would otherwise look "empty" if the user narrowed
-      // the window to e.g. only 2026.
       anySeries = false;
       codes = indexSelectedIndexCodes ? indexSelectedIndexCodes.slice() : [];
       for (k = 0; k < codes.length; k++) {
-        cv = idpIaIndexIndexedByPeriod(codes[k], gran);
+        cv = idpIaIndexIndexedByPeriod(codes[k], frame.config.granularity);
         if (cv.ok && Object.keys(cv.indexed).length) { anySeries = true; break; }
       }
-      for (j = 0; !anySeries && j < (indexAnalysisPartIxs || []).length; j++) {
-        pr = idpIaPartIndexedByPeriod(indexAnalysisPartIxs[j], gran, effectiveBaseline);
-        if (pr.ok && Object.keys(pr.indexed).length) { anySeries = true; break; }
+      if (!anySeries) {
+        for (j = 0; j < frame.parts.partIxs.length; j++) {
+          var prObj = frame.parts.indexed[frame.parts.partIxs[j]];
+          if (prObj && prObj.ok && Object.keys(prObj.indexed).length) { anySeries = true; break; }
+        }
       }
       baselineMsg =
         "At least one series needs a valid " + baselineLabel + " baseline. Parts need data in the baseline period; PPI indexes ship with FY 2024 built in.";
@@ -12115,44 +13334,77 @@
           emptyEl.textContent = visiblePeriods.length ? baselineMsg : "No data in the selected display window. Reset or widen the window.";
         }
         cnv.classList.add("chart-hidden");
+        idpIaRenderTotalsTiles(frame);
+        idpIaRenderDetailTable(frame);
+        idpIaUpdateMethodInfoBody();
         return;
       }
       if (emptyEl) emptyEl.classList.add("hidden");
       cnv.classList.remove("chart-hidden");
       datasets = [];
       partColIdx = 0;
-      // Part series — each part is its own line (per spec, no basket aggregation).
-      for (j = 0; j < Math.min(IDP_IA_MAX_PART_LINES, (indexAnalysisPartIxs || []).length); j++) {
-        partIx = indexAnalysisPartIxs[j];
-        pr = idpIaPartIndexedByPeriod(partIx, gran, effectiveBaseline);
-        if (!pr.ok) continue;
-        indexedMap = pr.indexed;
-        if (!indexedMap || !Object.keys(indexedMap).length) continue;
-        dataArr = [];
+      // Part series — each part is its own line UNLESS the user picked an
+      // aggregation method, in which case we skip the per-part lines and draw
+      // a single aggregate line instead (otherwise the chart becomes a mess).
+      var hideIndividualPartLines = frame.config.aggregation !== "none" && frame.parts.partIxs.length > 1;
+      if (!hideIndividualPartLines) {
+        for (j = 0; j < frame.parts.partIxs.length; j++) {
+          partIx = frame.parts.partIxs[j];
+          pr = frame.parts.indexed[partIx];
+          if (!pr || !pr.ok) continue;
+          indexedMap = pr.indexed;
+          if (!indexedMap || !Object.keys(indexedMap).length) continue;
+          dataArr = [];
+          for (yi = 0; yi < visiblePeriods.length; yi++) {
+            pk = visiblePeriods[yi];
+            val = indexedMap[pk];
+            dataArr.push(val != null && isFinite(val) ? val : null);
+          }
+          borderCol = IDP_IA_PART_COLORS[partColIdx % IDP_IA_PART_COLORS.length];
+          partColIdx++;
+          plabel = idpPartLegendLabel(partIx, 44, 72) + " (price index)";
+          datasets.push({
+            label: plabel,
+            data: dataArr,
+            borderColor: borderCol,
+            backgroundColor: "transparent",
+            pointBorderColor: borderCol,
+            pointBackgroundColor: "#fff",
+            pointRadius: 3,
+            pointHoverRadius: 5,
+            borderWidth: 2,
+            borderDash: dashTpl,
+            fill: false,
+            tension: 0.2,
+            spanGaps: false,
+            _idpPartIx: partIx,
+            _idpIndexLabel: plabel
+          });
+        }
+      }
+      // Aggregate line (only when user picked a method AND it produced ok data).
+      if (frame.config.aggregation !== "none" && frame.aggregate && frame.aggregate.ok) {
+        var aggData = [];
         for (yi = 0; yi < visiblePeriods.length; yi++) {
           pk = visiblePeriods[yi];
-          val = indexedMap[pk];
-          dataArr.push(val != null && isFinite(val) ? val : null);
+          val = frame.aggregate.indexed[pk];
+          aggData.push(val != null && isFinite(val) ? val : null);
         }
-        borderCol = IDP_IA_PART_COLORS[partColIdx % IDP_IA_PART_COLORS.length];
-        partColIdx++;
-        plabel = idpPartLegendLabel(partIx, 44, 72) + " (price index)";
         datasets.push({
-          label: plabel,
-          data: dataArr,
-          borderColor: borderCol,
+          label: idpIaAggLabel(frame.config.aggregation),
+          data: aggData,
+          borderColor: "#111827",
           backgroundColor: "transparent",
-          pointBorderColor: borderCol,
-          pointBackgroundColor: "#fff",
-          pointRadius: 3,
-          pointHoverRadius: 5,
-          borderWidth: 2,
-          borderDash: dashTpl,
+          pointBorderColor: "#111827",
+          pointBackgroundColor: "#111827",
+          pointRadius: 4,
+          pointHoverRadius: 6,
+          borderWidth: 3,
+          borderDash: [],
           fill: false,
-          tension: 0.2,
+          tension: 0.15,
           spanGaps: false,
-          _idpPartIx: partIx,
-          _idpIndexLabel: plabel
+          _idpIndexLabel: idpIaAggLabel(frame.config.aggregation)
         });
       }
       // PPI series — yearly only at source; in Quarterly mode we flat-step
@@ -12160,7 +13412,7 @@
       idxColorIdx = 0;
       for (k = 0; k < Math.min(IDP_IA_MAX_INDEX_LINES, codes.length); k++) {
         code = codes[k];
-        cv = idpIaIndexIndexedByPeriod(code, gran);
+        cv = idpIaIndexIndexedByPeriod(code, frame.config.granularity);
         if (!cv.ok) continue;
         indexedMap = cv.indexed;
         if (!indexedMap || !Object.keys(indexedMap).length) continue;
@@ -12173,7 +13425,7 @@
         borderCol = IDP_IA_INDEX_COLORS[idxColorIdx % IDP_IA_INDEX_COLORS.length];
         idxColorIdx++;
         dupLabel = ((idpExcelIndexCatalog[code] && idpExcelIndexCatalog[code].displayName) || code) +
-                   " (" + code + (gran === "quarterly" ? ", yearly→Q step" : "") + ")";
+                   " (" + code + (frame.config.granularity === "quarterly" ? ", yearly→Q step" : "") + ")";
         datasets.push({
           label: dupLabel,
           data: dataArr,
@@ -12186,7 +13438,7 @@
           borderWidth: 2.25,
           borderDash: [],
           // Flat steps look more honest than spline curves for replicated yearly values
-          stepped: gran === "quarterly" ? "before" : false,
+          stepped: frame.config.granularity === "quarterly" ? "before" : false,
           fill: false,
           tension: 0,
           spanGaps: false,
@@ -12201,11 +13453,15 @@
           emptyEl.textContent = baselineMsg;
         }
         cnv.classList.add("chart-hidden");
+        idpIaRenderTotalsTiles(frame);
+        idpIaRenderDetailTable(frame);
+        idpIaUpdateMethodInfoBody();
         return;
       }
       destroyIndexChart();
       chartCv = cnv.getContext && cnv.getContext("2d");
       if (!chartCv || typeof Chart === "undefined") return;
+      var gran = frame.config.granularity;
       title = "Price index comparison (" + baselineLabel + ") — " + (gran === "quarterly" ? "Quarterly · " : "Yearly · ") +
               (visiblePeriods[0] ? visiblePeriods[0].replace("-Q", " Q") : "") +
               (visiblePeriods.length > 1 ? "–" + visiblePeriods[visiblePeriods.length - 1].replace("-Q", " Q") : "");
@@ -12248,9 +13504,7 @@
             title: { display: true, text: title, color: "#333", font: { size: CHART_FS_TITLE, weight: "600" } },
             subtitle: {
               display: true,
-              text: gran === "quarterly"
-                ? "Per-part lines (no basket aggregation). PPI series are yearly data flat-stepped across each year's 4 quarters."
-                : "Per-part lines (no basket aggregation). Σspend ÷ Σqty weighted unit price.",
+              text: idpIaBuildChartSubtitle(frame),
               color: "#8A8A8A",
               font: { size: 11, weight: "500" },
               padding: { bottom: 4 }
@@ -12277,6 +13531,10 @@
           if (indexChartInstance && indexChartInstance.resize) indexChartInstance.resize();
         } catch (eRz) {}
       }, 80);
+      try { idpIaRenderTotalsTiles(frame); } catch (eTT) {}
+      try { idpIaRenderDetailTable(frame); } catch (eDT) {}
+      try { idpIaUpdateMethodInfoBody(); } catch (eMI) {}
+      try { idpIaSavedViewsUpdateActiveIdFromState(); } catch (eSV) {}
     } catch (eIxChart) {
       try {
         if (typeof console !== "undefined" && console.error) console.error("[index-analysis] chart", eIxChart);
@@ -12291,6 +13549,789 @@
         }
         if (cnv) cnv.classList.add("chart-hidden");
       } catch (eF) {}
+    }
+  }
+
+  /* ============================================
+  SECTION: IA — display-window presets, totals tiles, detail table,
+           validation panel, saved views, method-info popover.
+  All renderers read from the latest frame built by renderIndexChart,
+  which guarantees their numbers can't drift from the chart's.
+  ============================================ */
+
+  /** Apply a "Last 4Q / Last 8Q / YTD / Trailing 24M / All" preset by computing
+   *  start/end period keys from the data's latest available period. */
+  function idpIaApplyWindowPreset(preset) {
+    var M = idpIaMath();
+    if (!M) return;
+    var gran = iaGranularity === "quarterly" ? "quarterly" : "yearly";
+    var periods = idpIaCollectAvailablePeriods(gran);
+    if (!periods.length) return;
+    var last = periods[periods.length - 1];
+    var lastRank = M.periodSortKey(last);
+    var startKey = null, endKey = last;
+    if (preset === "all") {
+      startKey = null; endKey = null;
+    } else if (preset === "last4q") {
+      if (gran === "quarterly") {
+        var q4 = lastRank - 3; startKey = periods.find(function (p) { return M.periodSortKey(p) >= q4; }) || periods[0];
+      } else {
+        startKey = String(parseInt(last, 10));
+      }
+    } else if (preset === "last8q") {
+      if (gran === "quarterly") {
+        var q8 = lastRank - 7; startKey = periods.find(function (p) { return M.periodSortKey(p) >= q8; }) || periods[0];
+      } else {
+        startKey = String(parseInt(last, 10) - 1); endKey = last;
+      }
+    } else if (preset === "ytd") {
+      var latestYear = gran === "quarterly" ? parseInt(last.slice(0, 4), 10) : parseInt(last, 10);
+      startKey = gran === "quarterly" ? latestYear + "-Q1" : String(latestYear);
+      // Snap startKey to the first available period >= it
+      var snap = periods.find(function (p) { return p === startKey || M.periodSortKey(p) >= M.periodSortKey(startKey); });
+      startKey = snap || periods[0];
+    } else if (preset === "t24m") {
+      if (gran === "quarterly") {
+        var qT = lastRank - 7; startKey = periods.find(function (p) { return M.periodSortKey(p) >= qT; }) || periods[0];
+      } else {
+        startKey = String(parseInt(last, 10) - 1); endKey = last;
+      }
+    }
+    iaDisplayStartKey = startKey;
+    iaDisplayEndKey = endKey;
+    var startSel = $("ia-window-start"), endSel = $("ia-window-end");
+    if (startSel) startSel.value = startKey || "";
+    if (endSel) endSel.value = endKey || "";
+    idpIaUpdateActiveConfigNote();
+    try { renderIndexChart(); } catch (e) {}
+  }
+
+  /* ---------- Method-info popover ---------- */
+  function idpIaUpdateMethodInfoBody() {
+    var el = $("ia-method-info-body");
+    if (!el) return;
+    var weighting = idpIaWeightingLabel(iaWeightingMethod);
+    var agg = iaAggregationMethod === "none" ? "Per-part lines (no aggregation)" : idpIaAggLabel(iaAggregationMethod);
+    var baselineLabel = idpIaEffectiveBaselineKey() === "2024-Q1" ? "Q1 2024 = 100" : "FY 2024 = 100";
+    var gran = iaGranularity === "quarterly" ? "Quarterly" : "Yearly";
+    el.innerHTML =
+      '<dl class="grid grid-cols-[8rem_1fr] gap-x-3 gap-y-1">' +
+      '<dt class="font-medium">Granularity</dt><dd>' + esc(gran) + '</dd>' +
+      '<dt class="font-medium">Baseline</dt><dd>' + esc(baselineLabel) + '</dd>' +
+      '<dt class="font-medium">Weighting</dt><dd>' + esc(weighting) + '</dd>' +
+      '<dt class="font-medium">Aggregation</dt><dd>' + esc(agg) + '</dd>' +
+      '<dt class="font-medium">Display window</dt><dd>' + esc((iaDisplayStartKey || "all") + ' → ' + (iaDisplayEndKey || "all")) + ' (does not affect baseline)</dd>' +
+      '</dl>';
+  }
+
+  /* ---------- Totals tiles ---------- */
+  function idpIaFmtMoney(n) {
+    if (n == null || !isFinite(n)) return "—";
+    var a = Math.abs(n);
+    if (a >= 1e9) return "$" + (n / 1e9).toFixed(2) + "B";
+    if (a >= 1e6) return "$" + (n / 1e6).toFixed(2) + "M";
+    if (a >= 1e3) return "$" + (n / 1e3).toFixed(1) + "K";
+    return "$" + n.toFixed(0);
+  }
+  function idpIaFmtInt(n) {
+    if (n == null || !isFinite(n)) return "—";
+    return Number(n).toLocaleString("en-US", { maximumFractionDigits: 0 });
+  }
+  function idpIaFmtIdx(n) {
+    if (n == null || !isFinite(n)) return "—";
+    return n.toFixed(1);
+  }
+  function idpIaFmtDelta(absV, baseV) {
+    if (absV == null || baseV == null || !isFinite(absV) || !isFinite(baseV) || baseV === 0) return { absStr: "—", pctStr: "—", sign: 0 };
+    var diff = absV - baseV;
+    var pct = (diff / baseV) * 100;
+    var sign = diff > 0 ? 1 : diff < 0 ? -1 : 0;
+    return { absStr: (sign >= 0 ? "+" : "") + idpIaFmtMoney(diff), pctStr: (sign >= 0 ? "+" : "") + pct.toFixed(1) + "%", sign: sign };
+  }
+  function idpIaFmtQtyDelta(absV, baseV) {
+    if (absV == null || baseV == null || !isFinite(absV) || !isFinite(baseV) || baseV === 0) return { absStr: "—", pctStr: "—", sign: 0 };
+    var diff = absV - baseV;
+    var pct = (diff / baseV) * 100;
+    var sign = diff > 0 ? 1 : diff < 0 ? -1 : 0;
+    return { absStr: (sign >= 0 ? "+" : "") + idpIaFmtInt(diff), pctStr: (sign >= 0 ? "+" : "") + pct.toFixed(1) + "%", sign: sign };
+  }
+  function idpIaDeltaColor(sign) {
+    if (sign > 0) return "color: #b91c1c"; // spend/qty up = red for procurement context (cost up)
+    if (sign < 0) return "color: #047857";
+    return "color: #64748b";
+  }
+
+  function idpIaRenderTotalsTiles(frame) {
+    var wrap = $("ia-totals-tiles-wrap");
+    var empty = $("ia-totals-empty");
+    var meta = $("ia-totals-meta");
+    var excDet = $("ia-totals-excluded-details");
+    var excList = $("ia-totals-excluded-list");
+    var tag = $("ia-totals-config-tag");
+    if (!wrap || !empty || !meta) return;
+    if (!frame || frame.parts.partIxs.length === 0) {
+      wrap.innerHTML = '<p class="col-span-full text-sm idp-muted" id="ia-totals-empty">Select parts to see totals.</p>';
+      meta.innerHTML = "";
+      if (excDet) excDet.classList.add("hidden");
+      if (tag) tag.textContent = "";
+      return;
+    }
+    if (tag) {
+      tag.textContent = "Baseline: " + frame.config.baselineLabel + " · " +
+        (frame.config.aggregation === "none" ? "Per-part (no agg)" : idpIaAggLabel(frame.config.aggregation));
+    }
+    var periods = frame.periods.visible.slice();
+    if (!periods.length) periods = frame.periods.all.slice();
+    var baselineKey = frame.config.baselineKey;
+    var baseSpend = frame.totals[baselineKey] && isFinite(frame.totals[baselineKey].spend) ? frame.totals[baselineKey].spend : null;
+    var baseQty   = frame.totals[baselineKey] && isFinite(frame.totals[baselineKey].qty)   ? frame.totals[baselineKey].qty   : null;
+    var aggIdx = frame.aggregate && frame.aggregate.ok ? frame.aggregate.indexed : null;
+    var html = "";
+    for (var i = 0; i < periods.length; i++) {
+      var pk = periods[i];
+      var b = frame.totals[pk] || { spend: 0, qty: 0 };
+      var isBase = (pk === baselineKey);
+      var dSpend = isBase ? { absStr: "—", pctStr: "—", sign: 0 } : idpIaFmtDelta(b.spend, baseSpend);
+      var dQty   = isBase ? { absStr: "—", pctStr: "—", sign: 0 } : idpIaFmtQtyDelta(b.qty, baseQty);
+      var idxVal = isBase ? 100 : (aggIdx ? aggIdx[pk] : null);
+      var pretty = pk.indexOf("-Q") > 0 ? pk.replace("-Q", " Q") : pk;
+      html += '<div class="rounded-lg border ' + (isBase ? 'border-[#1F3A8A]/40 bg-[#F1F5FF]' : 'border-[#E6E6E6] bg-white') + ' p-3 shadow-sm">' +
+        '<div class="text-[11px] font-semibold uppercase tracking-wide" style="color: #1F3A8A">' + esc(pretty) + (isBase ? ' · BASE' : '') + '</div>' +
+        '<dl class="mt-1 space-y-1.5 text-xs">' +
+          '<div><dt class="idp-muted">Spend</dt><dd class="text-sm font-semibold tabular-nums" style="color: #111827">' + idpIaFmtMoney(b.spend) + '</dd><dd class="text-[11px] tabular-nums" style="' + idpIaDeltaColor(dSpend.sign) + '">' + dSpend.absStr + ' (' + dSpend.pctStr + ')</dd></div>' +
+          '<div><dt class="idp-muted">Quantity</dt><dd class="text-sm font-semibold tabular-nums" style="color: #111827">' + idpIaFmtInt(b.qty) + '</dd><dd class="text-[11px] tabular-nums" style="' + idpIaDeltaColor(dQty.sign) + '">' + dQty.absStr + ' (' + dQty.pctStr + ')</dd></div>' +
+          '<div><dt class="idp-muted">Aggregate index</dt><dd class="text-sm font-semibold tabular-nums" style="color: #111827">' + idpIaFmtIdx(idxVal) + '</dd></div>' +
+        '</dl>' +
+      '</div>';
+    }
+    wrap.innerHTML = html;
+    var partsInScope = frame.parts.partIxs.length;
+    var partsExcluded = frame.parts.excluded.length;
+    var contribN = frame.aggregate && frame.aggregate.contributingParts ? frame.aggregate.contributingParts.length : (partsInScope - partsExcluded);
+    var covPct = frame.coverage ? frame.coverage.coveragePct : 0;
+    meta.innerHTML =
+      '<span><strong class="font-semibold" style="color: #111827">' + partsInScope + '</strong> parts selected</span>' +
+      '<span>· <strong class="font-semibold" style="color: #111827">' + contribN + '</strong> with valid ' + esc(frame.config.baselineLabel) + ' baseline</span>' +
+      '<span>· <strong class="font-semibold" style="color: #111827">' + (covPct > 0 ? covPct.toFixed(1) + '%' : '—') + '</strong> baseline-period spend coverage</span>' +
+      '<span>· Method: <strong style="color: #111827">' + esc(idpIaWeightingLabel(frame.config.weighting)) + '</strong></span>';
+    if (excList && excDet) {
+      if (frame.parts.excluded.length > 0) {
+        var lis = "";
+        for (var j = 0; j < frame.parts.excluded.length; j++) {
+          var ex = frame.parts.excluded[j];
+          lis += '<li><span class="font-medium">' + esc(idpPartLegendLabel(ex.partIx, 40, 60)) + '</span> — ' + esc(ex.reason) + '</li>';
+        }
+        excList.innerHTML = lis;
+        excDet.classList.remove("hidden");
+      } else {
+        excList.innerHTML = "";
+        excDet.classList.add("hidden");
+      }
+    }
+  }
+
+  /* ---------- Detail table ---------- */
+  function idpIaDetailTableWire() {
+    var filterEl = $("ia-detail-table-filter");
+    var exportBtn = $("ia-detail-table-export-csv");
+    if (filterEl) filterEl.addEventListener("input", function () { idpIaRenderDetailTable(_iaLastFrame); });
+    if (exportBtn) exportBtn.addEventListener("click", function () { idpIaDetailTableExportCsv(_iaLastFrame); });
+  }
+
+  function idpIaRenderDetailTable(frame) {
+    var wrap = $("ia-detail-table-wrap");
+    var emptyEl = $("ia-detail-table-empty");
+    var thead = $("ia-detail-table-head");
+    var tbody = $("ia-detail-table-body");
+    if (!wrap || !emptyEl || !thead || !tbody) return;
+    if (!frame || frame.parts.partIxs.length === 0) {
+      wrap.classList.add("hidden");
+      emptyEl.classList.remove("hidden");
+      emptyEl.textContent = "Select parts to see the detail table.";
+      thead.innerHTML = "";
+      tbody.innerHTML = "";
+      return;
+    }
+    emptyEl.classList.add("hidden");
+    wrap.classList.remove("hidden");
+    var periods = frame.periods.visible.slice();
+    if (!periods.length) periods = frame.periods.all.slice();
+    var filterEl = $("ia-detail-table-filter");
+    var filterStr = filterEl && filterEl.value ? filterEl.value.toLowerCase().trim() : "";
+    // Default sort: most recent period's spend desc
+    if (!_iaDetailTableSort.key) {
+      _iaDetailTableSort = { key: "spend|" + periods[periods.length - 1], dir: -1 };
+    }
+    // Build per-row records
+    var rows = [];
+    for (var i = 0; i < frame.parts.partIxs.length; i++) {
+      var pIx = frame.parts.partIxs[i];
+      var partLabel = idpPartLegendLabel(pIx, 60, 100);
+      var partNumber = (typeof idpPartNumberTokenFromIx === "function") ? idpPartNumberTokenFromIx(pIx) : String(pIx);
+      var desc = (typeof idpPartDescriptionForLegend === "function") ? idpPartDescriptionForLegend(pIx) : "";
+      var indexedMap = frame.parts.indexed[pIx] && frame.parts.indexed[pIx].ok ? frame.parts.indexed[pIx].indexed : {};
+      var buckets = frame.parts.buckets[pIx] || {};
+      var row = { _partIx: pIx, _partLabel: partLabel, partNumber: partNumber, description: desc, _periods: {} };
+      for (var p = 0; p < periods.length; p++) {
+        var pk = periods[p];
+        var bb = buckets[pk] || { spend: NaN, qty: NaN };
+        var idx = indexedMap[pk];
+        row._periods[pk] = {
+          index: isFinite(idx) ? idx : null,
+          spend: isFinite(bb.spend) ? bb.spend : null,
+          qty: isFinite(bb.qty) ? bb.qty : null
+        };
+      }
+      rows.push(row);
+    }
+    if (filterStr) {
+      rows = rows.filter(function (r) {
+        return r.partNumber.toLowerCase().indexOf(filterStr) >= 0 || (r.description && r.description.toLowerCase().indexOf(filterStr) >= 0);
+      });
+    }
+    // Sort
+    var sk = _iaDetailTableSort.key.split("|"); // e.g. ["spend", "2024-Q3"] or ["partNumber"]
+    var sortField = sk[0], sortPeriod = sk[1];
+    rows.sort(function (a, b) {
+      var av, bv;
+      if (sortField === "partNumber") { av = a.partNumber; bv = b.partNumber; }
+      else if (sortField === "description") { av = a.description || ""; bv = b.description || ""; }
+      else if (sortPeriod) {
+        var ax = a._periods[sortPeriod] || {};
+        var bx = b._periods[sortPeriod] || {};
+        av = ax[sortField]; bv = bx[sortField];
+      }
+      if (av == null && bv == null) return 0;
+      if (av == null) return 1;
+      if (bv == null) return -1;
+      if (typeof av === "string") return _iaDetailTableSort.dir * av.localeCompare(bv);
+      return _iaDetailTableSort.dir * (av - bv);
+    });
+    // Render header
+    var headHtml = '<tr class="text-[11px] font-semibold idp-muted">' +
+      _iaDetailTableTh("partNumber", "Part #", null, "px-2 py-2 text-left") +
+      _iaDetailTableTh("description", "Description", null, "px-2 py-2 text-left");
+    for (var hp = 0; hp < periods.length; hp++) {
+      var hk = periods[hp];
+      var pretty = hk.indexOf("-Q") > 0 ? hk.replace("-Q", " Q") : hk;
+      headHtml += _iaDetailTableTh("index", pretty + " idx", hk, "px-2 py-2 text-right");
+      headHtml += _iaDetailTableTh("spend", pretty + " spend", hk, "px-2 py-2 text-right");
+      headHtml += _iaDetailTableTh("qty", pretty + " qty", hk, "px-2 py-2 text-right");
+    }
+    headHtml += "</tr>";
+    thead.innerHTML = headHtml;
+    // Wire sort handlers on header (delegate via single listener)
+    thead.onclick = function (ev) {
+      var th = ev.target && ev.target.closest && ev.target.closest("th[data-sort-key]");
+      if (!th) return;
+      var key = th.getAttribute("data-sort-key");
+      if (_iaDetailTableSort.key === key) {
+        _iaDetailTableSort.dir = -_iaDetailTableSort.dir;
+      } else {
+        _iaDetailTableSort.key = key;
+        _iaDetailTableSort.dir = -1;
+      }
+      idpIaRenderDetailTable(_iaLastFrame);
+    };
+    // Render body
+    var bodyHtml = "";
+    for (var r = 0; r < rows.length; r++) {
+      var row2 = rows[r];
+      bodyHtml += '<tr class="cursor-pointer border-t border-[#F1F5F9] hover:bg-[#F8FAFC]" data-ia-row-part-ix="' + row2._partIx + '">' +
+        '<td class="px-2 py-1.5 font-mono">' + esc(row2.partNumber || "—") + '</td>' +
+        '<td class="px-2 py-1.5">' + esc((row2.description || "").slice(0, 80)) + '</td>';
+      for (var p2 = 0; p2 < periods.length; p2++) {
+        var pk2 = periods[p2];
+        var pr2 = row2._periods[pk2];
+        bodyHtml += '<td class="px-2 py-1.5 text-right">' + (pr2.index == null ? "—" : idpIaFmtIdx(pr2.index)) + '</td>';
+        bodyHtml += '<td class="px-2 py-1.5 text-right">' + (pr2.spend == null ? "—" : idpIaFmtMoney(pr2.spend)) + '</td>';
+        bodyHtml += '<td class="px-2 py-1.5 text-right">' + (pr2.qty == null ? "—" : idpIaFmtInt(pr2.qty)) + '</td>';
+      }
+      bodyHtml += "</tr>";
+    }
+    tbody.innerHTML = bodyHtml;
+    tbody.onclick = function (ev) {
+      var tr = ev.target && ev.target.closest && ev.target.closest("tr[data-ia-row-part-ix]");
+      if (!tr) return;
+      var pIx = parseInt(tr.getAttribute("data-ia-row-part-ix"), 10);
+      if (!isNaN(pIx)) idpIaToggleChartPart(pIx);
+    };
+  }
+
+  function _iaDetailTableTh(field, label, periodKey, cls) {
+    var sortKey = periodKey ? field + "|" + periodKey : field;
+    var arrow = "";
+    if (_iaDetailTableSort.key === sortKey) arrow = _iaDetailTableSort.dir < 0 ? " ▾" : " ▴";
+    return '<th data-sort-key="' + esc(sortKey) + '" class="' + cls + ' cursor-pointer select-none hover:bg-slate-100" scope="col">' + esc(label) + arrow + '</th>';
+  }
+
+  /** Toggle a part in/out of the chart selection. Triggers a re-render via
+   *  the standard checkbox flow so all dependent UI stays in sync. */
+  function idpIaToggleChartPart(partIx) {
+    if (typeof indexAnalysisPartIxs === "undefined" || !indexAnalysisPartIxs) return;
+    var i = indexAnalysisPartIxs.indexOf(partIx);
+    if (i >= 0) {
+      indexAnalysisPartIxs.splice(i, 1);
+    } else {
+      if (indexAnalysisPartIxs.length >= IDP_IA_MAX_PART_LINES) {
+        if (typeof window !== "undefined" && window.alert) window.alert("Maximum " + IDP_IA_MAX_PART_LINES + " parts on the chart. Uncheck one to add another.");
+        return;
+      }
+      indexAnalysisPartIxs.push(partIx);
+    }
+    // Reflect into checkbox DOM if present
+    try {
+      var cb = document.querySelector('input[type="checkbox"][data-ia-part-ix="' + partIx + '"]');
+      if (cb) cb.checked = (indexAnalysisPartIxs.indexOf(partIx) >= 0);
+    } catch (e) {}
+    try { if (typeof idpIaRefreshPartCheckboxList === "function") idpIaRefreshPartCheckboxList(false); } catch (e) {}
+    try { renderIndexChart(); } catch (e) {}
+  }
+
+  function idpIaDetailTableExportCsv(frame) {
+    if (!frame || frame.parts.partIxs.length === 0) return;
+    var periods = frame.periods.visible.length ? frame.periods.visible : frame.periods.all;
+    var rows = [["Part #", "Description"]];
+    for (var p = 0; p < periods.length; p++) {
+      var pretty = periods[p].indexOf("-Q") > 0 ? periods[p].replace("-Q", " Q") : periods[p];
+      rows[0].push(pretty + " index", pretty + " spend", pretty + " qty");
+    }
+    for (var i = 0; i < frame.parts.partIxs.length; i++) {
+      var pIx = frame.parts.partIxs[i];
+      var pn = (typeof idpPartNumberTokenFromIx === "function") ? idpPartNumberTokenFromIx(pIx) : String(pIx);
+      var desc = (typeof idpPartDescriptionForLegend === "function") ? idpPartDescriptionForLegend(pIx) : "";
+      var indexedMap = frame.parts.indexed[pIx] && frame.parts.indexed[pIx].ok ? frame.parts.indexed[pIx].indexed : {};
+      var buckets = frame.parts.buckets[pIx] || {};
+      var row = [pn || "", desc || ""];
+      for (var p2 = 0; p2 < periods.length; p2++) {
+        var pk = periods[p2];
+        var bb = buckets[pk] || {};
+        var idx = indexedMap[pk];
+        row.push(isFinite(idx) ? idx.toFixed(2) : "");
+        row.push(isFinite(bb.spend) ? bb.spend.toFixed(2) : "");
+        row.push(isFinite(bb.qty) ? bb.qty.toFixed(0) : "");
+      }
+      rows.push(row);
+    }
+    var csv = rows.map(function (r) {
+      return r.map(function (c) {
+        var s = c == null ? "" : String(c);
+        return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+      }).join(",");
+    }).join("\n");
+    var bl = new Blob([csv], { type: "text/csv;charset=utf-8" });
+    var url = URL.createObjectURL(bl);
+    var a = document.createElement("a");
+    a.href = url;
+    a.download = "index-detail-" + new Date().toISOString().slice(0, 10) + ".csv";
+    a.click();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+  }
+
+  /* ---------- Validation panel ---------- */
+  function idpIaValidationWire() {
+    var runBtn = $("ia-validation-run");
+    var clearBtn = $("ia-validation-clear");
+    if (runBtn) runBtn.addEventListener("click", idpIaValidationRun);
+    if (clearBtn) clearBtn.addEventListener("click", function () {
+      var ta = $("ia-validation-input"); if (ta) ta.value = "";
+      var s = $("ia-validation-summary"); if (s) s.classList.add("hidden");
+      var w = $("ia-validation-warnings"); if (w) w.classList.add("hidden");
+      var rw = $("ia-validation-results-wrap"); if (rw) rw.classList.add("hidden");
+    });
+  }
+
+  function idpIaValidationRun() {
+    var M = idpIaMath();
+    if (!M) return;
+    var ta = $("ia-validation-input");
+    var tolEl = $("ia-validation-tolerance");
+    var summaryEl = $("ia-validation-summary");
+    var warnEl = $("ia-validation-warnings");
+    var resWrap = $("ia-validation-results-wrap");
+    var resBody = $("ia-validation-results-body");
+    if (!ta || !summaryEl || !warnEl || !resWrap || !resBody) return;
+    var parsed = M.parseExcelPivotText(ta.value || "");
+    if (!parsed.partOrder.length) {
+      summaryEl.classList.add("hidden");
+      resWrap.classList.add("hidden");
+      warnEl.classList.remove("hidden");
+      warnEl.innerHTML = "<strong>No usable rows in the pasted text.</strong> " + (parsed.warnings.length ? esc(parsed.warnings.join(" / ")) : "");
+      return;
+    }
+    var tol = tolEl && tolEl.value !== "" && isFinite(+tolEl.value) ? +tolEl.value : 0.5;
+    // Build dashboard byPart for the parts named in the paste. We match by
+    // part-number string against dicts.part.
+    var dashByPart = Object.create(null);
+    var rowDetails = Object.create(null); // { partKey: { periodKey: { spend, qty, rowCount } } }
+    var matchedParts = 0;
+    var unmatchedParts = [];
+    var gran = iaGranularity === "quarterly" ? "quarterly" : "yearly";
+    var baselineKey = idpIaEffectiveBaselineKey();
+    var partIxByKey = idpIaResolvePartIxsByNumberString(parsed.partOrder);
+    for (var i = 0; i < parsed.partOrder.length; i++) {
+      var key = parsed.partOrder[i];
+      var pIx = partIxByKey[key];
+      if (pIx == null) { unmatchedParts.push(key); continue; }
+      matchedParts++;
+      var rows = idpIaCollectPartRows(pIx);
+      var buckets = M.bucketRowsByPeriod(rows, gran);
+      var rebased = M.rebaseToBaseline(M.weightedUnitPriceByPeriod(buckets, iaWeightingMethod), baselineKey);
+      dashByPart[key] = rebased.ok ? rebased.indexed : {};
+      rowDetails[key] = buckets;
+    }
+    var diff = M.diffPartIndexes(dashByPart, parsed.byPart, tol);
+    // Render summary
+    var s = diff.summary;
+    summaryEl.classList.remove("hidden");
+    summaryEl.innerHTML =
+      _iaValStatTile("Compared", s.compared) +
+      _iaValStatTile("Match", s.matched, "color: #047857") +
+      _iaValStatTile("Fail (|Δ| > " + s.tolerance + ")", s.failed, s.failed > 0 ? "color: #b91c1c" : "") +
+      _iaValStatTile("Missing in dashboard", s.missingDashboard) +
+      _iaValStatTile("Missing in reference", s.missingReference);
+    // Warnings
+    var allWarn = parsed.warnings.slice();
+    if (unmatchedParts.length) allWarn.unshift(unmatchedParts.length + " part number(s) in the paste could not be matched to dashboard parts (case-insensitive, leading-zero-tolerant compare): " + unmatchedParts.slice(0, 6).join(", ") + (unmatchedParts.length > 6 ? "…" : ""));
+    if (allWarn.length) { warnEl.classList.remove("hidden"); warnEl.innerHTML = "<strong>Notes:</strong> " + esc(allWarn.join(" · ")); }
+    else { warnEl.classList.add("hidden"); }
+    // Render result rows
+    var html = "";
+    for (var j = 0; j < diff.rows.length; j++) {
+      var rr = diff.rows[j];
+      var dRow = rr.dashboard != null ? idpIaFmtIdx(rr.dashboard) : "—";
+      var eRow = rr.reference != null ? idpIaFmtIdx(rr.reference) : "—";
+      var dStr = rr.delta != null ? (rr.delta >= 0 ? "+" : "") + rr.delta.toFixed(2) : "—";
+      var pStr = rr.pctDelta != null ? (rr.pctDelta >= 0 ? "+" : "") + rr.pctDelta.toFixed(2) + "%" : "—";
+      var statusCls = "color: #64748b", statusLbl = rr.status;
+      if (rr.status === "match") { statusCls = "color: #047857"; statusLbl = "match"; }
+      else if (rr.status === "fail") { statusCls = "color: #b91c1c"; statusLbl = "FAIL"; }
+      var det = rowDetails[rr.partKey] && rowDetails[rr.partKey][rr.periodKey] ? rowDetails[rr.partKey][rr.periodKey] : null;
+      html += '<tr class="border-t border-[#F1F5F9]">' +
+        '<td class="px-2 py-1 font-mono">' + esc(rr.partKey) + '</td>' +
+        '<td class="px-2 py-1">' + esc(rr.periodKey.replace("-Q", " Q")) + '</td>' +
+        '<td class="px-2 py-1 text-right">' + dRow + '</td>' +
+        '<td class="px-2 py-1 text-right">' + eRow + '</td>' +
+        '<td class="px-2 py-1 text-right" style="' + statusCls + '">' + dStr + '</td>' +
+        '<td class="px-2 py-1 text-right" style="' + statusCls + '">' + pStr + '</td>' +
+        '<td class="px-2 py-1" style="' + statusCls + '">' + statusLbl + '</td>' +
+        '<td class="px-2 py-1 text-right">' + (det ? idpIaFmtMoney(det.spend) : "—") + '</td>' +
+        '<td class="px-2 py-1 text-right">' + (det ? idpIaFmtInt(det.qty) : "—") + '</td>' +
+        '<td class="px-2 py-1 text-right">' + (det ? idpIaFmtInt(det.rowCount) : "—") + '</td>' +
+      '</tr>';
+    }
+    resBody.innerHTML = html;
+    resWrap.classList.remove("hidden");
+  }
+
+  function _iaValStatTile(label, value, style) {
+    return '<div class="rounded border border-[#E6E6E6] bg-white p-2"><div class="text-[10px] uppercase tracking-wide idp-muted">' + esc(label) + '</div><div class="text-base font-semibold tabular-nums" style="' + (style || "color: #111827") + '">' + idpIaFmtInt(value) + '</div></div>';
+  }
+
+  /** Build a { canonicalKey → partIx } map so the validation panel can match
+   *  pasted part numbers to the dashboard's internal partIx ids. Matching is
+   *  case-insensitive and leading-zero-tolerant for all-numeric parts (uses
+   *  the same canonicalization as idpSingleSourcePartBucketKey). */
+  function idpIaResolvePartIxsByNumberString(keys) {
+    var out = Object.create(null);
+    if (!dicts || !dicts.part) return out;
+    var lookup = Object.create(null);
+    for (var i = 0; i < dicts.part.length; i++) {
+      var raw = dicts.part[i];
+      if (raw == null) continue;
+      var s = String(raw).trim();
+      if (!s) continue;
+      var canon = _iaCanon(s);
+      if (!(canon in lookup)) lookup[canon] = i;
+    }
+    for (var k = 0; k < keys.length; k++) {
+      var canon2 = _iaCanon(keys[k]);
+      if (canon2 in lookup) out[keys[k]] = lookup[canon2];
+    }
+    return out;
+  }
+  function _iaCanon(s) {
+    var t = String(s).trim().toLowerCase();
+    if (/^\d+$/.test(t)) { t = t.replace(/^0+/, ""); return t === "" ? "0" : t; }
+    return t;
+  }
+
+  /* ---------- Saved views ---------- */
+  var IA_SAVED_VIEWS_KEY = "idp_ia_saved_views_v1";
+  var IA_DEFAULT_VIEW_KEY = "idp_ia_default_view_v1";
+
+  function idpIaSavedViewsRead() {
+    try {
+      var raw = localStorage.getItem(IA_SAVED_VIEWS_KEY);
+      if (!raw) return [];
+      var parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch (e) { return []; }
+  }
+  function idpIaSavedViewsWrite(arr) {
+    try { localStorage.setItem(IA_SAVED_VIEWS_KEY, JSON.stringify(arr)); } catch (e) {}
+  }
+  function idpIaSavedViewsDefaultRead() {
+    try { return localStorage.getItem(IA_DEFAULT_VIEW_KEY) || null; } catch (e) { return null; }
+  }
+  function idpIaSavedViewsDefaultWrite(id) {
+    try { if (id == null) localStorage.removeItem(IA_DEFAULT_VIEW_KEY); else localStorage.setItem(IA_DEFAULT_VIEW_KEY, id); } catch (e) {}
+  }
+
+  /** Snapshot current IA state into a portable object. */
+  function idpIaCurrentStateSnapshot() {
+    var partKeys = [];
+    for (var i = 0; i < (indexAnalysisPartIxs || []).length; i++) {
+      var pIx = indexAnalysisPartIxs[i];
+      var raw = dicts.part && dicts.part[D.iPart ? D.iPart[0] : null] != null ? null : null;
+      var keyRaw = dicts.part && dicts.part[pIx] != null ? dicts.part[pIx] : null;
+      if (keyRaw == null) continue;
+      partKeys.push(String(keyRaw).trim());
+    }
+    return {
+      v: 1,
+      partKeys: partKeys,
+      indexCodes: (indexSelectedIndexCodes || []).slice(),
+      granularity: iaGranularity,
+      baseline: iaBaselineKey,
+      weighting: iaWeightingMethod,
+      aggregation: iaAggregationMethod,
+      window: { start: iaDisplayStartKey || null, end: iaDisplayEndKey || null }
+    };
+  }
+
+  /** Apply a previously-snapshotted state. Surfaces missing parts via the warn area. */
+  function idpIaApplySnapshot(snap) {
+    if (!snap || typeof snap !== "object") return;
+    var warnings = [];
+    iaGranularity = snap.granularity === "quarterly" ? "quarterly" : "yearly";
+    iaBaselineKey = snap.baseline === "2024-Q1" ? "2024-Q1" : "2024";
+    iaWeightingMethod = (snap.weighting === "spend" || snap.weighting === "simple") ? snap.weighting : "qty";
+    iaAggregationMethod = (snap.aggregation === "laspeyres" || snap.aggregation === "simple" || snap.aggregation === "pooled") ? snap.aggregation : "none";
+    iaDisplayStartKey = snap.window && snap.window.start ? snap.window.start : null;
+    iaDisplayEndKey = snap.window && snap.window.end ? snap.window.end : null;
+    // Sync pill buttons + selects to the snapshot values
+    idpIaPillSetActive("ia-granularity-group", "data-ia-granularity", iaGranularity);
+    idpIaPillSetActive("ia-baseline-group", "data-ia-baseline", iaBaselineKey);
+    idpIaPillSetActive("ia-weighting-group", "data-ia-weighting", iaWeightingMethod);
+    idpIaPillSetActive("ia-aggregation-group", "data-ia-aggregation", iaAggregationMethod);
+    idpIaPopulateWindowSelects();
+    var startSel = $("ia-window-start"); if (startSel) startSel.value = iaDisplayStartKey || "";
+    var endSel = $("ia-window-end"); if (endSel) endSel.value = iaDisplayEndKey || "";
+    // Resolve part keys → partIxs
+    if (Array.isArray(snap.partKeys) && indexAnalysisPartIxs) {
+      var resolved = idpIaResolvePartIxsByNumberString(snap.partKeys);
+      var newSel = [];
+      for (var i = 0; i < snap.partKeys.length; i++) {
+        var k = snap.partKeys[i];
+        if (k in resolved) newSel.push(resolved[k]);
+        else warnings.push("Part not in current data: " + k);
+      }
+      indexAnalysisPartIxs.length = 0;
+      Array.prototype.push.apply(indexAnalysisPartIxs, newSel.slice(0, IDP_IA_MAX_PART_LINES));
+      try { if (typeof idpIaRefreshPartCheckboxList === "function") idpIaRefreshPartCheckboxList(false); } catch (e) {}
+    }
+    if (Array.isArray(snap.indexCodes) && indexSelectedIndexCodes) {
+      indexSelectedIndexCodes.length = 0;
+      Array.prototype.push.apply(indexSelectedIndexCodes, snap.indexCodes.slice(0, IDP_IA_MAX_INDEX_LINES));
+      try {
+        var cbs = document.querySelectorAll('input[data-ia-index-code]');
+        for (var c = 0; c < cbs.length; c++) {
+          cbs[c].checked = indexSelectedIndexCodes.indexOf(cbs[c].getAttribute("data-ia-index-code")) >= 0;
+        }
+      } catch (e) {}
+    }
+    var warnEl = $("ia-saved-views-warn");
+    if (warnEl) {
+      if (warnings.length) { warnEl.classList.remove("hidden"); warnEl.textContent = "⚠ " + warnings.join(" · "); }
+      else { warnEl.classList.add("hidden"); warnEl.textContent = ""; }
+    }
+    idpIaUpdateActiveConfigNote();
+    try { renderIndexChart(); } catch (e) {}
+  }
+
+  function idpIaSavedViewsRefreshUi() {
+    var sel = $("ia-saved-views-select");
+    var status = $("ia-saved-views-status");
+    var views = idpIaSavedViewsRead();
+    var defId = idpIaSavedViewsDefaultRead();
+    if (sel) {
+      sel.innerHTML = '<option value="">— Load a saved view —</option>';
+      for (var i = 0; i < views.length; i++) {
+        var opt = document.createElement("option");
+        opt.value = views[i].id;
+        opt.textContent = views[i].name + (views[i].id === defId ? " ★ (default)" : "");
+        if (views[i].id === _iaSavedViewsActiveId) opt.selected = true;
+        sel.appendChild(opt);
+      }
+    }
+    if (status) {
+      status.textContent = views.length === 0 ? "No saved views yet." :
+        views.length + " saved view" + (views.length === 1 ? "" : "s") + (defId ? " · default set" : "");
+    }
+    var hasActive = !!_iaSavedViewsActiveId;
+    var btnIds = ["ia-saved-views-overwrite", "ia-saved-views-rename", "ia-saved-views-delete", "ia-saved-views-default"];
+    for (var b = 0; b < btnIds.length; b++) {
+      var el = $(btnIds[b]); if (el) el.disabled = !hasActive;
+    }
+  }
+
+  function idpIaSavedViewsWire() {
+    var sel = $("ia-saved-views-select");
+    var saveBtn = $("ia-saved-views-save");
+    var overBtn = $("ia-saved-views-overwrite");
+    var renBtn  = $("ia-saved-views-rename");
+    var delBtn  = $("ia-saved-views-delete");
+    var defBtn  = $("ia-saved-views-default");
+    var shareBtn= $("ia-saved-views-share");
+    var expBtn  = $("ia-saved-views-export");
+    var impBtn  = $("ia-saved-views-import");
+    var impInp  = $("ia-saved-views-import-file");
+    if (sel) sel.addEventListener("change", function () {
+      var id = this.value;
+      if (!id) { _iaSavedViewsActiveId = null; idpIaSavedViewsRefreshUi(); return; }
+      var views = idpIaSavedViewsRead();
+      var v = views.find(function (x) { return x.id === id; });
+      if (!v) return;
+      _iaSavedViewsActiveId = id;
+      idpIaApplySnapshot(v.state);
+      idpIaSavedViewsRefreshUi();
+    });
+    if (saveBtn) saveBtn.addEventListener("click", function () {
+      var name = window.prompt("Name for this view:", "View " + new Date().toLocaleString());
+      if (!name) return;
+      var views = idpIaSavedViewsRead();
+      var id = "v_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 6);
+      views.push({ id: id, name: name, state: idpIaCurrentStateSnapshot(), createdAt: new Date().toISOString() });
+      idpIaSavedViewsWrite(views);
+      _iaSavedViewsActiveId = id;
+      idpIaSavedViewsRefreshUi();
+    });
+    if (overBtn) overBtn.addEventListener("click", function () {
+      if (!_iaSavedViewsActiveId) return;
+      var views = idpIaSavedViewsRead();
+      var i = views.findIndex(function (x) { return x.id === _iaSavedViewsActiveId; });
+      if (i < 0) return;
+      views[i].state = idpIaCurrentStateSnapshot();
+      views[i].updatedAt = new Date().toISOString();
+      idpIaSavedViewsWrite(views);
+      idpIaSavedViewsRefreshUi();
+    });
+    if (renBtn) renBtn.addEventListener("click", function () {
+      if (!_iaSavedViewsActiveId) return;
+      var views = idpIaSavedViewsRead();
+      var i = views.findIndex(function (x) { return x.id === _iaSavedViewsActiveId; });
+      if (i < 0) return;
+      var name = window.prompt("New name:", views[i].name);
+      if (!name) return;
+      views[i].name = name;
+      idpIaSavedViewsWrite(views);
+      idpIaSavedViewsRefreshUi();
+    });
+    if (delBtn) delBtn.addEventListener("click", function () {
+      if (!_iaSavedViewsActiveId) return;
+      if (!window.confirm("Delete this saved view?")) return;
+      var views = idpIaSavedViewsRead().filter(function (x) { return x.id !== _iaSavedViewsActiveId; });
+      idpIaSavedViewsWrite(views);
+      if (idpIaSavedViewsDefaultRead() === _iaSavedViewsActiveId) idpIaSavedViewsDefaultWrite(null);
+      _iaSavedViewsActiveId = null;
+      idpIaSavedViewsRefreshUi();
+    });
+    if (defBtn) defBtn.addEventListener("click", function () {
+      if (!_iaSavedViewsActiveId) return;
+      var cur = idpIaSavedViewsDefaultRead();
+      if (cur === _iaSavedViewsActiveId) { idpIaSavedViewsDefaultWrite(null); }
+      else { idpIaSavedViewsDefaultWrite(_iaSavedViewsActiveId); }
+      idpIaSavedViewsRefreshUi();
+    });
+    if (shareBtn) shareBtn.addEventListener("click", function () {
+      var snap = idpIaCurrentStateSnapshot();
+      var encoded;
+      try {
+        encoded = btoa(unescape(encodeURIComponent(JSON.stringify(snap))));
+      } catch (e) { window.alert("Couldn't encode share link."); return; }
+      var url = window.location.origin + window.location.pathname + "?iaView=" + encoded;
+      try {
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(url).then(function () { window.alert("Share link copied to clipboard."); });
+        } else {
+          window.prompt("Copy this share link:", url);
+        }
+      } catch (e2) { window.prompt("Copy this share link:", url); }
+    });
+    if (expBtn) expBtn.addEventListener("click", function () {
+      var views = idpIaSavedViewsRead();
+      var defId = idpIaSavedViewsDefaultRead();
+      var payload = { v: 1, exportedAt: new Date().toISOString(), defaultViewId: defId, views: views };
+      var bl = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+      var url = URL.createObjectURL(bl);
+      var a = document.createElement("a");
+      a.href = url; a.download = "idp-ia-saved-views-" + new Date().toISOString().slice(0, 10) + ".json";
+      a.click();
+      setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+    });
+    if (impBtn && impInp) {
+      impBtn.addEventListener("click", function () { impInp.click(); });
+      impInp.addEventListener("change", function (ev) {
+        var f = ev.target.files && ev.target.files[0]; if (!f) return;
+        var rd = new FileReader();
+        rd.onload = function () {
+          try {
+            var obj = JSON.parse(rd.result);
+            if (!obj || !Array.isArray(obj.views)) throw new Error("Invalid file shape.");
+            var existing = idpIaSavedViewsRead();
+            var byId = {}; existing.forEach(function (v) { byId[v.id] = true; });
+            for (var i = 0; i < obj.views.length; i++) {
+              var v = obj.views[i];
+              if (!v || !v.id || !v.state || byId[v.id]) continue;
+              existing.push(v);
+            }
+            idpIaSavedViewsWrite(existing);
+            if (obj.defaultViewId && !idpIaSavedViewsDefaultRead()) idpIaSavedViewsDefaultWrite(obj.defaultViewId);
+            idpIaSavedViewsRefreshUi();
+            window.alert("Imported " + obj.views.length + " view(s).");
+          } catch (e) { window.alert("Import failed: " + e.message); }
+          impInp.value = "";
+        };
+        rd.readAsText(f);
+      });
+    }
+  }
+
+  /** Mark the active saved view as "dirty" (unsaved changes) by clearing the
+   *  highlighted option whenever the snapshot drifts. Cheap diff via JSON. */
+  function idpIaSavedViewsUpdateActiveIdFromState() {
+    if (!_iaSavedViewsActiveId) return;
+    var views = idpIaSavedViewsRead();
+    var v = views.find(function (x) { return x.id === _iaSavedViewsActiveId; });
+    if (!v) { _iaSavedViewsActiveId = null; idpIaSavedViewsRefreshUi(); return; }
+    var nowSnap = JSON.stringify(idpIaCurrentStateSnapshot());
+    var savedSnap = JSON.stringify(v.state);
+    if (nowSnap === savedSnap) return;
+    // State has drifted from the loaded view — keep the active id but the
+    // dropdown UI hides the indicator on next refresh.
+  }
+
+  /** Auto-apply iaView=<base64> URL param or the saved default on first IA-tab open. */
+  function idpIaApplyInitialSavedViewOnce() {
+    if (idpIaApplyInitialSavedViewOnce._done) return;
+    idpIaApplyInitialSavedViewOnce._done = true;
+    try {
+      var params = new URLSearchParams(window.location.search);
+      var enc = params.get("iaView");
+      if (enc) {
+        var snap = JSON.parse(decodeURIComponent(escape(atob(enc))));
+        idpIaApplySnapshot(snap);
+        return;
+      }
+    } catch (e) {}
+    var defId = idpIaSavedViewsDefaultRead();
+    if (!defId) return;
+    var views = idpIaSavedViewsRead();
+    var v = views.find(function (x) { return x.id === defId; });
+    if (v) {
+      _iaSavedViewsActiveId = defId;
+      idpIaApplySnapshot(v.state);
     }
   }
 
@@ -12313,6 +14354,8 @@
           idpIaWireDisplayControlsOnce();
           idpIaPopulateWindowSelects();
           idpIaUpdateActiveConfigNote();
+          idpIaSavedViewsRefreshUi();
+          idpIaApplyInitialSavedViewOnce();
         } catch (eWire) {
           if (typeof console !== "undefined" && console.error) console.error("[index-analysis] wire", eWire);
         }
