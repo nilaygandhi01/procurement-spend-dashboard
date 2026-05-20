@@ -1806,6 +1806,19 @@
     <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
     <script src="harmonization-client.js"></script>
+    <!--
+      Index Analysis math module shim. Module scripts are deferred, so the
+      inline globals-based code below boots first; the IA tab is opened by
+      user navigation well after this resolves. The chart code guards on
+      window.IDP_INDEX_MATH and listens for the idp-index-math-ready event
+      so a render call that arrived early gets retried once the module is in.
+      The same .mjs file is imported directly by scripts/tests/index-math.test.mjs.
+    -->
+    <script type="module">
+      import * as IDP_INDEX_MATH from "./index-math.mjs";
+      window.IDP_INDEX_MATH = IDP_INDEX_MATH;
+      try { window.dispatchEvent(new Event("idp-index-math-ready")); } catch (e) {}
+    </script>
     <script>
       /* ============================================
       SECTION: GLOBAL ERROR HANDLING (early)
@@ -3080,13 +3093,13 @@
         <div class="mb-3 border-b border-[#E6E6E6] pb-2">
           <h2 class="m-0 text-base font-semibold" style="color: #333">Index Analysis</h2>
           <p class="mt-0.5 text-xs leading-snug idp-muted">
-            Plot weighted-average unit price of selected parts (rebased to 2024 = 100) against built-in PPI indexes.
+            Plot weighted-average unit price of selected parts against built-in PPI indexes. Baseline and granularity are configurable below — see <a href="../../INDEX_METHODOLOGY.md" class="underline">INDEX_METHODOLOGY.md</a> for the math.
           </p>
         </div>
         <div id="index-content-area" class="flex flex-col gap-4">
           <div class="idp-panel" id="ia2-indexes-panel">
             <p class="mb-2 text-xs font-semibold uppercase tracking-wide idp-muted">Indexes</p>
-            <p class="mb-3 text-xs leading-snug idp-muted">Built-in PPI series (yearly, rebased to 2024 calendar-year average = 100).</p>
+            <p class="mb-3 text-xs leading-snug idp-muted">Built-in PPI series. PPI raw data is yearly only; in Quarterly view each year's value is flat-stepped across its 4 quarters.</p>
             <p class="mb-1.5 text-xs font-medium tabular-nums" style="color: #334155">
               Selected for chart: <span id="ia-index-count">0</span>
               <span class="ml-1 font-normal idp-muted">(max 2 PPI indexes)</span>
@@ -3105,7 +3118,7 @@
           <div class="idp-panel" id="ia-parts-panel">
             <p class="mb-2 text-xs font-semibold uppercase tracking-wide idp-muted">Parts</p>
             <p class="mb-3 text-xs leading-snug idp-muted">
-              Top-spending parts in the current Spend Review slice (up to 12,000 by filtered spend). Chart uses yearly weighted-average unit price.
+              Top-spending parts in the current Spend Review facet slice (up to 12,000 by filtered spend). Chart uses volume-weighted unit price (Σspend ÷ Σqty). Each selected part is rendered as its own line — no basket aggregation.
             </p>
             <div class="mb-2 flex flex-wrap items-center gap-2">
               <label class="sr-only" for="ia-part-filter-input">Filter part list</label>
@@ -3145,11 +3158,60 @@
             </p>
             <p id="ia-part-checkbox-empty" class="hidden text-sm idp-muted">No parts in the current filtered slice. Adjust Spend Review filters or search.</p>
           </div>
+          <div class="idp-panel" id="ia-display-controls-panel">
+            <p class="mb-2 text-xs font-semibold uppercase tracking-wide idp-muted">Chart controls</p>
+            <div class="grid grid-cols-1 gap-4 md:grid-cols-3">
+              <div>
+                <p class="mb-1 text-xs font-medium" style="color: #334155">Granularity</p>
+                <div role="radiogroup" aria-label="Chart granularity" class="inline-flex overflow-hidden rounded-md border border-[#E6E6E6]">
+                  <label class="cursor-pointer">
+                    <input type="radio" name="ia-granularity" value="yearly" id="ia-gran-yearly" class="peer sr-only" checked />
+                    <span class="block px-3 py-1.5 text-xs font-medium peer-checked:bg-[#1F3A8A] peer-checked:text-white" style="color: #334155">Yearly</span>
+                  </label>
+                  <label class="cursor-pointer border-l border-[#E6E6E6]">
+                    <input type="radio" name="ia-granularity" value="quarterly" id="ia-gran-quarterly" class="peer sr-only" />
+                    <span class="block px-3 py-1.5 text-xs font-medium peer-checked:bg-[#1F3A8A] peer-checked:text-white" style="color: #334155">Quarterly</span>
+                  </label>
+                </div>
+              </div>
+              <div>
+                <p class="mb-1 text-xs font-medium" style="color: #334155">Baseline</p>
+                <div role="radiogroup" aria-label="Baseline period" class="inline-flex flex-wrap overflow-hidden rounded-md border border-[#E6E6E6]">
+                  <label class="cursor-pointer">
+                    <input type="radio" name="ia-baseline" value="2024" id="ia-baseline-fy2024" class="peer sr-only" checked />
+                    <span class="block px-3 py-1.5 text-xs font-medium peer-checked:bg-[#1F3A8A] peer-checked:text-white" style="color: #334155">FY 2024 = 100</span>
+                  </label>
+                  <label class="cursor-pointer border-l border-[#E6E6E6]">
+                    <input type="radio" name="ia-baseline" value="2024-Q1" id="ia-baseline-q12024" class="peer sr-only" />
+                    <span class="block px-3 py-1.5 text-xs font-medium peer-checked:bg-[#1F3A8A] peer-checked:text-white" style="color: #334155">Q1 2024 = 100</span>
+                  </label>
+                </div>
+                <p class="mt-1 text-[11px] idp-muted" id="ia-baseline-hint">Q1 2024 baseline only applies to part lines in Quarterly mode; PPI indexes always use their FY 2024 baseline (no quarterly PPI data).</p>
+              </div>
+              <div>
+                <p class="mb-1 text-xs font-medium" style="color: #334155">Display window</p>
+                <div class="flex flex-wrap items-center gap-1.5">
+                  <label class="sr-only" for="ia-window-start">Start period</label>
+                  <select id="ia-window-start" class="rounded-md border border-[#E6E6E6] px-2 py-1.5 text-xs" style="color: #334155">
+                    <option value="">All (from start)</option>
+                  </select>
+                  <span class="text-xs idp-muted">→</span>
+                  <label class="sr-only" for="ia-window-end">End period</label>
+                  <select id="ia-window-end" class="rounded-md border border-[#E6E6E6] px-2 py-1.5 text-xs" style="color: #334155">
+                    <option value="">All (to end)</option>
+                  </select>
+                  <button type="button" id="ia-window-reset" class="idp-btn-secondary shrink-0 px-2 py-1 text-xs">Reset</button>
+                </div>
+                <p class="mt-1 text-[11px] idp-muted">Narrowing this window never changes the baseline — only what's drawn.</p>
+              </div>
+            </div>
+            <p id="ia-active-config-note" class="mt-3 text-[11px] idp-muted" aria-live="polite"></p>
+          </div>
           <div class="idp-panel idp-index-chart-panel w-full max-w-full min-w-0 mb-0">
             <p class="mb-2 text-xs font-semibold uppercase tracking-wide idp-muted">Chart</p>
             <div id="index-chart-container" class="relative flex min-h-[500px] w-full max-w-full flex-col rounded-lg border border-[#E6E6E6] bg-white p-3 shadow-sm">
               <p id="index-chart-empty" class="pointer-events-none absolute inset-0 z-0 flex items-center justify-center px-4 text-center text-sm idp-muted">
-                Select parts and/or indexes above to compare (2024 = 100 baseline).
+                Select parts and/or indexes above to compare.
               </p>
               <div id="index-chart-canvas-wrap" class="relative z-[1] w-full min-h-[440px] flex-1">
                 <canvas id="index-chart-canvas" class="chart-hidden block max-w-full"></canvas>
@@ -11761,11 +11823,197 @@
 
   function renderSelectedIndexesList() {}
 
+  /* ============================================
+  SECTION: IA chart — granularity + baseline + display window
+  Pure-math is in src/dashboard/index-math.mjs, exposed on window.IDP_INDEX_MATH.
+  Defaults preserve the legacy behavior (Yearly, FY 2024 = 100, no window filter)
+  so the first-load chart is visually identical to pre-refactor.
+
+  Critical invariant (req #3): the baseline is computed from the UNFILTERED row
+  stream for each part (facet filters from the global Spend Review apply; the
+  global time-window filter and the local IA display window do NOT). The
+  display window only controls what x-axis points get rendered.
+  ============================================ */
+  var iaGranularity = "yearly";
+  var iaBaselineKey = "2024";
+  var iaDisplayStartKey = null;
+  var iaDisplayEndKey = null;
+  var _iaControlsWired = false;
+
+  function idpIaMath() { return typeof window !== "undefined" ? window.IDP_INDEX_MATH : null; }
+
+  /** Pull every row that matches the part + facet filters (BU, c1–c4, supplier, RAP, etc.)
+   *  but IGNORE the global time-window filter (fState.r0/r1). Returns rows shaped for the
+   *  math module: { year, month, spend, qty }. Month is 1-indexed (Jan = 1) for module clarity;
+   *  the dashboard's internal getMonthFromKey returns 0-indexed, so we add 1 on the way out. */
+  function idpIaCollectPartRows(partIx) {
+    var rows = [], idx, i, ix, ym, y, m0, qty, sp, up;
+    if (!D || !D.iPart) return rows;
+    idx = getFiltered();
+    for (i = 0; i < idx.length; i++) {
+      ix = idx[i];
+      if (D.iPart[ix] !== partIx) continue;
+      if (!idpPeRowOk(ix, partIx)) continue;
+      ym = dicts.ym[D.iYm[ix]];
+      y = getYear(ym || "");
+      if (y < 1990 || y > 2100) continue;
+      m0 = getMonthFromKey(ym || "");
+      qty = idpPeRowQty(ix);
+      sp = +(D.spend[ix] != null ? D.spend[ix] : 0);
+      if (!isFinite(sp) || sp <= 0) {
+        up = idpPeRowUnitPrice(ix);
+        if (!isFinite(up) || up <= 0) continue;
+        sp = qty * up;
+      }
+      rows.push({ year: y, month: (m0 || 0) + 1, spend: sp, qty: qty });
+    }
+    return rows;
+  }
+
+  /** Full pipeline for one part: rows → bucket → weighted-avg → rebase to baselineKey.
+   *  Returns { ok, indexed: {periodKey: value}, baselineRaw, baselineKey }. */
+  function idpIaPartIndexedByPeriod(partIx, granularity, baselineKey) {
+    var M = idpIaMath();
+    if (!M) return { ok: false, indexed: {}, baselineRaw: NaN, baselineKey: baselineKey };
+    return M.computePartIndex(idpIaCollectPartRows(partIx), granularity, baselineKey);
+  }
+
+  /** PPI series rebased + expanded to the active granularity. PPI raw data is yearly only,
+   *  so even when the user picks Q1 2024 baseline for parts, PPI lines rebase to yearly 2024.
+   *  In Quarterly mode the yearly value is flat-stepped across the year's 4 quarters. */
+  function idpIaIndexIndexedByPeriod(code, granularity) {
+    var rec = idpExcelIndexCatalog[code], M = idpIaMath(), indexed;
+    if (!rec || !rec.baselineOk || !rec.indexedByYear) return { ok: false, indexed: {} };
+    indexed = rec.indexedByYear;
+    if (granularity === "quarterly" && M && M.expandYearlyToQuarterly) {
+      indexed = M.expandYearlyToQuarterly(indexed);
+    }
+    return { ok: true, indexed: indexed };
+  }
+
+  /** Pull every (year, quarter) actually represented in the data for the dropdowns.
+   *  Falls back to a static 2024..thisYear range if the data isn't loaded yet. */
+  function idpIaCollectAvailablePeriods(granularity) {
+    var keys = Object.create(null), out = [], i, ym, y, m0, q, M;
+    if (sortedYms && sortedYms.length) {
+      for (i = 0; i < sortedYms.length; i++) {
+        ym = sortedYms[i];
+        y = getYear(ym);
+        if (!y || y < IDP_IA_MIN_CHART_YEAR) continue;
+        if (granularity === "quarterly") {
+          m0 = getMonthFromKey(ym);
+          q = quarterFromM0(m0);
+          keys[y + "-Q" + q] = true;
+        } else {
+          keys[String(y)] = true;
+        }
+      }
+    }
+    for (var k in keys) if (Object.prototype.hasOwnProperty.call(keys, k)) out.push(k);
+    M = idpIaMath();
+    if (M && M.comparePeriodKeys) out.sort(M.comparePeriodKeys);
+    else out.sort();
+    return out;
+  }
+
+  function idpIaPopulateWindowSelects() {
+    var startSel = $("ia-window-start"), endSel = $("ia-window-end"), periods, i, opt;
+    if (!startSel || !endSel) return;
+    periods = idpIaCollectAvailablePeriods(iaGranularity);
+    startSel.innerHTML = "";
+    endSel.innerHTML = "";
+    opt = document.createElement("option"); opt.value = ""; opt.textContent = "All (from start)"; startSel.appendChild(opt);
+    opt = document.createElement("option"); opt.value = ""; opt.textContent = "All (to end)"; endSel.appendChild(opt);
+    for (i = 0; i < periods.length; i++) {
+      opt = document.createElement("option"); opt.value = periods[i]; opt.textContent = periods[i]; startSel.appendChild(opt);
+      opt = document.createElement("option"); opt.value = periods[i]; opt.textContent = periods[i]; endSel.appendChild(opt);
+    }
+    // Drop any previously-selected key that no longer matches the active granularity
+    if (iaDisplayStartKey && periods.indexOf(iaDisplayStartKey) < 0) iaDisplayStartKey = null;
+    if (iaDisplayEndKey && periods.indexOf(iaDisplayEndKey) < 0) iaDisplayEndKey = null;
+    startSel.value = iaDisplayStartKey || "";
+    endSel.value = iaDisplayEndKey || "";
+  }
+
+  function idpIaUpdateActiveConfigNote() {
+    var el = $("ia-active-config-note"), parts = [], baselineLabel;
+    if (!el) return;
+    baselineLabel = iaBaselineKey === "2024-Q1" ? "Q1 2024 = 100" : "FY 2024 = 100";
+    parts.push("Active: " + (iaGranularity === "quarterly" ? "Quarterly" : "Yearly") + " · " + baselineLabel);
+    if (iaDisplayStartKey || iaDisplayEndKey) {
+      parts.push("Window: " + (iaDisplayStartKey || "start") + " → " + (iaDisplayEndKey || "end") + " (baseline still computed from full data).");
+    }
+    el.textContent = parts.join(" — ");
+  }
+
+  /** If Q1 2024 baseline is selected but granularity is Yearly, the only sensible
+   *  resolution is to fall back to FY 2024 (you can't index against a quarter when
+   *  the chart axis is years). We don't silently flip the radio — we just use FY for
+   *  the math and surface that in the active-config note. */
+  function idpIaEffectiveBaselineKey() {
+    if (iaGranularity === "yearly") return "2024";
+    return iaBaselineKey || "2024";
+  }
+
+  function idpIaWireDisplayControlsOnce() {
+    var radiosG, radiosB, startSel, endSel, resetBtn, i;
+    if (_iaControlsWired) return;
+    _iaControlsWired = true;
+    radiosG = document.querySelectorAll('input[name="ia-granularity"]');
+    radiosB = document.querySelectorAll('input[name="ia-baseline"]');
+    startSel = $("ia-window-start");
+    endSel = $("ia-window-end");
+    resetBtn = $("ia-window-reset");
+    for (i = 0; i < radiosG.length; i++) {
+      radiosG[i].addEventListener("change", function () {
+        if (!this.checked) return;
+        iaGranularity = this.value === "quarterly" ? "quarterly" : "yearly";
+        idpIaPopulateWindowSelects();
+        idpIaUpdateActiveConfigNote();
+        try { renderIndexChart(); } catch (e) {}
+      });
+    }
+    for (i = 0; i < radiosB.length; i++) {
+      radiosB[i].addEventListener("change", function () {
+        if (!this.checked) return;
+        iaBaselineKey = this.value === "2024-Q1" ? "2024-Q1" : "2024";
+        idpIaUpdateActiveConfigNote();
+        try { renderIndexChart(); } catch (e) {}
+      });
+    }
+    if (startSel) startSel.addEventListener("change", function () {
+      iaDisplayStartKey = this.value || null;
+      idpIaUpdateActiveConfigNote();
+      try { renderIndexChart(); } catch (e) {}
+    });
+    if (endSel) endSel.addEventListener("change", function () {
+      iaDisplayEndKey = this.value || null;
+      idpIaUpdateActiveConfigNote();
+      try { renderIndexChart(); } catch (e) {}
+    });
+    if (resetBtn) resetBtn.addEventListener("click", function (e) {
+      e.preventDefault();
+      iaDisplayStartKey = null;
+      iaDisplayEndKey = null;
+      if (startSel) startSel.value = "";
+      if (endSel) endSel.value = "";
+      idpIaUpdateActiveConfigNote();
+      try { renderIndexChart(); } catch (e2) {}
+    });
+    // Re-render once the math module finishes loading (handles tab-opened-very-early case)
+    try {
+      window.addEventListener("idp-index-math-ready", function () {
+        try { renderIndexChart(); } catch (e) {}
+      });
+    } catch (e) {}
+  }
+
   function renderIndexChart() {
     var dashTpl = IDP_INDEX_LINE_DASH,
       datasets,
       chartLabels,
-      periodKeys,
+      allPeriods,
+      visiblePeriods,
       emptyEl,
       cnv,
       k,
@@ -11781,11 +12029,8 @@
       plabel,
       chartNeeded,
       idxCount,
-      rec,
+      indexedMap,
       code,
-      yb,
-      yMin,
-      yMax,
       pk,
       yi,
       dataArr,
@@ -11793,31 +12038,44 @@
       idxColorIdx,
       partColIdx,
       cv,
-      dupIx,
+      dupLabel,
       yLo,
       yHi,
       pad,
       dsI,
       di,
-      val;
+      val,
+      gran,
+      effectiveBaseline,
+      baselineLabel,
+      M;
     try {
       if (typeof currentAppView !== "undefined" && currentAppView !== "index-analysis") return;
       readFiltersFromForm();
-      yb = idpSpendFilterYearMinMax();
-      yMin = yb && isFinite(yb.yMin) ? yb.yMin : 1990;
-      yMax = yb && isFinite(yb.yMax) ? yb.yMax : 2100;
-      if (yMin > yMax) {
-        dupIx = yMin;
-        yMin = yMax;
-        yMax = dupIx;
+      M = idpIaMath();
+      // Defensive: if module hasn't loaded yet (very early tab open), show a
+      // friendly empty state. The "idp-index-math-ready" listener wired in
+      // idpIaWireDisplayControlsOnce will retry once the module arrives.
+      if (!M) {
+        emptyEl = $("index-chart-empty");
+        cnv = $("index-chart-canvas");
+        if (emptyEl) { emptyEl.classList.remove("hidden"); emptyEl.textContent = "Loading chart math…"; }
+        if (cnv) cnv.classList.add("chart-hidden");
+        return;
       }
-      periodKeys = [];
-      for (dupIx = yMin; dupIx <= yMax; dupIx++) periodKeys.push(String(dupIx));
-      periodKeys = periodKeys.filter(function (pk0) {
-        return +pk0 >= IDP_IA_MIN_CHART_YEAR;
+      gran = iaGranularity === "quarterly" ? "quarterly" : "yearly";
+      effectiveBaseline = idpIaEffectiveBaselineKey();
+      baselineLabel = (effectiveBaseline === "2024-Q1") ? "Q1 2024 = 100" : "FY 2024 = 100";
+      // Build the candidate x-axis from what's actually in the dataset (so
+      // empty 2025 stays in if data exists but no part picked, etc.) and then
+      // narrow it to the user's display window (inclusive on both ends).
+      allPeriods = idpIaCollectAvailablePeriods(gran);
+      visiblePeriods = allPeriods.filter(function (p) {
+        return M.isInDisplayWindow(p, iaDisplayStartKey, iaDisplayEndKey);
       });
-      chartLabels = periodKeys.map(function (x) {
-        return String(x);
+      chartLabels = visiblePeriods.map(function (p) {
+        // Yearly stays "2024"; quarterly "2024-Q1" displays as "2024 Q1"
+        return p.indexOf("-Q") > 0 ? p.replace("-Q", " Q") : p;
       });
       idpIaSyncPartSelectionOrder();
       emptyEl = $("index-chart-empty");
@@ -11829,34 +12087,32 @@
         destroyIndexChart();
         if (emptyEl) {
           emptyEl.classList.remove("hidden");
-          emptyEl.textContent = "Select parts and/or indexes above to compare (2024 = 100 baseline).";
+          emptyEl.textContent = "Select parts and/or indexes above to compare (" + baselineLabel + " baseline).";
         }
         cnv.classList.add("chart-hidden");
         return;
       }
+      // Probe whether any series has data — note we check the FULL period set,
+      // not just the visible window, because a series with all values inside
+      // the baseline year would otherwise look "empty" if the user narrowed
+      // the window to e.g. only 2026.
       anySeries = false;
       codes = indexSelectedIndexCodes ? indexSelectedIndexCodes.slice() : [];
       for (k = 0; k < codes.length; k++) {
-        code = codes[k];
-        rec = idpExcelIndexCatalog[code];
-        if (!rec || !rec.baselineOk || !rec.indexedByYear || !Object.keys(rec.indexedByYear).length) continue;
-        anySeries = true;
-        break;
+        cv = idpIaIndexIndexedByPeriod(codes[k], gran);
+        if (cv.ok && Object.keys(cv.indexed).length) { anySeries = true; break; }
       }
-      for (j = 0; j < (indexAnalysisPartIxs || []).length; j++) {
-        partIx = indexAnalysisPartIxs[j];
-        pr = idpIaPartRebaseForChart(partIx);
-        if (!pr.ok || !pr.indexed || !Object.keys(pr.indexed).length) continue;
-        anySeries = true;
-        break;
+      for (j = 0; !anySeries && j < (indexAnalysisPartIxs || []).length; j++) {
+        pr = idpIaPartIndexedByPeriod(indexAnalysisPartIxs[j], gran, effectiveBaseline);
+        if (pr.ok && Object.keys(pr.indexed).length) { anySeries = true; break; }
       }
       baselineMsg =
-        "At least one series needs a valid 2024 baseline in-range (indexes have built-in 2024; parts need 2024 spend in the selected period).";
-      if (!periodKeys.length || !anySeries) {
+        "At least one series needs a valid " + baselineLabel + " baseline. Parts need data in the baseline period; PPI indexes ship with FY 2024 built in.";
+      if (!visiblePeriods.length || !anySeries) {
         destroyIndexChart();
         if (emptyEl) {
           emptyEl.classList.remove("hidden");
-          emptyEl.textContent = baselineMsg;
+          emptyEl.textContent = visiblePeriods.length ? baselineMsg : "No data in the selected display window. Reset or widen the window.";
         }
         cnv.classList.add("chart-hidden");
         return;
@@ -11865,17 +12121,18 @@
       cnv.classList.remove("chart-hidden");
       datasets = [];
       partColIdx = 0;
+      // Part series — each part is its own line (per spec, no basket aggregation).
       for (j = 0; j < Math.min(IDP_IA_MAX_PART_LINES, (indexAnalysisPartIxs || []).length); j++) {
         partIx = indexAnalysisPartIxs[j];
-        pr = idpIaPartRebaseForChart(partIx);
+        pr = idpIaPartIndexedByPeriod(partIx, gran, effectiveBaseline);
         if (!pr.ok) continue;
-        cv = pr.indexed;
-        if (!cv || !Object.keys(cv).length) continue;
+        indexedMap = pr.indexed;
+        if (!indexedMap || !Object.keys(indexedMap).length) continue;
         dataArr = [];
-        for (yi = 0; yi < periodKeys.length; yi++) {
-          pk = periodKeys[yi];
-          if (cv[+pk] != null && isFinite(cv[+pk])) dataArr.push(cv[+pk]);
-          else dataArr.push(null);
+        for (yi = 0; yi < visiblePeriods.length; yi++) {
+          pk = visiblePeriods[yi];
+          val = indexedMap[pk];
+          dataArr.push(val != null && isFinite(val) ? val : null);
         }
         borderCol = IDP_IA_PART_COLORS[partColIdx % IDP_IA_PART_COLORS.length];
         partColIdx++;
@@ -11898,24 +12155,27 @@
           _idpIndexLabel: plabel
         });
       }
+      // PPI series — yearly only at source; in Quarterly mode we flat-step
+      // across the year's 4 quarters (annotated in legend & methodology doc).
       idxColorIdx = 0;
       for (k = 0; k < Math.min(IDP_IA_MAX_INDEX_LINES, codes.length); k++) {
         code = codes[k];
-        rec = idpExcelIndexCatalog[code];
-        if (!rec || !rec.baselineOk) continue;
-        cv = rec.indexedByYear || {};
-        if (!cv || !Object.keys(cv).length) continue;
+        cv = idpIaIndexIndexedByPeriod(code, gran);
+        if (!cv.ok) continue;
+        indexedMap = cv.indexed;
+        if (!indexedMap || !Object.keys(indexedMap).length) continue;
         dataArr = [];
-        for (yi = 0; yi < periodKeys.length; yi++) {
-          pk = periodKeys[yi];
-          if (cv[+pk] != null && isFinite(cv[+pk])) dataArr.push(cv[+pk]);
-          else dataArr.push(null);
+        for (yi = 0; yi < visiblePeriods.length; yi++) {
+          pk = visiblePeriods[yi];
+          val = indexedMap[pk];
+          dataArr.push(val != null && isFinite(val) ? val : null);
         }
         borderCol = IDP_IA_INDEX_COLORS[idxColorIdx % IDP_IA_INDEX_COLORS.length];
         idxColorIdx++;
-        dupIx = (rec.displayName || code) + " (" + code + ")";
+        dupLabel = ((idpExcelIndexCatalog[code] && idpExcelIndexCatalog[code].displayName) || code) +
+                   " (" + code + (gran === "quarterly" ? ", yearly→Q step" : "") + ")";
         datasets.push({
-          label: dupIx,
+          label: dupLabel,
           data: dataArr,
           borderColor: borderCol,
           backgroundColor: "transparent",
@@ -11925,11 +12185,13 @@
           pointHoverRadius: 5,
           borderWidth: 2.25,
           borderDash: [],
+          // Flat steps look more honest than spline curves for replicated yearly values
+          stepped: gran === "quarterly" ? "before" : false,
           fill: false,
           tension: 0,
           spanGaps: false,
           _idpIndexCode: code,
-          _idpIndexLabel: dupIx
+          _idpIndexLabel: dupLabel
         });
       }
       if (datasets.length < 1) {
@@ -11944,7 +12206,9 @@
       destroyIndexChart();
       chartCv = cnv.getContext && cnv.getContext("2d");
       if (!chartCv || typeof Chart === "undefined") return;
-      title = "Price index comparison (2024 = 100) — Yearly · " + yMin + (yMin !== yMax ? "–" + yMax : "");
+      title = "Price index comparison (" + baselineLabel + ") — " + (gran === "quarterly" ? "Quarterly · " : "Yearly · ") +
+              (visiblePeriods[0] ? visiblePeriods[0].replace("-Q", " Q") : "") +
+              (visiblePeriods.length > 1 ? "–" + visiblePeriods[visiblePeriods.length - 1].replace("-Q", " Q") : "");
       yLo = Infinity;
       yHi = -Infinity;
       for (dsI = 0; dsI < datasets.length; dsI++) {
@@ -11964,7 +12228,7 @@
         pad = 5;
       }
       yScale = Object.assign({}, chartScalesD().y, {
-        title: { display: true, text: "Index (2024 = 100)", color: "#8A8A8A", font: { size: CHART_FS_TITLE, weight: "500" } },
+        title: { display: true, text: "Index (" + baselineLabel + ")", color: "#8A8A8A", font: { size: CHART_FS_TITLE, weight: "500" } },
         suggestedMin: yLo - pad,
         suggestedMax: yHi + pad
       });
@@ -11982,6 +12246,15 @@
             datalabels: { display: false },
             legend: { position: "bottom", align: "center", labels: chartLegendD() },
             title: { display: true, text: title, color: "#333", font: { size: CHART_FS_TITLE, weight: "600" } },
+            subtitle: {
+              display: true,
+              text: gran === "quarterly"
+                ? "Per-part lines (no basket aggregation). PPI series are yearly data flat-stepped across each year's 4 quarters."
+                : "Per-part lines (no basket aggregation). Σspend ÷ Σqty weighted unit price.",
+              color: "#8A8A8A",
+              font: { size: 11, weight: "500" },
+              padding: { bottom: 4 }
+            },
             tooltip: Object.assign({}, chartTt(), {
               callbacks: {
                 title: function (items) {
@@ -12014,7 +12287,7 @@
         cnv = $("index-chart-canvas");
         if (emptyEl) {
           emptyEl.classList.remove("hidden");
-          emptyEl.textContent = "Select parts and/or indexes above to compare (2024 = 100 baseline).";
+          emptyEl.textContent = "Select parts and/or indexes above to compare.";
         }
         if (cnv) cnv.classList.add("chart-hidden");
       } catch (eF) {}
@@ -12037,6 +12310,9 @@
         try {
           idpIa2WireDomOnce();
           idpWireIndexAnalysisPartsOnce();
+          idpIaWireDisplayControlsOnce();
+          idpIaPopulateWindowSelects();
+          idpIaUpdateActiveConfigNote();
         } catch (eWire) {
           if (typeof console !== "undefined" && console.error) console.error("[index-analysis] wire", eWire);
         }
