@@ -18,16 +18,16 @@
 image:
   repository: mckinsey-cummins-idp-dashboard-docker-local.jfrog.io/procurement-spend-dashboard
   # Pinned to the SHA-suffixed tag emitted by the docker build that ran
-  # for commit adfa99d (feat(index-analysis): quarterly granularity +
-  # configurable baseline + locked baseline math). Pinning to a SHA-
-  # suffixed tag forces a digest-different image reference, which together
-  # with `pullPolicy: Always` below guarantees a fresh registry pull on
-  # the next rollout (history of why: pre-build-#24 used the mutable
+  # for commit fbacfeb (feat(index-analysis): inline math, directory-
+  # driven indexes, compact pill controls). Pinning to a SHA-suffixed
+  # tag forces a digest-different image reference, which together with
+  # `pullPolicy: Always` below guarantees a fresh registry pull on the
+  # next rollout (history of why: pre-build-#24 used the mutable
   # floating "0.1.0" tag and ArgoCD's pod-replacement event reused a
   # node-cached layer due to IfNotPresent, shipping stale bits). Keep
   # this value in lockstep with the same field in procurement-spend-
   # dashboard.yaml (the rendered manifest).
-  tag: "0.1.0-adfa99d1"
+  tag: "0.1.0-fbacfeb1"
   # Bumped from IfNotPresent → Always so future tag floats can't
   # silently degrade to a cached node image.
   pullPolicy: Always
