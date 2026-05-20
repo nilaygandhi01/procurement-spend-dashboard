@@ -3745,13 +3745,13 @@
         <div class="mb-3 border-b border-[#E6E6E6] pb-2">
           <h2 class="m-0 text-base font-semibold" style="color: #333">Index Analysis</h2>
           <p class="mt-0.5 text-xs leading-snug idp-muted">
-            Plot weighted-average unit price of selected parts against built-in PPI indexes. Baseline, granularity, weighting, and aggregation are all configurable below; a detail table, totals tiles, and Excel-diff panel sit underneath the chart. Saved views persist per browser. See <a href="../../INDEX_METHODOLOGY.md" class="underline">INDEX_METHODOLOGY.md</a> for the math.
+            Plot selected parts against built-in PPI indexes. See <a href="../../INDEX_METHODOLOGY.md" class="underline">INDEX_METHODOLOGY.md</a> for the math.
           </p>
         </div>
         <div id="index-content-area" class="flex flex-col gap-4">
           <div class="idp-panel" id="ia2-indexes-panel">
             <p class="mb-2 text-xs font-semibold uppercase tracking-wide idp-muted">Indexes</p>
-            <p class="mb-3 text-xs leading-snug idp-muted">Built-in PPI series. PPI raw data is yearly only; in Quarterly view each year's value is flat-stepped across its 4 quarters. Drop a new <code>.xlsx</code> into <code>data/inputs/indexes/</code>, run <code>py scripts/build-builtin-index-pack.py --write</code>, then <code>py scripts/inline-index-math.py</code> — it will appear here.</p>
+            <p class="mb-3 text-xs leading-snug idp-muted">Built-in PPI series, rebased to 2024 = 100.</p>
             <p class="mb-1.5 text-xs font-medium tabular-nums" style="color: #334155">
               Selected for chart: <span id="ia-index-count">0</span>
               <span class="ml-1 font-normal idp-muted">(max 2 PPI indexes)</span>
