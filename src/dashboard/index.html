@@ -2320,216 +2320,7 @@
         }
 
         /* ============================================================================
-         * EXCEL DIFF (Validation panel)
-         * ============================================================================ */
-
-        /**
-         * Parse a pasted block of Excel/CSV text into { [partKey]: { [periodKey]: number } }.
-         *
-         * Two accepted layouts (we sniff the first non-blank line):
-         *
-         * (A) Wide / pivot — header row lists period columns:
-         *     PartNumber  2024  2025  2026
-         *     ABC-001     100   108.2 112.4
-         *     XYZ-999     100    99.7 103.1
-         *
-         * (B) Long — three columns regardless of order: part, period, index value.
-         *     We detect "long" when there are exactly 3 columns AND the header (if
-         *     any) doesn't look like period codes.
-         *
-         * Separators auto-detected: tab > comma > 2+ spaces > single space.
-         *
-         * Period strings normalized:
-         *   "2024"           → "2024"
-         *   "2024 Q1"        → "2024-Q1"
-         *   "2024-Q1"        → "2024-Q1"
-         *   "Q1 2024"        → "2024-Q1"
-         *   "Q1-24"          → "2024-Q1" (assumes 20YY for 2-digit years)
-         *
-         * Returns:
-         *   { byPart: { partKey: { periodKey: number } }, partOrder: [...], periodOrder: [...], warnings: [...] }
-         *
-         * Best-effort and forgiving — bad lines are skipped with a warning, never throw.
-         */
-        function parseExcelPivotText(text) {
-          const byPart = Object.create(null);
-          const partOrder = [];
-          const periodSet = Object.create(null);
-          const warnings = [];
-          if (typeof text !== "string" || !text.trim()) {
-            return { byPart, partOrder, periodOrder: [], warnings: ["Empty input."] };
-          }
-          const lines = text.split(/\r?\n/).map((l) => l.replace(/^\uFEFF/, "")).filter((l) => l.trim().length > 0);
-          if (!lines.length) return { byPart, partOrder, periodOrder: [], warnings: ["No non-blank lines."] };
-          const sepRe = lines[0].indexOf("\t") >= 0 ? /\t/ : lines[0].indexOf(",") >= 0 ? /,/ : /\s{2,}|\s+/;
-          const split = (line) => line.split(sepRe).map((c) => c.trim());
-          const header = split(lines[0]);
-          const headerLooksLikePeriods = header.slice(1).some((h) => normalizePeriodLabel(h) != null);
-          const isLong = header.length === 3 && !headerLooksLikePeriods;
-          const ensurePart = (raw) => {
-            const key = String(raw == null ? "" : raw).trim();
-            if (!key) return null;
-            if (!byPart[key]) { byPart[key] = Object.create(null); partOrder.push(key); }
-            return key;
-          };
-          const putValue = (partKey, periodKey, rawVal) => {
-            const v = parseFloat(String(rawVal).replace(/[, ]/g, ""));
-            if (!Number.isFinite(v)) {
-              warnings.push("Non-numeric value for " + partKey + " @ " + periodKey + ": " + rawVal);
-              return;
-            }
-            byPart[partKey][periodKey] = v;
-            periodSet[periodKey] = true;
-          };
-          if (isLong) {
-            let startIdx = 0;
-            const h0 = (header[0] || "").toLowerCase();
-            if (/part|sku|item/.test(h0)) startIdx = 1;
-            for (let i = startIdx; i < lines.length; i++) {
-              const cells = split(lines[i]);
-              if (cells.length < 3) { warnings.push("Skipped (too few cells): " + lines[i]); continue; }
-              const partKey = ensurePart(cells[0]);
-              const periodKey = normalizePeriodLabel(cells[1]);
-              if (!partKey || !periodKey) { warnings.push("Skipped (bad part/period): " + lines[i]); continue; }
-              putValue(partKey, periodKey, cells[2]);
-            }
-          } else {
-            const periodKeys = [];
-            for (let c = 1; c < header.length; c++) {
-              const p = normalizePeriodLabel(header[c]);
-              periodKeys.push(p);
-              if (!p) warnings.push("Header column #" + (c + 1) + " (" + header[c] + ") didn't look like a period and was skipped.");
-            }
-            for (let i = 1; i < lines.length; i++) {
-              const cells = split(lines[i]);
-              if (!cells.length) continue;
-              const partKey = ensurePart(cells[0]);
-              if (!partKey) { warnings.push("Skipped (blank part): " + lines[i]); continue; }
-              for (let c = 1; c < cells.length && c < header.length; c++) {
-                const periodKey = periodKeys[c - 1];
-                if (!periodKey) continue;
-                if (cells[c] === "" || cells[c] == null) continue;
-                putValue(partKey, periodKey, cells[c]);
-              }
-            }
-          }
-          const periodOrder = Object.keys(periodSet).sort(comparePeriodKeys);
-          return { byPart, partOrder, periodOrder, warnings };
-        }
-
-        /**
-         * Normalize a free-form period label to a canonical period key.
-         * Returns null if it can't be parsed.
-         */
-        function normalizePeriodLabel(s) {
-          if (s == null) return null;
-          const str = String(s).trim();
-          if (!str) return null;
-          let m = str.match(/^(\d{4})$/);
-          if (m) return m[1];
-          m = str.match(/^(\d{4})[\s\-]?Q([1-4])$/i);
-          if (m) return m[1] + "-Q" + m[2];
-          m = str.match(/^Q([1-4])[\s\-]?(\d{4})$/i);
-          if (m) return m[2] + "-Q" + m[1];
-          m = str.match(/^Q([1-4])[\s\-]?(\d{2})$/i);
-          if (m) {
-            const yy = parseInt(m[2], 10);
-            const fullY = yy >= 70 ? 1900 + yy : 2000 + yy;
-            return fullY + "-Q" + m[1];
-          }
-          return null;
-        }
-
-        /**
-         * Diff dashboard-computed indexes against reference (e.g. Excel) values.
-         *
-         * Inputs:
-         *   dashboardByPart — { [partKey]: { [periodKey]: number } }
-         *   excelByPart     — same shape; usually the output of parseExcelPivotText
-         *   tolerance       — abs delta (index points) above which a row is "fail"; default 0.5
-         *
-         * Returns:
-         *   {
-         *     rows: [ { partKey, periodKey, dashboard, reference, delta, absDelta, pctDelta, status: "match"|"fail"|"missing-dashboard"|"missing-reference" }, ... ],
-         *     summary: { compared, matched, failed, missingDashboard, missingReference, maxAbsDelta, maxAbsDeltaRow, maxAbsPctDelta, maxAbsPctDeltaRow }
-         *   }
-         *
-         * Rows are produced for every (part, period) appearing in EITHER side so the
-         * user can see coverage holes (e.g. a part in Excel that the dashboard
-         * couldn't price). `pctDelta` is computed against the reference where possible.
-         */
-        function diffPartIndexes(dashboardByPart, excelByPart, tolerance) {
-          const tol = Number.isFinite(+tolerance) ? +tolerance : 0.5;
-          const rows = [];
-          const summary = {
-            compared: 0,
-            matched: 0,
-            failed: 0,
-            missingDashboard: 0,
-            missingReference: 0,
-            tolerance: tol,
-            maxAbsDelta: 0,
-            maxAbsDeltaRow: null,
-            maxAbsPctDelta: 0,
-            maxAbsPctDeltaRow: null
-          };
-          const dash = dashboardByPart || Object.create(null);
-          const exc = excelByPart || Object.create(null);
-          const partKeys = uniqueSortedKeys(dash, exc);
-          for (const partKey of partKeys) {
-            const dPeriods = dash[partKey] || Object.create(null);
-            const ePeriods = exc[partKey] || Object.create(null);
-            const periodKeys = uniqueSortedKeys(dPeriods, ePeriods).sort(comparePeriodKeys);
-            for (const periodKey of periodKeys) {
-              const dVal = Number.isFinite(+dPeriods[periodKey]) ? +dPeriods[periodKey] : null;
-              const eVal = Number.isFinite(+ePeriods[periodKey]) ? +ePeriods[periodKey] : null;
-              const row = { partKey, periodKey, dashboard: dVal, reference: eVal, delta: null, absDelta: null, pctDelta: null, status: "" };
-              if (dVal == null && eVal == null) continue;
-              if (dVal == null) {
-                row.status = "missing-dashboard";
-                summary.missingDashboard += 1;
-              } else if (eVal == null) {
-                row.status = "missing-reference";
-                summary.missingReference += 1;
-              } else {
-                row.delta = dVal - eVal;
-                row.absDelta = Math.abs(row.delta);
-                row.pctDelta = eVal !== 0 ? (row.delta / eVal) * 100 : null;
-                summary.compared += 1;
-                if (row.absDelta <= tol) {
-                  row.status = "match";
-                  summary.matched += 1;
-                } else {
-                  row.status = "fail";
-                  summary.failed += 1;
-                }
-                if (row.absDelta > summary.maxAbsDelta) {
-                  summary.maxAbsDelta = row.absDelta;
-                  summary.maxAbsDeltaRow = { partKey, periodKey };
-                }
-                if (row.pctDelta != null && Math.abs(row.pctDelta) > summary.maxAbsPctDelta) {
-                  summary.maxAbsPctDelta = Math.abs(row.pctDelta);
-                  summary.maxAbsPctDeltaRow = { partKey, periodKey };
-                }
-              }
-              rows.push(row);
-            }
-          }
-          return { rows, summary };
-        }
-
-        function uniqueSortedKeys() {
-          const set = Object.create(null);
-          for (let i = 0; i < arguments.length; i++) {
-            const o = arguments[i];
-            if (!o) continue;
-            for (const k of Object.keys(o)) set[k] = true;
-          }
-          return Object.keys(set);
-        }
-
-        /* ============================================================================
-         * COVERAGE & SUMMARY HELPERS — feed the totals tiles and detail table.
+         * COVERAGE & SUMMARY HELPERS — feed the detail table.
          * ============================================================================ */
 
         /**
@@ -2664,20 +2455,16 @@
       comparePeriodKeys: comparePeriodKeys,
       computeBaselineCoverage: computeBaselineCoverage,
       computePartIndex: computePartIndex,
-      diffPartIndexes: diffPartIndexes,
       expandPeriodRange: expandPeriodRange,
       expandYearlyToQuarterly: expandYearlyToQuarterly,
       isInDisplayWindow: isInDisplayWindow,
       isInHalfOpenRange: isInHalfOpenRange,
-      normalizePeriodLabel: normalizePeriodLabel,
-      parseExcelPivotText: parseExcelPivotText,
       parsePeriodKey: parsePeriodKey,
       periodKeyOf: periodKeyOf,
       periodSortKey: periodSortKey,
       quarterOf: quarterOf,
       rebaseToBaseline: rebaseToBaseline,
       sumByPeriodAcrossParts: sumByPeriodAcrossParts,
-      uniqueSortedKeys: uniqueSortedKeys,
       weightedUnitPriceByPeriod: weightedUnitPriceByPeriod
         };
         try { root.dispatchEvent(new Event("idp-index-math-ready")); } catch (e) {}
@@ -4019,15 +3806,13 @@
           <div class="idp-panel" id="ia-display-controls-panel">
             <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
               <p class="m-0 text-xs font-semibold uppercase tracking-wide idp-muted">Chart controls</p>
-              <button type="button" id="ia-method-info-btn" class="idp-btn-secondary px-2 py-1 text-xs font-medium" aria-haspopup="dialog" aria-controls="ia-method-info-popover" title="What math is being computed?">
-                ⓘ Method
-              </button>
             </div>
             <!--
-              Compact horizontal control bar. Each control is a single
-              field (label + segmented buttons) so the whole row wraps
-              gracefully on narrow screens without each control's pills
-              stacking vertically.
+              Tight horizontal control bar — just Granularity + Display window.
+              Weighting (always volume-weighted Σspend/Σqty), aggregation (always
+              Laspeyres overlay when >1 part), and baseline (auto-locked to FY 2024
+              in Yearly mode / Q1 2024 in Quarterly mode) are now permanent defaults
+              and have no user-facing toggle.
             -->
             <div class="ia-controls-row flex flex-wrap items-end gap-x-4 gap-y-2">
               <div class="ia-ctrl-field">
@@ -4036,33 +3821,6 @@
                   <button type="button" class="ia-pill ia-pill-active" data-ia-granularity="yearly" aria-pressed="true">Yearly</button>
                   <button type="button" class="ia-pill" data-ia-granularity="quarterly" aria-pressed="false">Quarterly</button>
                   <input type="hidden" id="ia-granularity-value" value="yearly" />
-                </div>
-              </div>
-              <div class="ia-ctrl-field">
-                <label class="ia-ctrl-label">Baseline</label>
-                <div role="radiogroup" aria-label="Baseline period" class="ia-pill-group" id="ia-baseline-group">
-                  <button type="button" class="ia-pill ia-pill-active" data-ia-baseline="2024" aria-pressed="true">FY 2024 = 100</button>
-                  <button type="button" class="ia-pill" data-ia-baseline="2024-Q1" aria-pressed="false">Q1 2024 = 100</button>
-                  <input type="hidden" id="ia-baseline-value" value="2024" />
-                </div>
-              </div>
-              <div class="ia-ctrl-field">
-                <label class="ia-ctrl-label">Weighting</label>
-                <div role="radiogroup" aria-label="Weighting method" class="ia-pill-group" id="ia-weighting-group" title="How each bucket's average unit price is computed.">
-                  <button type="button" class="ia-pill ia-pill-active" data-ia-weighting="qty" aria-pressed="true" title="Σspend ÷ Σqty — matches Excel AVERAGEIFS(spend)/AVERAGEIFS(qty)">Qty-wtd</button>
-                  <button type="button" class="ia-pill" data-ia-weighting="spend" aria-pressed="false" title="Σ(unit_price × spend) ÷ Σspend">Spend-wtd</button>
-                  <button type="button" class="ia-pill" data-ia-weighting="simple" aria-pressed="false" title="mean of per-row unit prices">Simple</button>
-                  <input type="hidden" id="ia-weighting-value" value="qty" />
-                </div>
-              </div>
-              <div class="ia-ctrl-field">
-                <label class="ia-ctrl-label">Aggregation</label>
-                <div role="radiogroup" aria-label="Aggregation method" class="ia-pill-group" id="ia-aggregation-group" title="How selected parts are combined into a single category line.">
-                  <button type="button" class="ia-pill ia-pill-active" data-ia-aggregation="none" aria-pressed="true" title="One line per selected part (current behavior)">Per-part</button>
-                  <button type="button" class="ia-pill" data-ia-aggregation="laspeyres" aria-pressed="false" title="Σ(part_index × base_spend) / Σ base_spend — fixed-basket, spend-weighted">Laspeyres</button>
-                  <button type="button" class="ia-pill" data-ia-aggregation="simple" aria-pressed="false" title="Arithmetic mean of per-part indexes — equal weight per part">Simple</button>
-                  <button type="button" class="ia-pill" data-ia-aggregation="pooled" aria-pressed="false" title="Pool all selected parts into one mega-bucket per period, then index">Pooled</button>
-                  <input type="hidden" id="ia-aggregation-value" value="none" />
                 </div>
               </div>
               <div class="ia-ctrl-field min-w-0 flex-1">
@@ -4089,40 +3847,25 @@
                 </div>
               </div>
             </div>
-            <p class="mt-2 text-[11px] idp-muted" id="ia-baseline-hint">Q1 2024 baseline only applies to part lines in Quarterly mode; PPI indexes always use their FY 2024 baseline. Display window does not affect the baseline.</p>
-            <!-- The visible "Active config" note now lives under the chart title (see ia-chart-subtitle). This element stays for backward compat with code that still writes to it. -->
+            <!-- Legacy hidden node — kept for backward compat with code that still writes to it. The visible status line lives in #ia-chart-subtitle. -->
             <p id="ia-active-config-note" class="hidden" aria-hidden="true"></p>
-          </div>
-          <div class="idp-panel hidden" id="ia-method-info-popover" role="dialog" aria-label="Active calculation method">
-            <div class="mb-2 flex items-center justify-between">
-              <p class="m-0 text-xs font-semibold uppercase tracking-wide idp-muted">Active calculation method</p>
-              <button type="button" id="ia-method-info-close" class="idp-btn-secondary px-2 py-0.5 text-[11px]">Close</button>
-            </div>
-            <div id="ia-method-info-body" class="text-xs leading-relaxed" style="color: #334155"></div>
-            <p class="mt-2 text-[11px] idp-muted">For formulas and edge-case rules see <a href="../../INDEX_METHODOLOGY.md" class="underline">INDEX_METHODOLOGY.md</a>.</p>
           </div>
           <div class="idp-panel" id="ia-saved-views-panel">
             <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
               <p class="m-0 text-xs font-semibold uppercase tracking-wide idp-muted">Saved views</p>
               <span class="text-[11px] idp-muted" id="ia-saved-views-status">No saved views yet.</span>
             </div>
-            <div class="flex flex-wrap items-center gap-1.5">
-              <label class="sr-only" for="ia-saved-views-select">Load saved view</label>
-              <select id="ia-saved-views-select" class="rounded-md border border-[#E6E6E6] px-2 py-1.5 text-xs" style="color: #334155; min-width: 14rem">
-                <option value="">— Load a saved view —</option>
-              </select>
-              <button type="button" id="ia-saved-views-save" class="idp-btn-secondary px-2 py-1 text-xs" title="Save current state as a new view">Save as…</button>
-              <button type="button" id="ia-saved-views-overwrite" class="idp-btn-secondary px-2 py-1 text-xs" disabled title="Overwrite the loaded view with current state">Overwrite</button>
-              <button type="button" id="ia-saved-views-rename" class="idp-btn-secondary px-2 py-1 text-xs" disabled>Rename</button>
-              <button type="button" id="ia-saved-views-delete" class="idp-btn-secondary px-2 py-1 text-xs" disabled>Delete</button>
-              <button type="button" id="ia-saved-views-default" class="idp-btn-secondary px-2 py-1 text-xs" disabled title="Open this view automatically when the IA tab loads">Set default</button>
-              <button type="button" id="ia-saved-views-share" class="idp-btn-secondary px-2 py-1 text-xs" title="Copy a shareable link encoding the current state">Copy share link</button>
-              <button type="button" id="ia-saved-views-export" class="idp-btn-secondary px-2 py-1 text-xs">Export JSON</button>
-              <button type="button" id="ia-saved-views-import" class="idp-btn-secondary px-2 py-1 text-xs">Import JSON</button>
-              <input type="file" id="ia-saved-views-import-file" class="hidden" accept=".json,application/json" />
+            <div class="flex flex-wrap items-center gap-2">
+              <button type="button" id="ia-saved-views-save" class="idp-btn-secondary px-2.5 py-1 text-xs font-medium" title="Save current state as a new view">Save current view</button>
+              <!--
+                Saved views render as pill rows; click the name to load,
+                click × to delete. Captures: selected parts, selected PPI
+                indexes, granularity, display window. Weighting/aggregation/
+                baseline are no longer configurable so we don't snapshot them.
+              -->
+              <div id="ia-saved-views-list" class="flex flex-wrap items-center gap-1.5" role="list" aria-label="Saved views"></div>
             </div>
             <p id="ia-saved-views-warn" class="mt-1.5 hidden text-[11px]" style="color: #92400e" aria-live="polite"></p>
-            <p class="mt-1 text-[11px] idp-muted">Captures: selected parts &amp; PPI indexes, granularity, baseline, display window, weighting, aggregation. Stored in this browser (localStorage); export/import to share across browsers.</p>
           </div>
           <div class="idp-panel idp-index-chart-panel w-full max-w-full min-w-0 mb-0">
             <div class="mb-2 flex flex-wrap items-baseline justify-between gap-2">
@@ -4138,20 +3881,6 @@
               </div>
             </div>
           </div>
-          <div class="idp-panel" id="ia-totals-panel">
-            <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
-              <p class="m-0 text-xs font-semibold uppercase tracking-wide idp-muted">Totals &amp; coverage</p>
-              <p id="ia-totals-config-tag" class="m-0 text-[11px] idp-muted"></p>
-            </div>
-            <div id="ia-totals-tiles-wrap" class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-              <p class="col-span-full text-sm idp-muted" id="ia-totals-empty">Select parts to see totals.</p>
-            </div>
-            <div id="ia-totals-meta" class="mt-3 flex flex-wrap items-center gap-3 text-[11px]" style="color: #334155"></div>
-            <details id="ia-totals-excluded-details" class="mt-2 hidden text-[11px]">
-              <summary class="cursor-pointer font-medium" style="color: #334155">Excluded parts (and why)</summary>
-              <ul id="ia-totals-excluded-list" class="mt-1 list-disc pl-5"></ul>
-            </details>
-          </div>
           <div class="idp-panel" id="ia-detail-table-panel">
             <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
               <p class="m-0 text-xs font-semibold uppercase tracking-wide idp-muted">Detail table</p>
@@ -4166,49 +3895,6 @@
               <table id="ia-detail-table" class="w-full text-left text-xs tabular-nums" style="color: #334155">
                 <thead id="ia-detail-table-head" class="sticky top-0 z-[1] bg-[#fafafa]"></thead>
                 <tbody id="ia-detail-table-body"></tbody>
-              </table>
-            </div>
-          </div>
-          <div class="idp-panel" id="ia-validation-panel">
-            <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
-              <p class="m-0 text-xs font-semibold uppercase tracking-wide idp-muted">Validation vs. Excel reference</p>
-              <p class="m-0 text-[11px] idp-muted">Paste an Excel pivot to diff against dashboard values.</p>
-            </div>
-            <div class="grid grid-cols-1 gap-3 md:grid-cols-3">
-              <div class="md:col-span-2">
-                <label for="ia-validation-input" class="block text-[11px] font-medium" style="color: #334155">Paste pivot (TSV / CSV)</label>
-                <textarea id="ia-validation-input" rows="6" class="mt-1 w-full rounded-md border border-[#E6E6E6] p-2 font-mono text-[11px]" style="color: #334155" placeholder="PartNumber&#9;2024&#9;2025&#9;2026&#10;ABC-001&#9;100&#9;108.2&#9;112.4&#10;XYZ-999&#9;100&#9;99.7&#9;103.1&#10;&#10;…also accepts long format: Part&#9;Period&#9;Index"></textarea>
-                <p class="mt-1 text-[10px] idp-muted">Accepts wide (header row = periods) or long (3 columns: Part, Period, Index). Period labels can be "2024", "2024-Q1", "2024 Q1", "Q1 2024", or "Q1-24".</p>
-              </div>
-              <div>
-                <label for="ia-validation-tolerance" class="block text-[11px] font-medium" style="color: #334155">Tolerance (index points)</label>
-                <input id="ia-validation-tolerance" type="number" step="0.01" min="0" value="0.5" class="mt-1 w-full rounded-md border border-[#E6E6E6] px-2 py-1.5 text-xs" style="color: #334155" />
-                <div class="mt-2 flex flex-wrap items-center gap-1.5">
-                  <button type="button" id="ia-validation-run" class="idp-btn-primary px-2.5 py-1 text-xs font-semibold">Run diff</button>
-                  <button type="button" id="ia-validation-clear" class="idp-btn-secondary px-2.5 py-1 text-xs">Clear</button>
-                </div>
-                <p class="mt-2 text-[10px] idp-muted">Diff runs against the dashboard's per-part indexes at the currently-active granularity / baseline / weighting. PPI series are excluded from the diff.</p>
-              </div>
-            </div>
-            <div id="ia-validation-summary" class="mt-3 hidden grid grid-cols-2 gap-2 sm:grid-cols-5 text-xs"></div>
-            <div id="ia-validation-warnings" class="mt-2 hidden text-[11px]" style="color: #92400e"></div>
-            <div id="ia-validation-results-wrap" class="mt-3 hidden overflow-auto rounded border border-[#E6E6E6]" style="max-height: 360px">
-              <table id="ia-validation-results" class="w-full text-left text-xs tabular-nums" style="color: #334155">
-                <thead class="sticky top-0 z-[1] bg-[#fafafa]">
-                  <tr>
-                    <th class="px-2 py-1.5 font-medium">Part</th>
-                    <th class="px-2 py-1.5 font-medium">Period</th>
-                    <th class="px-2 py-1.5 text-right font-medium">Dashboard</th>
-                    <th class="px-2 py-1.5 text-right font-medium">Reference</th>
-                    <th class="px-2 py-1.5 text-right font-medium">Δ (pts)</th>
-                    <th class="px-2 py-1.5 text-right font-medium">Δ %</th>
-                    <th class="px-2 py-1.5 font-medium">Status</th>
-                    <th class="px-2 py-1.5 text-right font-medium">Σspend (period)</th>
-                    <th class="px-2 py-1.5 text-right font-medium">Σqty (period)</th>
-                    <th class="px-2 py-1.5 text-right font-medium">Rows (period)</th>
-                  </tr>
-                </thead>
-                <tbody id="ia-validation-results-body"></tbody>
               </table>
             </div>
           </div>
@@ -12873,11 +12559,19 @@
   display window only controls what x-axis points get rendered.
   ============================================ */
   var iaGranularity = "yearly";
+  // Baseline is now auto-derived from granularity — FY 2024 in Yearly mode,
+  // Q1 2024 in Quarterly mode. The Baseline picker has been removed; this
+  // variable is kept (and updated by idpIaEffectiveBaselineKey) so downstream
+  // helpers continue to read a stable state value.
   var iaBaselineKey = "2024";
   var iaDisplayStartKey = null;
   var iaDisplayEndKey = null;
-  var iaWeightingMethod = "qty";       // "qty" | "spend" | "simple"
-  var iaAggregationMethod = "none";    // "none" | "laspeyres" | "simple" | "pooled"
+  // Weighting and aggregation are now permanent defaults — no user-facing
+  // toggle. Volume-weighted (Σspend/Σqty) is the only thing tied to Excel's
+  // AVERAGEIFS pattern; Laspeyres overlay is always shown alongside per-part
+  // lines whenever 2+ parts are selected.
+  var iaWeightingMethod = "qty";
+  var iaAggregationMethod = "laspeyres";
   var _iaControlsWired = false;
   var _iaSavedViewsActiveId = null;    // currently-loaded view id (null = unsaved state)
   /** Last computed render frame, made global so the detail table / totals
@@ -12982,51 +12676,35 @@
   }
 
   function idpIaUpdateActiveConfigNote() {
-    var parts = [], baselineLabel, txt;
-    baselineLabel = iaBaselineKey === "2024-Q1" ? "Q1 2024 = 100" : "FY 2024 = 100";
-    parts.push((iaGranularity === "quarterly" ? "Quarterly" : "Yearly") + " · " + baselineLabel);
-    parts.push("Weighting: " + idpIaWeightingLabel(iaWeightingMethod));
-    if (iaAggregationMethod && iaAggregationMethod !== "none") {
-      parts.push("Aggregate: " + idpIaAggLabel(iaAggregationMethod).replace(/^Aggregate · /, ""));
-    } else {
-      parts.push("Aggregate: per-part lines");
-    }
-    if (iaDisplayStartKey || iaDisplayEndKey) {
-      parts.push("Window: " + (iaDisplayStartKey || "start") + " → " + (iaDisplayEndKey || "end") + " (baseline locked)");
-    }
-    txt = parts.join(" · ");
-    // Primary location for the status line: subtitle under the Chart panel title.
+    // Effective baseline is derived from granularity — keep iaBaselineKey in sync.
+    var baselineKey = idpIaEffectiveBaselineKey();
+    var baselineLabel = baselineKey === "2024-Q1" ? "Q1 2024 = 100" : "FY 2024 = 100";
+    var granLabel = iaGranularity === "quarterly" ? "Quarterly" : "Yearly";
+    var txt = granLabel + " · " + baselineLabel + " · Volume-weighted index · Laspeyres aggregate where shown";
+    // Primary location: subtitle under the Chart panel title (small gray text).
     var subEl = $("ia-chart-subtitle");
     if (subEl) subEl.textContent = txt;
-    // Keep the legacy hidden node in sync for any older selectors that still read it.
+    // Legacy hidden node kept for any older selectors that still read it.
     var legacy = $("ia-active-config-note");
     if (legacy) legacy.textContent = txt;
   }
 
   /** Subtitle text for the Chart.js chart, rendered just under the title. */
   function idpIaBuildChartSubtitle(frame) {
-    var bits = [];
-    if (frame.config.aggregation === "none") {
-      bits.push("Per-part lines (no basket aggregation).");
-    } else if (frame.parts.partIxs.length > 1) {
-      bits.push(idpIaAggLabel(frame.config.aggregation) + " line — per-part lines hidden.");
-    } else {
-      bits.push("Per-part line (only 1 part selected; aggregation has no effect).");
-    }
-    bits.push(idpIaWeightingLabel(frame.config.weighting) + ".");
-    if (frame.config.granularity === "quarterly") {
-      bits.push("PPI series flat-stepped Q1→Q4.");
-    }
-    return bits.join(" ");
+    var bits = ["Volume-weighted index"];
+    if (frame.parts.partIxs.length > 1) bits.push("Laspeyres aggregate overlaid");
+    if (frame.config.granularity === "quarterly") bits.push("PPI series flat-stepped Q1→Q4");
+    return bits.join(" · ") + ".";
   }
 
-  /** If Q1 2024 baseline is selected but granularity is Yearly, the only sensible
-   *  resolution is to fall back to FY 2024 (you can't index against a quarter when
-   *  the chart axis is years). We don't silently flip the radio — we just use FY for
-   *  the math and surface that in the active-config note. */
+  /** Baseline is auto-locked from granularity. Yearly → FY 2024, Quarterly →
+   *  Q1 2024. The Baseline picker has been removed from the UI; this helper
+   *  keeps `iaBaselineKey` in sync as a side-effect so any state snapshots /
+   *  legacy reads see the current effective key. */
   function idpIaEffectiveBaselineKey() {
-    if (iaGranularity === "yearly") return "2024";
-    return iaBaselineKey || "2024";
+    var k = iaGranularity === "quarterly" ? "2024-Q1" : "2024";
+    iaBaselineKey = k;
+    return k;
   }
 
   /**
@@ -13081,16 +12759,9 @@
     }
     wirePillGroup("ia-granularity-group", "data-ia-granularity", function (v) {
       iaGranularity = v === "quarterly" ? "quarterly" : "yearly";
+      // Baseline auto-locks to the granularity (FY 2024 yearly, Q1 2024 quarterly).
+      idpIaEffectiveBaselineKey();
       idpIaPopulateWindowSelects();
-    });
-    wirePillGroup("ia-baseline-group", "data-ia-baseline", function (v) {
-      iaBaselineKey = v === "2024-Q1" ? "2024-Q1" : "2024";
-    });
-    wirePillGroup("ia-weighting-group", "data-ia-weighting", function (v) {
-      iaWeightingMethod = (v === "spend" || v === "simple") ? v : "qty";
-    });
-    wirePillGroup("ia-aggregation-group", "data-ia-aggregation", function (v) {
-      iaAggregationMethod = (v === "laspeyres" || v === "simple" || v === "pooled") ? v : "none";
     });
     if (startSel) startSel.addEventListener("change", function () {
       iaDisplayStartKey = this.value || null;
@@ -13118,20 +12789,6 @@
         idpIaApplyWindowPreset(preset);
       });
     }
-    // Method-info popover toggle
-    var methodInfoBtn = $("ia-method-info-btn");
-    var methodInfoPopover = $("ia-method-info-popover");
-    var methodInfoClose = $("ia-method-info-close");
-    if (methodInfoBtn && methodInfoPopover) {
-      methodInfoBtn.addEventListener("click", function () {
-        methodInfoPopover.classList.toggle("hidden");
-        idpIaUpdateMethodInfoBody();
-      });
-    }
-    if (methodInfoClose && methodInfoPopover) {
-      methodInfoClose.addEventListener("click", function () { methodInfoPopover.classList.add("hidden"); });
-    }
-    idpIaValidationWire();
     idpIaSavedViewsWire();
     idpIaDetailTableWire();
     // Re-render once the math module finishes loading (handles tab-opened-very-early case)
@@ -13171,8 +12828,9 @@
     var gran = iaGranularity === "quarterly" ? "quarterly" : "yearly";
     var baselineKey = idpIaEffectiveBaselineKey();
     var baselineLabel = baselineKey === "2024-Q1" ? "Q1 2024 = 100" : "FY 2024 = 100";
-    var weighting = iaWeightingMethod || "qty";
-    var aggregation = iaAggregationMethod || "none";
+    // Permanent defaults — see the var-declaration block above for rationale.
+    var weighting = "qty";
+    var aggregation = "laspeyres";
     var allPeriods = idpIaCollectAvailablePeriods(gran);
     var visiblePeriods = allPeriods.filter(function (p) {
       return M.isInDisplayWindow(p, iaDisplayStartKey, iaDisplayEndKey);
@@ -13197,14 +12855,14 @@
         excluded.push({ partIx: pIx, reason: bs > 0 ? "Baseline price not finite or zero." : "No qty/spend in " + baselineLabel + "." });
       }
     }
+    // Aggregate overlay is always Laspeyres. Skip computing it for a single-
+    // part selection: the aggregate would equal that part's own line.
     var aggregate = null;
-    if (aggregation !== "none" && partIxs.length > 0) {
+    if (partIxs.length > 1) {
       try {
         aggregate = M.aggregatePartIndexes(perPartBuckets, perPartIndexed, baselineKey, aggregation, weighting);
       } catch (e) { aggregate = null; }
     }
-    var totals = M.sumByPeriodAcrossParts(perPartBuckets);
-    var coverage = M.computeBaselineCoverage(perPartBuckets, perPartIndexed, baselineKey);
     return {
       config: {
         granularity: gran, baselineKey: baselineKey, baselineLabel: baselineLabel,
@@ -13213,25 +12871,13 @@
       },
       periods: { all: allPeriods, visible: visiblePeriods },
       parts: { partIxs: partIxs, buckets: perPartBuckets, indexed: perPartIndexed, baseSpend: perPartBaseSpend, excluded: excluded },
-      aggregate: aggregate,
-      totals: totals,
-      coverage: coverage
+      aggregate: aggregate
     };
   }
 
-  /** Friendly label for an aggregation method (used in legend & tooltips). */
-  function idpIaAggLabel(method) {
-    if (method === "laspeyres") return "Aggregate · Laspeyres (spend-weighted)";
-    if (method === "simple") return "Aggregate · Simple mean of part indexes";
-    if (method === "pooled") return "Aggregate · Pooled re-weighted (Σspend ÷ Σqty)";
-    return "";
-  }
-
-  /** Friendly label for a weighting method. */
-  function idpIaWeightingLabel(method) {
-    if (method === "spend") return "Spend-weighted unit price";
-    if (method === "simple") return "Simple mean of unit prices";
-    return "Volume-weighted (Σspend ÷ Σqty)";
+  /** Friendly label for the (single, always-on) Laspeyres aggregate line. */
+  function idpIaAggLabel() {
+    return "Aggregate · Laspeyres (spend-weighted)";
   }
 
   function renderIndexChart() {
@@ -13308,9 +12954,7 @@
           emptyEl.textContent = "Select parts and/or indexes above to compare (" + baselineLabel + " baseline).";
         }
         cnv.classList.add("chart-hidden");
-        idpIaRenderTotalsTiles(frame);
         idpIaRenderDetailTable(frame);
-        idpIaUpdateMethodInfoBody();
         return;
       }
       anySeries = false;
@@ -13334,56 +12978,52 @@
           emptyEl.textContent = visiblePeriods.length ? baselineMsg : "No data in the selected display window. Reset or widen the window.";
         }
         cnv.classList.add("chart-hidden");
-        idpIaRenderTotalsTiles(frame);
         idpIaRenderDetailTable(frame);
-        idpIaUpdateMethodInfoBody();
         return;
       }
       if (emptyEl) emptyEl.classList.add("hidden");
       cnv.classList.remove("chart-hidden");
       datasets = [];
       partColIdx = 0;
-      // Part series — each part is its own line UNLESS the user picked an
-      // aggregation method, in which case we skip the per-part lines and draw
-      // a single aggregate line instead (otherwise the chart becomes a mess).
-      var hideIndividualPartLines = frame.config.aggregation !== "none" && frame.parts.partIxs.length > 1;
-      if (!hideIndividualPartLines) {
-        for (j = 0; j < frame.parts.partIxs.length; j++) {
-          partIx = frame.parts.partIxs[j];
-          pr = frame.parts.indexed[partIx];
-          if (!pr || !pr.ok) continue;
-          indexedMap = pr.indexed;
-          if (!indexedMap || !Object.keys(indexedMap).length) continue;
-          dataArr = [];
-          for (yi = 0; yi < visiblePeriods.length; yi++) {
-            pk = visiblePeriods[yi];
-            val = indexedMap[pk];
-            dataArr.push(val != null && isFinite(val) ? val : null);
-          }
-          borderCol = IDP_IA_PART_COLORS[partColIdx % IDP_IA_PART_COLORS.length];
-          partColIdx++;
-          plabel = idpPartLegendLabel(partIx, 44, 72) + " (price index)";
-          datasets.push({
-            label: plabel,
-            data: dataArr,
-            borderColor: borderCol,
-            backgroundColor: "transparent",
-            pointBorderColor: borderCol,
-            pointBackgroundColor: "#fff",
-            pointRadius: 3,
-            pointHoverRadius: 5,
-            borderWidth: 2,
-            borderDash: dashTpl,
-            fill: false,
-            tension: 0.2,
-            spanGaps: false,
-            _idpPartIx: partIx,
-            _idpIndexLabel: plabel
-          });
+      // Per-part lines are ALWAYS drawn. The aggregate Laspeyres line is
+      // additionally overlaid (in bold) when 2+ parts are selected — see
+      // the aggregate-dataset block below.
+      for (j = 0; j < frame.parts.partIxs.length; j++) {
+        partIx = frame.parts.partIxs[j];
+        pr = frame.parts.indexed[partIx];
+        if (!pr || !pr.ok) continue;
+        indexedMap = pr.indexed;
+        if (!indexedMap || !Object.keys(indexedMap).length) continue;
+        dataArr = [];
+        for (yi = 0; yi < visiblePeriods.length; yi++) {
+          pk = visiblePeriods[yi];
+          val = indexedMap[pk];
+          dataArr.push(val != null && isFinite(val) ? val : null);
         }
+        borderCol = IDP_IA_PART_COLORS[partColIdx % IDP_IA_PART_COLORS.length];
+        partColIdx++;
+        plabel = idpPartLegendLabel(partIx, 44, 72) + " (price index)";
+        datasets.push({
+          label: plabel,
+          data: dataArr,
+          borderColor: borderCol,
+          backgroundColor: "transparent",
+          pointBorderColor: borderCol,
+          pointBackgroundColor: "#fff",
+          pointRadius: 3,
+          pointHoverRadius: 5,
+          borderWidth: 2,
+          borderDash: dashTpl,
+          fill: false,
+          tension: 0.2,
+          spanGaps: false,
+          _idpPartIx: partIx,
+          _idpIndexLabel: plabel
+        });
       }
-      // Aggregate line (only when user picked a method AND it produced ok data).
-      if (frame.config.aggregation !== "none" && frame.aggregate && frame.aggregate.ok) {
+      // Aggregate overlay — Laspeyres, drawn in bold black on top of the
+      // per-part lines whenever the basket has 2+ parts.
+      if (frame.aggregate && frame.aggregate.ok) {
         var aggData = [];
         for (yi = 0; yi < visiblePeriods.length; yi++) {
           pk = visiblePeriods[yi];
@@ -13391,7 +13031,7 @@
           aggData.push(val != null && isFinite(val) ? val : null);
         }
         datasets.push({
-          label: idpIaAggLabel(frame.config.aggregation),
+          label: idpIaAggLabel(),
           data: aggData,
           borderColor: "#111827",
           backgroundColor: "transparent",
@@ -13404,7 +13044,7 @@
           fill: false,
           tension: 0.15,
           spanGaps: false,
-          _idpIndexLabel: idpIaAggLabel(frame.config.aggregation)
+          _idpIndexLabel: idpIaAggLabel()
         });
       }
       // PPI series — yearly only at source; in Quarterly mode we flat-step
@@ -13453,9 +13093,7 @@
           emptyEl.textContent = baselineMsg;
         }
         cnv.classList.add("chart-hidden");
-        idpIaRenderTotalsTiles(frame);
         idpIaRenderDetailTable(frame);
-        idpIaUpdateMethodInfoBody();
         return;
       }
       destroyIndexChart();
@@ -13531,9 +13169,7 @@
           if (indexChartInstance && indexChartInstance.resize) indexChartInstance.resize();
         } catch (eRz) {}
       }, 80);
-      try { idpIaRenderTotalsTiles(frame); } catch (eTT) {}
       try { idpIaRenderDetailTable(frame); } catch (eDT) {}
-      try { idpIaUpdateMethodInfoBody(); } catch (eMI) {}
       try { idpIaSavedViewsUpdateActiveIdFromState(); } catch (eSV) {}
     } catch (eIxChart) {
       try {
@@ -13606,25 +13242,7 @@
     try { renderIndexChart(); } catch (e) {}
   }
 
-  /* ---------- Method-info popover ---------- */
-  function idpIaUpdateMethodInfoBody() {
-    var el = $("ia-method-info-body");
-    if (!el) return;
-    var weighting = idpIaWeightingLabel(iaWeightingMethod);
-    var agg = iaAggregationMethod === "none" ? "Per-part lines (no aggregation)" : idpIaAggLabel(iaAggregationMethod);
-    var baselineLabel = idpIaEffectiveBaselineKey() === "2024-Q1" ? "Q1 2024 = 100" : "FY 2024 = 100";
-    var gran = iaGranularity === "quarterly" ? "Quarterly" : "Yearly";
-    el.innerHTML =
-      '<dl class="grid grid-cols-[8rem_1fr] gap-x-3 gap-y-1">' +
-      '<dt class="font-medium">Granularity</dt><dd>' + esc(gran) + '</dd>' +
-      '<dt class="font-medium">Baseline</dt><dd>' + esc(baselineLabel) + '</dd>' +
-      '<dt class="font-medium">Weighting</dt><dd>' + esc(weighting) + '</dd>' +
-      '<dt class="font-medium">Aggregation</dt><dd>' + esc(agg) + '</dd>' +
-      '<dt class="font-medium">Display window</dt><dd>' + esc((iaDisplayStartKey || "all") + ' → ' + (iaDisplayEndKey || "all")) + ' (does not affect baseline)</dd>' +
-      '</dl>';
-  }
-
-  /* ---------- Totals tiles ---------- */
+  /* ---------- Detail-table formatters (shared with CSV export) ---------- */
   function idpIaFmtMoney(n) {
     if (n == null || !isFinite(n)) return "—";
     var a = Math.abs(n);
@@ -13640,94 +13258,6 @@
   function idpIaFmtIdx(n) {
     if (n == null || !isFinite(n)) return "—";
     return n.toFixed(1);
-  }
-  function idpIaFmtDelta(absV, baseV) {
-    if (absV == null || baseV == null || !isFinite(absV) || !isFinite(baseV) || baseV === 0) return { absStr: "—", pctStr: "—", sign: 0 };
-    var diff = absV - baseV;
-    var pct = (diff / baseV) * 100;
-    var sign = diff > 0 ? 1 : diff < 0 ? -1 : 0;
-    return { absStr: (sign >= 0 ? "+" : "") + idpIaFmtMoney(diff), pctStr: (sign >= 0 ? "+" : "") + pct.toFixed(1) + "%", sign: sign };
-  }
-  function idpIaFmtQtyDelta(absV, baseV) {
-    if (absV == null || baseV == null || !isFinite(absV) || !isFinite(baseV) || baseV === 0) return { absStr: "—", pctStr: "—", sign: 0 };
-    var diff = absV - baseV;
-    var pct = (diff / baseV) * 100;
-    var sign = diff > 0 ? 1 : diff < 0 ? -1 : 0;
-    return { absStr: (sign >= 0 ? "+" : "") + idpIaFmtInt(diff), pctStr: (sign >= 0 ? "+" : "") + pct.toFixed(1) + "%", sign: sign };
-  }
-  function idpIaDeltaColor(sign) {
-    if (sign > 0) return "color: #b91c1c"; // spend/qty up = red for procurement context (cost up)
-    if (sign < 0) return "color: #047857";
-    return "color: #64748b";
-  }
-
-  function idpIaRenderTotalsTiles(frame) {
-    var wrap = $("ia-totals-tiles-wrap");
-    var empty = $("ia-totals-empty");
-    var meta = $("ia-totals-meta");
-    var excDet = $("ia-totals-excluded-details");
-    var excList = $("ia-totals-excluded-list");
-    var tag = $("ia-totals-config-tag");
-    if (!wrap || !empty || !meta) return;
-    if (!frame || frame.parts.partIxs.length === 0) {
-      wrap.innerHTML = '<p class="col-span-full text-sm idp-muted" id="ia-totals-empty">Select parts to see totals.</p>';
-      meta.innerHTML = "";
-      if (excDet) excDet.classList.add("hidden");
-      if (tag) tag.textContent = "";
-      return;
-    }
-    if (tag) {
-      tag.textContent = "Baseline: " + frame.config.baselineLabel + " · " +
-        (frame.config.aggregation === "none" ? "Per-part (no agg)" : idpIaAggLabel(frame.config.aggregation));
-    }
-    var periods = frame.periods.visible.slice();
-    if (!periods.length) periods = frame.periods.all.slice();
-    var baselineKey = frame.config.baselineKey;
-    var baseSpend = frame.totals[baselineKey] && isFinite(frame.totals[baselineKey].spend) ? frame.totals[baselineKey].spend : null;
-    var baseQty   = frame.totals[baselineKey] && isFinite(frame.totals[baselineKey].qty)   ? frame.totals[baselineKey].qty   : null;
-    var aggIdx = frame.aggregate && frame.aggregate.ok ? frame.aggregate.indexed : null;
-    var html = "";
-    for (var i = 0; i < periods.length; i++) {
-      var pk = periods[i];
-      var b = frame.totals[pk] || { spend: 0, qty: 0 };
-      var isBase = (pk === baselineKey);
-      var dSpend = isBase ? { absStr: "—", pctStr: "—", sign: 0 } : idpIaFmtDelta(b.spend, baseSpend);
-      var dQty   = isBase ? { absStr: "—", pctStr: "—", sign: 0 } : idpIaFmtQtyDelta(b.qty, baseQty);
-      var idxVal = isBase ? 100 : (aggIdx ? aggIdx[pk] : null);
-      var pretty = pk.indexOf("-Q") > 0 ? pk.replace("-Q", " Q") : pk;
-      html += '<div class="rounded-lg border ' + (isBase ? 'border-[#1F3A8A]/40 bg-[#F1F5FF]' : 'border-[#E6E6E6] bg-white') + ' p-3 shadow-sm">' +
-        '<div class="text-[11px] font-semibold uppercase tracking-wide" style="color: #1F3A8A">' + esc(pretty) + (isBase ? ' · BASE' : '') + '</div>' +
-        '<dl class="mt-1 space-y-1.5 text-xs">' +
-          '<div><dt class="idp-muted">Spend</dt><dd class="text-sm font-semibold tabular-nums" style="color: #111827">' + idpIaFmtMoney(b.spend) + '</dd><dd class="text-[11px] tabular-nums" style="' + idpIaDeltaColor(dSpend.sign) + '">' + dSpend.absStr + ' (' + dSpend.pctStr + ')</dd></div>' +
-          '<div><dt class="idp-muted">Quantity</dt><dd class="text-sm font-semibold tabular-nums" style="color: #111827">' + idpIaFmtInt(b.qty) + '</dd><dd class="text-[11px] tabular-nums" style="' + idpIaDeltaColor(dQty.sign) + '">' + dQty.absStr + ' (' + dQty.pctStr + ')</dd></div>' +
-          '<div><dt class="idp-muted">Aggregate index</dt><dd class="text-sm font-semibold tabular-nums" style="color: #111827">' + idpIaFmtIdx(idxVal) + '</dd></div>' +
-        '</dl>' +
-      '</div>';
-    }
-    wrap.innerHTML = html;
-    var partsInScope = frame.parts.partIxs.length;
-    var partsExcluded = frame.parts.excluded.length;
-    var contribN = frame.aggregate && frame.aggregate.contributingParts ? frame.aggregate.contributingParts.length : (partsInScope - partsExcluded);
-    var covPct = frame.coverage ? frame.coverage.coveragePct : 0;
-    meta.innerHTML =
-      '<span><strong class="font-semibold" style="color: #111827">' + partsInScope + '</strong> parts selected</span>' +
-      '<span>· <strong class="font-semibold" style="color: #111827">' + contribN + '</strong> with valid ' + esc(frame.config.baselineLabel) + ' baseline</span>' +
-      '<span>· <strong class="font-semibold" style="color: #111827">' + (covPct > 0 ? covPct.toFixed(1) + '%' : '—') + '</strong> baseline-period spend coverage</span>' +
-      '<span>· Method: <strong style="color: #111827">' + esc(idpIaWeightingLabel(frame.config.weighting)) + '</strong></span>';
-    if (excList && excDet) {
-      if (frame.parts.excluded.length > 0) {
-        var lis = "";
-        for (var j = 0; j < frame.parts.excluded.length; j++) {
-          var ex = frame.parts.excluded[j];
-          lis += '<li><span class="font-medium">' + esc(idpPartLegendLabel(ex.partIx, 40, 60)) + '</span> — ' + esc(ex.reason) + '</li>';
-        }
-        excList.innerHTML = lis;
-        excDet.classList.remove("hidden");
-      } else {
-        excList.innerHTML = "";
-        excDet.classList.add("hidden");
-      }
-    }
   }
 
   /* ---------- Detail table ---------- */
@@ -13928,110 +13458,11 @@
     setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
   }
 
-  /* ---------- Validation panel ---------- */
-  function idpIaValidationWire() {
-    var runBtn = $("ia-validation-run");
-    var clearBtn = $("ia-validation-clear");
-    if (runBtn) runBtn.addEventListener("click", idpIaValidationRun);
-    if (clearBtn) clearBtn.addEventListener("click", function () {
-      var ta = $("ia-validation-input"); if (ta) ta.value = "";
-      var s = $("ia-validation-summary"); if (s) s.classList.add("hidden");
-      var w = $("ia-validation-warnings"); if (w) w.classList.add("hidden");
-      var rw = $("ia-validation-results-wrap"); if (rw) rw.classList.add("hidden");
-    });
-  }
-
-  function idpIaValidationRun() {
-    var M = idpIaMath();
-    if (!M) return;
-    var ta = $("ia-validation-input");
-    var tolEl = $("ia-validation-tolerance");
-    var summaryEl = $("ia-validation-summary");
-    var warnEl = $("ia-validation-warnings");
-    var resWrap = $("ia-validation-results-wrap");
-    var resBody = $("ia-validation-results-body");
-    if (!ta || !summaryEl || !warnEl || !resWrap || !resBody) return;
-    var parsed = M.parseExcelPivotText(ta.value || "");
-    if (!parsed.partOrder.length) {
-      summaryEl.classList.add("hidden");
-      resWrap.classList.add("hidden");
-      warnEl.classList.remove("hidden");
-      warnEl.innerHTML = "<strong>No usable rows in the pasted text.</strong> " + (parsed.warnings.length ? esc(parsed.warnings.join(" / ")) : "");
-      return;
-    }
-    var tol = tolEl && tolEl.value !== "" && isFinite(+tolEl.value) ? +tolEl.value : 0.5;
-    // Build dashboard byPart for the parts named in the paste. We match by
-    // part-number string against dicts.part.
-    var dashByPart = Object.create(null);
-    var rowDetails = Object.create(null); // { partKey: { periodKey: { spend, qty, rowCount } } }
-    var matchedParts = 0;
-    var unmatchedParts = [];
-    var gran = iaGranularity === "quarterly" ? "quarterly" : "yearly";
-    var baselineKey = idpIaEffectiveBaselineKey();
-    var partIxByKey = idpIaResolvePartIxsByNumberString(parsed.partOrder);
-    for (var i = 0; i < parsed.partOrder.length; i++) {
-      var key = parsed.partOrder[i];
-      var pIx = partIxByKey[key];
-      if (pIx == null) { unmatchedParts.push(key); continue; }
-      matchedParts++;
-      var rows = idpIaCollectPartRows(pIx);
-      var buckets = M.bucketRowsByPeriod(rows, gran);
-      var rebased = M.rebaseToBaseline(M.weightedUnitPriceByPeriod(buckets, iaWeightingMethod), baselineKey);
-      dashByPart[key] = rebased.ok ? rebased.indexed : {};
-      rowDetails[key] = buckets;
-    }
-    var diff = M.diffPartIndexes(dashByPart, parsed.byPart, tol);
-    // Render summary
-    var s = diff.summary;
-    summaryEl.classList.remove("hidden");
-    summaryEl.innerHTML =
-      _iaValStatTile("Compared", s.compared) +
-      _iaValStatTile("Match", s.matched, "color: #047857") +
-      _iaValStatTile("Fail (|Δ| > " + s.tolerance + ")", s.failed, s.failed > 0 ? "color: #b91c1c" : "") +
-      _iaValStatTile("Missing in dashboard", s.missingDashboard) +
-      _iaValStatTile("Missing in reference", s.missingReference);
-    // Warnings
-    var allWarn = parsed.warnings.slice();
-    if (unmatchedParts.length) allWarn.unshift(unmatchedParts.length + " part number(s) in the paste could not be matched to dashboard parts (case-insensitive, leading-zero-tolerant compare): " + unmatchedParts.slice(0, 6).join(", ") + (unmatchedParts.length > 6 ? "…" : ""));
-    if (allWarn.length) { warnEl.classList.remove("hidden"); warnEl.innerHTML = "<strong>Notes:</strong> " + esc(allWarn.join(" · ")); }
-    else { warnEl.classList.add("hidden"); }
-    // Render result rows
-    var html = "";
-    for (var j = 0; j < diff.rows.length; j++) {
-      var rr = diff.rows[j];
-      var dRow = rr.dashboard != null ? idpIaFmtIdx(rr.dashboard) : "—";
-      var eRow = rr.reference != null ? idpIaFmtIdx(rr.reference) : "—";
-      var dStr = rr.delta != null ? (rr.delta >= 0 ? "+" : "") + rr.delta.toFixed(2) : "—";
-      var pStr = rr.pctDelta != null ? (rr.pctDelta >= 0 ? "+" : "") + rr.pctDelta.toFixed(2) + "%" : "—";
-      var statusCls = "color: #64748b", statusLbl = rr.status;
-      if (rr.status === "match") { statusCls = "color: #047857"; statusLbl = "match"; }
-      else if (rr.status === "fail") { statusCls = "color: #b91c1c"; statusLbl = "FAIL"; }
-      var det = rowDetails[rr.partKey] && rowDetails[rr.partKey][rr.periodKey] ? rowDetails[rr.partKey][rr.periodKey] : null;
-      html += '<tr class="border-t border-[#F1F5F9]">' +
-        '<td class="px-2 py-1 font-mono">' + esc(rr.partKey) + '</td>' +
-        '<td class="px-2 py-1">' + esc(rr.periodKey.replace("-Q", " Q")) + '</td>' +
-        '<td class="px-2 py-1 text-right">' + dRow + '</td>' +
-        '<td class="px-2 py-1 text-right">' + eRow + '</td>' +
-        '<td class="px-2 py-1 text-right" style="' + statusCls + '">' + dStr + '</td>' +
-        '<td class="px-2 py-1 text-right" style="' + statusCls + '">' + pStr + '</td>' +
-        '<td class="px-2 py-1" style="' + statusCls + '">' + statusLbl + '</td>' +
-        '<td class="px-2 py-1 text-right">' + (det ? idpIaFmtMoney(det.spend) : "—") + '</td>' +
-        '<td class="px-2 py-1 text-right">' + (det ? idpIaFmtInt(det.qty) : "—") + '</td>' +
-        '<td class="px-2 py-1 text-right">' + (det ? idpIaFmtInt(det.rowCount) : "—") + '</td>' +
-      '</tr>';
-    }
-    resBody.innerHTML = html;
-    resWrap.classList.remove("hidden");
-  }
-
-  function _iaValStatTile(label, value, style) {
-    return '<div class="rounded border border-[#E6E6E6] bg-white p-2"><div class="text-[10px] uppercase tracking-wide idp-muted">' + esc(label) + '</div><div class="text-base font-semibold tabular-nums" style="' + (style || "color: #111827") + '">' + idpIaFmtInt(value) + '</div></div>';
-  }
-
-  /** Build a { canonicalKey → partIx } map so the validation panel can match
-   *  pasted part numbers to the dashboard's internal partIx ids. Matching is
-   *  case-insensitive and leading-zero-tolerant for all-numeric parts (uses
-   *  the same canonicalization as idpSingleSourcePartBucketKey). */
+  /** Build a { canonicalKey → partIx } map so saved-view snapshots can match
+   *  stored part-number strings back to the dashboard's internal partIx ids
+   *  after data reloads. Matching is case-insensitive and leading-zero-
+   *  tolerant for all-numeric parts (same canonicalization as
+   *  idpSingleSourcePartBucketKey). */
   function idpIaResolvePartIxsByNumberString(keys) {
     var out = Object.create(null);
     if (!dicts || !dicts.part) return out;
@@ -14056,9 +13487,18 @@
     return t;
   }
 
-  /* ---------- Saved views ---------- */
+  /* ---------- Saved views ----------
+   *
+   * Stripped-down to: save current view + load + delete.
+   * Storage key matches the previous build so existing localStorage entries
+   * keep working; only the rename / overwrite / default / share / export /
+   * import knobs were removed. Snapshot shape captures the four bits of
+   * state that are still user-controlled — selected parts, selected PPI
+   * indexes, granularity, and display window. Baseline is derived from
+   * granularity, and weighting / aggregation are now permanent defaults,
+   * so we don't snapshot them.
+   */
   var IA_SAVED_VIEWS_KEY = "idp_ia_saved_views_v1";
-  var IA_DEFAULT_VIEW_KEY = "idp_ia_default_view_v1";
 
   function idpIaSavedViewsRead() {
     try {
@@ -14071,31 +13511,21 @@
   function idpIaSavedViewsWrite(arr) {
     try { localStorage.setItem(IA_SAVED_VIEWS_KEY, JSON.stringify(arr)); } catch (e) {}
   }
-  function idpIaSavedViewsDefaultRead() {
-    try { return localStorage.getItem(IA_DEFAULT_VIEW_KEY) || null; } catch (e) { return null; }
-  }
-  function idpIaSavedViewsDefaultWrite(id) {
-    try { if (id == null) localStorage.removeItem(IA_DEFAULT_VIEW_KEY); else localStorage.setItem(IA_DEFAULT_VIEW_KEY, id); } catch (e) {}
-  }
 
   /** Snapshot current IA state into a portable object. */
   function idpIaCurrentStateSnapshot() {
     var partKeys = [];
     for (var i = 0; i < (indexAnalysisPartIxs || []).length; i++) {
       var pIx = indexAnalysisPartIxs[i];
-      var raw = dicts.part && dicts.part[D.iPart ? D.iPart[0] : null] != null ? null : null;
       var keyRaw = dicts.part && dicts.part[pIx] != null ? dicts.part[pIx] : null;
       if (keyRaw == null) continue;
       partKeys.push(String(keyRaw).trim());
     }
     return {
-      v: 1,
+      v: 2,
       partKeys: partKeys,
       indexCodes: (indexSelectedIndexCodes || []).slice(),
       granularity: iaGranularity,
-      baseline: iaBaselineKey,
-      weighting: iaWeightingMethod,
-      aggregation: iaAggregationMethod,
       window: { start: iaDisplayStartKey || null, end: iaDisplayEndKey || null }
     };
   }
@@ -14105,20 +13535,14 @@
     if (!snap || typeof snap !== "object") return;
     var warnings = [];
     iaGranularity = snap.granularity === "quarterly" ? "quarterly" : "yearly";
-    iaBaselineKey = snap.baseline === "2024-Q1" ? "2024-Q1" : "2024";
-    iaWeightingMethod = (snap.weighting === "spend" || snap.weighting === "simple") ? snap.weighting : "qty";
-    iaAggregationMethod = (snap.aggregation === "laspeyres" || snap.aggregation === "simple" || snap.aggregation === "pooled") ? snap.aggregation : "none";
+    // Baseline auto-derives from granularity (FY 2024 yearly, Q1 2024 quarterly).
+    idpIaEffectiveBaselineKey();
     iaDisplayStartKey = snap.window && snap.window.start ? snap.window.start : null;
     iaDisplayEndKey = snap.window && snap.window.end ? snap.window.end : null;
-    // Sync pill buttons + selects to the snapshot values
     idpIaPillSetActive("ia-granularity-group", "data-ia-granularity", iaGranularity);
-    idpIaPillSetActive("ia-baseline-group", "data-ia-baseline", iaBaselineKey);
-    idpIaPillSetActive("ia-weighting-group", "data-ia-weighting", iaWeightingMethod);
-    idpIaPillSetActive("ia-aggregation-group", "data-ia-aggregation", iaAggregationMethod);
     idpIaPopulateWindowSelects();
     var startSel = $("ia-window-start"); if (startSel) startSel.value = iaDisplayStartKey || "";
     var endSel = $("ia-window-end"); if (endSel) endSel.value = iaDisplayEndKey || "";
-    // Resolve part keys → partIxs
     if (Array.isArray(snap.partKeys) && indexAnalysisPartIxs) {
       var resolved = idpIaResolvePartIxsByNumberString(snap.partKeys);
       var newSel = [];
@@ -14151,54 +13575,36 @@
   }
 
   function idpIaSavedViewsRefreshUi() {
-    var sel = $("ia-saved-views-select");
+    var list = $("ia-saved-views-list");
     var status = $("ia-saved-views-status");
     var views = idpIaSavedViewsRead();
-    var defId = idpIaSavedViewsDefaultRead();
-    if (sel) {
-      sel.innerHTML = '<option value="">— Load a saved view —</option>';
-      for (var i = 0; i < views.length; i++) {
-        var opt = document.createElement("option");
-        opt.value = views[i].id;
-        opt.textContent = views[i].name + (views[i].id === defId ? " ★ (default)" : "");
-        if (views[i].id === _iaSavedViewsActiveId) opt.selected = true;
-        sel.appendChild(opt);
-      }
-    }
     if (status) {
       status.textContent = views.length === 0 ? "No saved views yet." :
-        views.length + " saved view" + (views.length === 1 ? "" : "s") + (defId ? " · default set" : "");
+        views.length + " saved view" + (views.length === 1 ? "" : "s");
     }
-    var hasActive = !!_iaSavedViewsActiveId;
-    var btnIds = ["ia-saved-views-overwrite", "ia-saved-views-rename", "ia-saved-views-delete", "ia-saved-views-default"];
-    for (var b = 0; b < btnIds.length; b++) {
-      var el = $(btnIds[b]); if (el) el.disabled = !hasActive;
+    if (!list) return;
+    if (!views.length) { list.innerHTML = ""; return; }
+    var html = "";
+    for (var i = 0; i < views.length; i++) {
+      var v = views[i];
+      var active = v.id === _iaSavedViewsActiveId;
+      html += '<span class="ia-saved-view-item inline-flex items-center gap-1 rounded-md border ' +
+        (active ? 'border-[#1F3A8A] bg-[#EEF2FF]' : 'border-[#E6E6E6] bg-white') +
+        ' px-2 py-1 text-xs" data-ia-view-id="' + esc(v.id) + '">' +
+        '<button type="button" class="ia-saved-view-load font-medium" style="color: #1F3A8A" title="Load this view">' + esc(v.name) + '</button>' +
+        '<button type="button" class="ia-saved-view-del idp-muted hover:text-[#b91c1c]" aria-label="Delete saved view" title="Delete saved view" style="font-size: 12px; line-height: 1">×</button>' +
+      '</span>';
     }
+    list.innerHTML = html;
   }
 
   function idpIaSavedViewsWire() {
-    var sel = $("ia-saved-views-select");
     var saveBtn = $("ia-saved-views-save");
-    var overBtn = $("ia-saved-views-overwrite");
-    var renBtn  = $("ia-saved-views-rename");
-    var delBtn  = $("ia-saved-views-delete");
-    var defBtn  = $("ia-saved-views-default");
-    var shareBtn= $("ia-saved-views-share");
-    var expBtn  = $("ia-saved-views-export");
-    var impBtn  = $("ia-saved-views-import");
-    var impInp  = $("ia-saved-views-import-file");
-    if (sel) sel.addEventListener("change", function () {
-      var id = this.value;
-      if (!id) { _iaSavedViewsActiveId = null; idpIaSavedViewsRefreshUi(); return; }
-      var views = idpIaSavedViewsRead();
-      var v = views.find(function (x) { return x.id === id; });
-      if (!v) return;
-      _iaSavedViewsActiveId = id;
-      idpIaApplySnapshot(v.state);
-      idpIaSavedViewsRefreshUi();
-    });
+    var list = $("ia-saved-views-list");
     if (saveBtn) saveBtn.addEventListener("click", function () {
       var name = window.prompt("Name for this view:", "View " + new Date().toLocaleString());
+      if (!name) return;
+      name = String(name).trim();
       if (!name) return;
       var views = idpIaSavedViewsRead();
       var id = "v_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 6);
@@ -14207,132 +13613,49 @@
       _iaSavedViewsActiveId = id;
       idpIaSavedViewsRefreshUi();
     });
-    if (overBtn) overBtn.addEventListener("click", function () {
-      if (!_iaSavedViewsActiveId) return;
-      var views = idpIaSavedViewsRead();
-      var i = views.findIndex(function (x) { return x.id === _iaSavedViewsActiveId; });
-      if (i < 0) return;
-      views[i].state = idpIaCurrentStateSnapshot();
-      views[i].updatedAt = new Date().toISOString();
-      idpIaSavedViewsWrite(views);
-      idpIaSavedViewsRefreshUi();
+    if (list) list.addEventListener("click", function (ev) {
+      var t = ev.target;
+      if (!t || !t.closest) return;
+      var item = t.closest(".ia-saved-view-item");
+      if (!item) return;
+      var id = item.getAttribute("data-ia-view-id");
+      if (!id) return;
+      if (t.closest(".ia-saved-view-del")) {
+        ev.preventDefault();
+        if (!window.confirm("Delete this saved view?")) return;
+        var views = idpIaSavedViewsRead().filter(function (x) { return x.id !== id; });
+        idpIaSavedViewsWrite(views);
+        if (_iaSavedViewsActiveId === id) _iaSavedViewsActiveId = null;
+        idpIaSavedViewsRefreshUi();
+        return;
+      }
+      if (t.closest(".ia-saved-view-load")) {
+        ev.preventDefault();
+        var v = idpIaSavedViewsRead().find(function (x) { return x.id === id; });
+        if (!v) return;
+        _iaSavedViewsActiveId = id;
+        idpIaApplySnapshot(v.state);
+        idpIaSavedViewsRefreshUi();
+      }
     });
-    if (renBtn) renBtn.addEventListener("click", function () {
-      if (!_iaSavedViewsActiveId) return;
-      var views = idpIaSavedViewsRead();
-      var i = views.findIndex(function (x) { return x.id === _iaSavedViewsActiveId; });
-      if (i < 0) return;
-      var name = window.prompt("New name:", views[i].name);
-      if (!name) return;
-      views[i].name = name;
-      idpIaSavedViewsWrite(views);
-      idpIaSavedViewsRefreshUi();
-    });
-    if (delBtn) delBtn.addEventListener("click", function () {
-      if (!_iaSavedViewsActiveId) return;
-      if (!window.confirm("Delete this saved view?")) return;
-      var views = idpIaSavedViewsRead().filter(function (x) { return x.id !== _iaSavedViewsActiveId; });
-      idpIaSavedViewsWrite(views);
-      if (idpIaSavedViewsDefaultRead() === _iaSavedViewsActiveId) idpIaSavedViewsDefaultWrite(null);
+  }
+
+  /** Reset the highlighted saved-view when the user's drifted from it. */
+  function idpIaSavedViewsUpdateActiveIdFromState() {
+    if (!_iaSavedViewsActiveId) return;
+    var v = idpIaSavedViewsRead().find(function (x) { return x.id === _iaSavedViewsActiveId; });
+    if (!v) { _iaSavedViewsActiveId = null; idpIaSavedViewsRefreshUi(); return; }
+    if (JSON.stringify(v.state) !== JSON.stringify(idpIaCurrentStateSnapshot())) {
       _iaSavedViewsActiveId = null;
       idpIaSavedViewsRefreshUi();
-    });
-    if (defBtn) defBtn.addEventListener("click", function () {
-      if (!_iaSavedViewsActiveId) return;
-      var cur = idpIaSavedViewsDefaultRead();
-      if (cur === _iaSavedViewsActiveId) { idpIaSavedViewsDefaultWrite(null); }
-      else { idpIaSavedViewsDefaultWrite(_iaSavedViewsActiveId); }
-      idpIaSavedViewsRefreshUi();
-    });
-    if (shareBtn) shareBtn.addEventListener("click", function () {
-      var snap = idpIaCurrentStateSnapshot();
-      var encoded;
-      try {
-        encoded = btoa(unescape(encodeURIComponent(JSON.stringify(snap))));
-      } catch (e) { window.alert("Couldn't encode share link."); return; }
-      var url = window.location.origin + window.location.pathname + "?iaView=" + encoded;
-      try {
-        if (navigator.clipboard && navigator.clipboard.writeText) {
-          navigator.clipboard.writeText(url).then(function () { window.alert("Share link copied to clipboard."); });
-        } else {
-          window.prompt("Copy this share link:", url);
-        }
-      } catch (e2) { window.prompt("Copy this share link:", url); }
-    });
-    if (expBtn) expBtn.addEventListener("click", function () {
-      var views = idpIaSavedViewsRead();
-      var defId = idpIaSavedViewsDefaultRead();
-      var payload = { v: 1, exportedAt: new Date().toISOString(), defaultViewId: defId, views: views };
-      var bl = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
-      var url = URL.createObjectURL(bl);
-      var a = document.createElement("a");
-      a.href = url; a.download = "idp-ia-saved-views-" + new Date().toISOString().slice(0, 10) + ".json";
-      a.click();
-      setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
-    });
-    if (impBtn && impInp) {
-      impBtn.addEventListener("click", function () { impInp.click(); });
-      impInp.addEventListener("change", function (ev) {
-        var f = ev.target.files && ev.target.files[0]; if (!f) return;
-        var rd = new FileReader();
-        rd.onload = function () {
-          try {
-            var obj = JSON.parse(rd.result);
-            if (!obj || !Array.isArray(obj.views)) throw new Error("Invalid file shape.");
-            var existing = idpIaSavedViewsRead();
-            var byId = {}; existing.forEach(function (v) { byId[v.id] = true; });
-            for (var i = 0; i < obj.views.length; i++) {
-              var v = obj.views[i];
-              if (!v || !v.id || !v.state || byId[v.id]) continue;
-              existing.push(v);
-            }
-            idpIaSavedViewsWrite(existing);
-            if (obj.defaultViewId && !idpIaSavedViewsDefaultRead()) idpIaSavedViewsDefaultWrite(obj.defaultViewId);
-            idpIaSavedViewsRefreshUi();
-            window.alert("Imported " + obj.views.length + " view(s).");
-          } catch (e) { window.alert("Import failed: " + e.message); }
-          impInp.value = "";
-        };
-        rd.readAsText(f);
-      });
     }
   }
 
-  /** Mark the active saved view as "dirty" (unsaved changes) by clearing the
-   *  highlighted option whenever the snapshot drifts. Cheap diff via JSON. */
-  function idpIaSavedViewsUpdateActiveIdFromState() {
-    if (!_iaSavedViewsActiveId) return;
-    var views = idpIaSavedViewsRead();
-    var v = views.find(function (x) { return x.id === _iaSavedViewsActiveId; });
-    if (!v) { _iaSavedViewsActiveId = null; idpIaSavedViewsRefreshUi(); return; }
-    var nowSnap = JSON.stringify(idpIaCurrentStateSnapshot());
-    var savedSnap = JSON.stringify(v.state);
-    if (nowSnap === savedSnap) return;
-    // State has drifted from the loaded view — keep the active id but the
-    // dropdown UI hides the indicator on next refresh.
-  }
-
-  /** Auto-apply iaView=<base64> URL param or the saved default on first IA-tab open. */
+  /** Legacy stub — default-view / share-link auto-apply has been removed.
+   *  Kept so the existing call site at IA-tab init doesn't need a separate edit. */
   function idpIaApplyInitialSavedViewOnce() {
     if (idpIaApplyInitialSavedViewOnce._done) return;
     idpIaApplyInitialSavedViewOnce._done = true;
-    try {
-      var params = new URLSearchParams(window.location.search);
-      var enc = params.get("iaView");
-      if (enc) {
-        var snap = JSON.parse(decodeURIComponent(escape(atob(enc))));
-        idpIaApplySnapshot(snap);
-        return;
-      }
-    } catch (e) {}
-    var defId = idpIaSavedViewsDefaultRead();
-    if (!defId) return;
-    var views = idpIaSavedViewsRead();
-    var v = views.find(function (x) { return x.id === defId; });
-    if (v) {
-      _iaSavedViewsActiveId = defId;
-      idpIaApplySnapshot(v.state);
-    }
   }
 
   function renderIndexAnalysisView() {

@@ -37,9 +37,6 @@ import {
   aggregateSimpleMean,
   aggregatePooledReweighted,
   aggregatePartIndexes,
-  parseExcelPivotText,
-  normalizePeriodLabel,
-  diffPartIndexes,
   computeBaselineCoverage,
   sumByPeriodAcrossParts
 } from "../../src/dashboard/index-math.mjs";
@@ -519,124 +516,6 @@ test("sumByPeriodAcrossParts collapses parts into one tile of {spend,qty}", () =
   assert.equal(totals["2024"].qty, 11000);
   assert.equal(totals["2025"].spend, 1200000);
   assert.equal(totals["2025"].qty, 11000);
-});
-
-// --------------------------------------------------------------------------
-// normalizePeriodLabel
-// --------------------------------------------------------------------------
-
-test("normalizePeriodLabel accepts wide variety of Excel-friendly forms", () => {
-  assert.equal(normalizePeriodLabel("2024"), "2024");
-  assert.equal(normalizePeriodLabel("2024-Q1"), "2024-Q1");
-  assert.equal(normalizePeriodLabel("2024 Q1"), "2024-Q1");
-  assert.equal(normalizePeriodLabel("Q1 2024"), "2024-Q1");
-  assert.equal(normalizePeriodLabel("Q1-2024"), "2024-Q1");
-  assert.equal(normalizePeriodLabel("Q3-24"), "2024-Q3");
-  assert.equal(normalizePeriodLabel("garbage"), null);
-  assert.equal(normalizePeriodLabel(""), null);
-  assert.equal(normalizePeriodLabel(null), null);
-});
-
-// --------------------------------------------------------------------------
-// parseExcelPivotText
-// --------------------------------------------------------------------------
-
-test("parseExcelPivotText parses tab-separated wide pivot", () => {
-  const txt = [
-    "PartNumber\t2024\t2025\t2026",
-    "ABC-001\t100\t108.2\t112.4",
-    "XYZ-999\t100\t99.7\t103.1",
-  ].join("\n");
-  const r = parseExcelPivotText(txt);
-  assert.deepEqual(r.partOrder, ["ABC-001", "XYZ-999"]);
-  assert.deepEqual(r.periodOrder, ["2024", "2025", "2026"]);
-  assert.equal(r.byPart["ABC-001"]["2025"], 108.2);
-  assert.equal(r.byPart["XYZ-999"]["2026"], 103.1);
-});
-
-test("parseExcelPivotText parses comma-separated quarterly pivot", () => {
-  const txt = [
-    "Part,2024-Q1,2024-Q2,2024-Q3,2024-Q4",
-    "P1,100,105,110,108",
-  ].join("\n");
-  const r = parseExcelPivotText(txt);
-  assert.deepEqual(r.periodOrder, ["2024-Q1", "2024-Q2", "2024-Q3", "2024-Q4"]);
-  assert.equal(r.byPart["P1"]["2024-Q3"], 110);
-});
-
-test("parseExcelPivotText parses long (3-column) format", () => {
-  const txt = [
-    "Part\tPeriod\tIndex",
-    "ABC\t2024\t100",
-    "ABC\t2025\t108.2",
-    "XYZ\t2025\t99.7",
-  ].join("\n");
-  const r = parseExcelPivotText(txt);
-  assert.equal(r.byPart["ABC"]["2024"], 100);
-  assert.equal(r.byPart["ABC"]["2025"], 108.2);
-  assert.equal(r.byPart["XYZ"]["2025"], 99.7);
-});
-
-test("parseExcelPivotText warns but doesn't throw on bad cells", () => {
-  const txt = [
-    "Part\t2024\t2025",
-    "ABC\t100\tnot-a-number",
-  ].join("\n");
-  const r = parseExcelPivotText(txt);
-  assert.equal(r.byPart["ABC"]["2024"], 100);
-  assert.equal(r.byPart["ABC"]["2025"], undefined);
-  assert.ok(r.warnings.length >= 1);
-});
-
-test("parseExcelPivotText empty / whitespace input returns empty result with warning", () => {
-  const r = parseExcelPivotText("   \n\n  ");
-  assert.equal(r.partOrder.length, 0);
-  assert.ok(r.warnings.length >= 1);
-});
-
-// --------------------------------------------------------------------------
-// diffPartIndexes
-// --------------------------------------------------------------------------
-
-test("diffPartIndexes flags matches inside tolerance and mismatches outside", () => {
-  const dash = { A: { "2024": 100, "2025": 108.4 }, B: { "2024": 100, "2025": 95 } };
-  const exc  = { A: { "2024": 100, "2025": 108.2 }, B: { "2024": 100, "2025": 99 } };
-  const r = diffPartIndexes(dash, exc, 0.5);
-  const matchA = r.rows.find((x) => x.partKey === "A" && x.periodKey === "2025");
-  const failB  = r.rows.find((x) => x.partKey === "B" && x.periodKey === "2025");
-  assert.equal(matchA.status, "match");
-  assert.ok(Math.abs(matchA.delta - 0.2) < 1e-9);
-  assert.equal(failB.status, "fail");
-  assert.equal(r.summary.matched, 3);   // A/2024, A/2025, B/2024
-  assert.equal(r.summary.failed, 1);    // B/2025
-});
-
-test("diffPartIndexes reports missing dashboard / missing reference rows", () => {
-  // Dashboard knows A only @2024 and Z only @2024. Reference knows A@2024+2025 and B@2024.
-  //   A/2024 → match (both sides)
-  //   A/2025 → missing-dashboard (only in reference)
-  //   B/2024 → missing-dashboard (only in reference)
-  //   Z/2024 → missing-reference (only in dashboard)
-  const dash = { A: { "2024": 100 },                 Z: { "2024": 100 } };
-  const exc  = { A: { "2024": 100, "2025": 110 },     B: { "2024": 100 } };
-  const r = diffPartIndexes(dash, exc, 0.5);
-  const aMissDash = r.rows.find((x) => x.partKey === "A" && x.periodKey === "2025");
-  const bMissDash = r.rows.find((x) => x.partKey === "B" && x.periodKey === "2024");
-  const zMissRef  = r.rows.find((x) => x.partKey === "Z" && x.periodKey === "2024");
-  assert.equal(aMissDash.status, "missing-dashboard");
-  assert.equal(bMissDash.status, "missing-dashboard");
-  assert.equal(zMissRef.status,  "missing-reference");
-  assert.equal(r.summary.missingDashboard, 2);
-  assert.equal(r.summary.missingReference, 1);
-});
-
-test("diffPartIndexes tracks max abs delta and max abs pct delta", () => {
-  const dash = { A: { "2024": 100, "2025": 130 } };
-  const exc  = { A: { "2024": 100, "2025": 110 } };
-  const r = diffPartIndexes(dash, exc, 0.5);
-  assert.equal(r.summary.maxAbsDelta, 20);
-  assert.ok(Math.abs(r.summary.maxAbsPctDelta - (20 / 110) * 100) < 1e-9);
-  assert.deepEqual(r.summary.maxAbsDeltaRow, { partKey: "A", periodKey: "2025" });
 });
 
 // --------------------------------------------------------------------------

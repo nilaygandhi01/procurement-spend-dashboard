@@ -34,36 +34,38 @@ The unit test `quarter boundary is half-open` locks this in.
 ## 2. Weighted-average unit price (the price metric being indexed)
 
 For each (part, period) bucket the dashboard computes a per-period unit
-price under one of three **weighting methods**, controlled by the
-Weighting picker in the IA tab. **Default = `qty`.**
+price using **volume-weighted (Σspend ÷ Σqty)**. This is the only method
+that ties to total spend, which is what we want for a price index, and is
+the only method that matches Excel's `AVERAGEIFS(spend, …) / AVERAGEIFS(qty, …)`
+pattern.
 
-| Method  | UI label                | Formula                                                | Matches Excel                                                |
-|---------|-------------------------|--------------------------------------------------------|--------------------------------------------------------------|
-| `qty`   | Qty-weighted (default)  | `Σ spend / Σ qty`                                      | `AVERAGEIFS(spend, …) / AVERAGEIFS(qty, …)`                  |
-| `spend` | Spend-weighted          | `Σ(unit_price × spend) / Σ spend`                      | `SUMPRODUCT(unit_price, spend) / SUM(spend)` over the window |
-| `simple`| Simple mean             | `mean(unit_price)` over rows                           | `AVERAGEIFS(unit_price, …)`                                  |
+```
+weighted_unit_price(period) = Σ spend / Σ qty   (rows in the period bucket)
+```
 
-`qty` is the only method that ties to total spend, which is what we want
-for a price index. `spend` and `simple` exist for one reason: when an
-external Excel reference disagrees with the dashboard, the Weighting picker
-lets you prove which method the Excel author actually used. The
-**Validation panel** (§10) wires this directly into the diff.
+There is **no user-facing Weighting picker** — this is a permanent default
+of the dashboard.
 
-The unit tests `WEIGHTING.QTY matches Σspend/Σqty …`,
-`WEIGHTING.SPEND uses spend as the weight, not quantity`, and
-`WEIGHTING.SIMPLE returns mean of per-row unit prices` lock in the
-distinct behavior of all three.
+The `WEIGHTING` constant in `src/dashboard/index-math.mjs` still defines two
+other methods (`spend`, `simple`) for historical reasons and so the math
+module's contract stays stable; the dashboard never passes anything except
+the default `qty` value. The unit test
+`WEIGHTING.QTY matches Σspend/Σqty …` is the one that locks in the live
+behavior.
 
 ---
 
-## 3. Baseline (= 100)
+## 3. Baseline (= 100) — auto-derived from granularity
 
-The chart supports two baselines:
+The chart baseline is auto-locked from the active granularity:
 
-| Setting          | Baseline period key | Meaning                                              |
-|------------------|---------------------|------------------------------------------------------|
-| FY 2024 = 100    | `"2024"`            | The volume-weighted unit price across all of 2024    |
-| Q1 2024 = 100    | `"2024-Q1"`         | The volume-weighted unit price across Jan–Mar 2024   |
+| Granularity | Baseline period key | Label rendered in the subtitle |
+|-------------|---------------------|--------------------------------|
+| Yearly      | `"2024"`            | `FY 2024 = 100`                |
+| Quarterly   | `"2024-Q1"`         | `Q1 2024 = 100`                |
+
+There is **no user-facing Baseline picker** — toggling Granularity swaps
+the baseline automatically.
 
 **Rebasing formula** (applied per part):
 
@@ -72,13 +74,6 @@ index(period) = weighted_unit_price(period) / weighted_unit_price(baseline) × 1
 ```
 
 By definition `index(baseline) = 100`.
-
-**Q1 vs. FY interaction with granularity.** Q1 2024 baseline only makes
-sense in Quarterly mode (you can't index against a quarter when the axis is
-years). When the user picks Q1 2024 but the granularity is Yearly, the chart
-silently falls back to FY 2024 and surfaces that in the active-config note
-under the controls. The radio is not flipped — the user's preference is
-remembered for when they switch to Quarterly.
 
 ---
 
@@ -139,34 +134,37 @@ sparse-bucket behavior in.
 
 ---
 
-## 6. Multi-part display rule & aggregation methods
+## 6. Multi-part display rule
 
-When the user selects N parts, the chart's default behavior is to render
-**N independent lines** — one per part, each rebased to its own baseline.
-This is the `Aggregation = Per-part lines` setting.
+When the user selects N parts, the chart **always** shows:
 
-If the user picks any of the three **basket-aggregation methods**, the
-per-part lines are hidden and a single black aggregate line is drawn instead
-(with PPI series still overlaid). The three methods produce mathematically
-different numbers — picking the right one matters.
+- **N per-part lines** — one per part, each rebased to its own baseline.
+- **One bold aggregate overlay** computed via Laspeyres (spend-weighted by
+  base-period spend), drawn on top of the per-part lines whenever N ≥ 2.
+  For a single-part selection the aggregate equals that part's own line,
+  so it's skipped.
 
-| Method      | Formula (per period)                                                            | When you'd use it                                                                                       |
-|-------------|----------------------------------------------------------------------------------|---------------------------------------------------------------------------------------------------------|
-| `laspeyres` | `Σ_part [ part_index(period) × baseSpend(part) ] / Σ_part baseSpend(part)`       | "How much would the same basket cost today vs. the baseline?" Fixed weights from baseline period.       |
-| `simple`    | `mean(part_index(period))` over contributing parts                               | Each part gets equal voice — useful for spotting which parts moved without spend bias.                  |
-| `pooled`    | `(Σ_part spend(period) / Σ_part qty(period)) / pooled_price(baseline) × 100`     | "Treat the basket as one big part." Index moves with both price *and* mix shift across periods.         |
+There is **no user-facing Aggregation picker** — Laspeyres is the only
+method shown, baked in as the default.
 
-The default is `Per-part lines` (no aggregation), preserving the original
-display. The chart subtitle and the "ⓘ Method" popover document which
-method is active.
+```
+agg_index(period) = Σ_part [ part_index(period) × baseSpend(part) ] / Σ_part baseSpend(part)
+```
 
-**Excluded parts** (those without baseline data) contribute weight zero
-to Laspeyres and aren't counted by Simple-mean; the Totals section reports
-how many parts were excluded and why.
+Weights are computed **once** from the baseline period and held constant
+for every other period. Parts with no baseline data contribute weight 0
+and are therefore silently dropped from the aggregate (their per-part
+line still renders if the rebase succeeded against a non-baseline
+period).
 
-The unit tests `aggregateLaspeyres uses base-period spend as fixed weight`,
+The `AGGREGATION` constant in `src/dashboard/index-math.mjs` still defines
+`simple` (arithmetic mean of per-part indexes) and `pooled` (Σspend/Σqty
+across the basket re-indexed) for historical reasons; the dashboard never
+calls them. The unit tests
+`aggregateLaspeyres uses base-period spend as fixed weight`,
 `aggregateSimpleMean is the arithmetic mean — visibly different from Laspeyres`,
-and `aggregatePooledReweighted treats the basket as one big part` lock these in.
+and `aggregatePooledReweighted treats the basket as one big part` keep all
+three locked in.
 
 ---
 
@@ -196,10 +194,9 @@ year's 4 quarters (a flat step). The chart annotates these lines as
 `PPI (CODE, yearly→Q step)` in the legend, and Chart.js renders them with
 `stepped: "before"` so the visual cue is clear.
 
-The PPI baseline is always FY 2024 — even when the user picks Q1 2024 for
-the part lines — because there is no Q1 2024 PPI value to rebase against.
-The active-config note documents this when the two baselines are in play
-together.
+The PPI baseline is always FY 2024 — even in Quarterly mode where the
+spend lines rebase to Q1 2024 — because there is no Q1 2024 PPI value to
+rebase against. The chart subtitle documents this.
 
 ---
 
@@ -248,74 +245,13 @@ only, not the indexing math.
 
 ---
 
-## 10. Validation panel (Excel-diff)
+## 10. Detail table
 
-The Validation panel sits below the chart. Paste an Excel pivot (wide or
-long format) into the textarea and click **Run diff**.
+The Detail-table panel below the chart reads from the same `frame` object
+the chart just drew from. This guarantees its numbers can never drift from
+what's plotted.
 
-**Accepted layouts:**
-
-```
-# Wide (header row = periods):
-PartNumber<TAB>2024<TAB>2025<TAB>2026
-ABC-001<TAB>100<TAB>108.2<TAB>112.4
-
-# Long (3 columns):
-Part<TAB>Period<TAB>Index
-ABC-001<TAB>2024<TAB>100
-ABC-001<TAB>2025<TAB>108.2
-```
-
-Separators auto-detect: TAB > comma > 2+ spaces > single space. Period
-labels normalize from `2024`, `2024-Q1`, `2024 Q1`, `Q1 2024`, or `Q1-24`.
-
-**What the diff does:**
-
-1. Parses the paste into `{ partKey: { periodKey: value } }`.
-2. Matches each pasted part number to the dashboard's part dictionary using
-   the same canonicalization rule as Single-Source (case-insensitive,
-   leading-zero-tolerant for all-numeric parts).
-3. For every matched part, computes the dashboard's indexed series at the
-   **currently-active granularity, baseline, AND weighting method**
-   (so toggling the Weighting picker shows you exactly which method matches
-   Excel).
-4. Calls `diffPartIndexes` to produce a row-level report with delta,
-   percent delta, and a status flag (`match` / `fail` / `missing-dashboard`
-   / `missing-reference`). The default tolerance is **0.5 index points**
-   and is editable in the UI.
-5. Surfaces the underlying inputs (`Σspend`, `Σqty`, row count) next to
-   every fail row so you can see *why* the calculation diverged — usually
-   it's a row-count gap (Excel was filtered, dashboard wasn't) or a
-   weighting-method mismatch.
-
-The summary tiles show: rows compared, matched within tolerance, failed,
-missing on each side, plus max absolute delta and max absolute percent
-delta.
-
-PPI series are excluded from the diff — they're indexed from external
-yearly data, not from the spend rows.
-
----
-
-## 11. Totals tiles & detail table
-
-Two read-only panels sit under the chart and read from the same `frame`
-object the chart just drew from. This guarantees their numbers can never
-drift from what's plotted.
-
-**Totals tiles** — one tile per visible period:
-
-- **Spend** total + period-over-period delta (vs. baseline) in `$` and `%`.
-- **Quantity** total + delta.
-- **Aggregate index** (whatever the active aggregation method produced; the
-  baseline tile always reads `100`).
-- Meta line: parts in scope, parts with valid baseline, **baseline-period
-  spend coverage %** (= included base spend / total selected-parts base
-  spend), and weighting method.
-- Excluded parts are surfaced in a click-to-expand list with the reason
-  (no spend in baseline / baseline price non-finite).
-
-**Detail table** — one row per chart-selected part, columns:
+One row per chart-selected part, columns:
 
 - Part #, Description
 - For each visible period: `index`, `spend`, `qty`
@@ -332,9 +268,9 @@ Missing values render as `—` (never `0` or `NaN`).
 
 ---
 
-## 12. Saved views
+## 11. Saved views
 
-The Saved-views panel persists the full IA tab state per browser
+The Saved-views panel persists the IA tab state per browser
 (`localStorage` key `idp_ia_saved_views_v1`). One view captures:
 
 ```
@@ -342,20 +278,21 @@ The Saved-views panel persists the full IA tab state per browser
   partKeys: ["ABC-001", ...],   // part-number strings, resolved at load time
   indexCodes: ["WPU10", ...],   // PPI series checkbox state
   granularity: "yearly"|"quarterly",
-  baseline:    "2024"|"2024-Q1",
-  weighting:   "qty"|"spend"|"simple",
-  aggregation: "none"|"laspeyres"|"simple"|"pooled",
   window:      { start: "...", end: "..." }
 }
 ```
 
-- **Save as / Overwrite / Rename / Delete** operate on the currently-loaded
-  view.
-- **Set default** marks the view to auto-load whenever the IA tab opens.
-- **Copy share link** base64-encodes the snapshot into `?iaView=` so a
-  teammate opening the link sees the same chart (subject to their browser
-  having access to the same dataset).
-- **Export / Import JSON** round-trip the whole set across browsers.
+Baseline, weighting, and aggregation are no longer user-controlled, so the
+snapshot doesn't capture them.
+
+The UI exposes only:
+
+- A **Save current view** button — prompts for a name and saves.
+- A list of saved views as pills — click a name to load, click the `×`
+  to delete.
+
+Rename, overwrite, default-view, share-link, and JSON import/export were
+removed in the May 2026 simplification — too many knobs for too little use.
 
 When loading, any part that no longer exists in the current dataset is
 **reported as a warning** under the panel — never silently dropped from the
@@ -363,7 +300,7 @@ selection.
 
 ---
 
-## 13. File map
+## 12. File map
 
 | File                                       | Purpose                                              |
 |--------------------------------------------|------------------------------------------------------|
