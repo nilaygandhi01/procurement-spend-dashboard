@@ -10238,11 +10238,19 @@
     }
     var asg = derived.assignment;
     var lowT = asg.low.growthPct, highT = asg.high.growthPct;
+    /* Column headers for the Low/High target columns include the index
+     * code (e.g. "Low Target % (WPU1017)") so the workbook is
+     * self-describing. JS object literals can't compute keys with
+     * `"…" + expr + "…":` syntax (that's a SyntaxError — what was here
+     * before, broken since commit 9cc9bad), so we build the static keys
+     * inline and assign the dynamic ones after the fact. */
+    var lowTargetKey = "Low Target % (" + asg.low.code + ")";
+    var highTargetKey = "High Target % (" + asg.high.code + ")";
     function rowsFor(parts, archLabel) {
       var out = [];
       for (var i = 0; i < parts.length; i++) {
         var p = parts[i];
-        out.push({
+        var row = {
           "Part Number": p.part,
           "Description": p.desc || "",
           "Site": p.site || "",
@@ -10255,11 +10263,12 @@
           "2025 Spend (USD)": Math.round(p.spendHigh * 100) / 100,
           "2025 Quantity": Math.round(p.qtyHigh * 100) / 100,
           "Part Growth %": isFinite(p.growthPct) ? Math.round(p.growthPct * 100) / 100 : "",
-          "Low Target % (" + asg.low.code + ")": Math.round(lowT * 100) / 100,
-          "High Target % (" + asg.high.code + ")": Math.round(highT * 100) / 100,
           "Low Capture $ Savings": Math.round(p.lowSavings * 100) / 100,
           "High Capture $ Savings": Math.round(p.highSavings * 100) / 100
-        });
+        };
+        row[lowTargetKey] = Math.round(lowT * 100) / 100;
+        row[highTargetKey] = Math.round(highT * 100) / 100;
+        out.push(row);
       }
       return out;
     }
