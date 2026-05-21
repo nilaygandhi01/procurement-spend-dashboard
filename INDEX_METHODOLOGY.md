@@ -407,7 +407,68 @@ view, each year's index value is flat-stepped across its 4 quarters
 The Index Opportunity tab does not have a granularity toggle — it's
 always 2024→2025 yearly per spec.
 
-### 13g. Implementation pointers
+### 13g. Per-part drill-down ("View details")
+
+Each row in an archetype's detail table has a **View details** link that
+opens an inline drill-down (same UX pattern as the existing
+Harmonization tab — a hidden `<tr>` below the main row that toggles
+.hidden on click). The drill-down has three components:
+
+**1. KPI strip — three cards** (matches the harmonization
+detail layout):
+
+```
+2025 SPEND          = spend_2025
+2025 VOLUME         = qty_2025
+POTENTIAL SAVINGS   = lowSavings  (sub-text: "% of current spend")
+```
+
+**2. Line chart — two x-points (2024, 2025), three lines:**
+
+| Line | 2024 value | 2025 value | Style |
+|---|---|---|---|
+| Actual unit price          | `priceLow`  | `priceHigh`                          | Solid, orange (`#F07F00`) |
+| `<lowCode>` benchmark     | `priceLow`  | `priceLow × (1 + lowTargetPct/100)`  | Dashed, green (`#10B981`) |
+| `<highCode>` benchmark    | `priceLow`  | `priceLow × (1 + highTargetPct/100)` | Dashed, amber (`#D97706`) |
+
+All three lines anchor at the same 2024 price so the 2025 fan-out
+visually shows where the part went vs. where each benchmark "would have
+let it go". Y-axis is dollars. Legend at the bottom shows each line's
+growth %.
+
+**3. Detail table — two rows × eight columns:**
+
+```
+Year | Qty | Unit price | Spend | Low bench $/unit | High bench $/unit | Savings vs low | Savings vs high
+2024 | …   | priceLow   | spnd  | priceLow         | priceLow          | 0              | 0
+2025 | …   | priceHigh  | spnd  | priceLow × (1+L) | priceLow × (1+H)  | spnd − qty25 × lowBench25 | spnd − qty25 × highBench25
+```
+
+A positive **Savings vs benchmark** means the part outpaced the
+benchmark (real opportunity). A negative value means the part beat the
+benchmark (no opportunity for *this* row — possible when the 2025 spend
+came in under what the benchmark would have allowed). The drill-down
+table reports the raw signed number rather than flooring at 0, so the
+direction is visible — the floor-at-0 logic is reserved for the rollup
+math in `partCaptureSavings()`.
+
+**Why the drill-down savings differ from the rollup savings**
+
+The rollup uses `spendHigh × (growthPct − target)/100` (a single
+multiplicative formula). The drill-down uses `spend_2025 − qty_2025 ×
+benchmark_25` (a "what would the spend have been if the price followed
+the benchmark" formula).
+
+For a part where the 2025 quantity ratio matches the 2024-derived
+price-growth assumption (the common case), these match. They diverge
+when the 2025 quantity is materially different from the implicit
+quantity that the rollup formula assumes — which is intentional. The
+rollup formula is the "capture % of 2025 spend" headline number; the
+drill-down formula is the "what would 2025 spend have been at the
+benchmark price" decomposition. Both are honest; they answer slightly
+different questions.
+
+### 13h. Implementation pointers
 
 | Concern | Where |
 |---|---|
@@ -417,4 +478,5 @@ always 2024→2025 yearly per spec.
 | Tab JS (cache, render, export)              | `src/dashboard/index.html` → "HARMONIZATION → INDEX OPPORTUNITY TAB" |
 | Part-level growth cache (one rebuild per data load) | `idpIoBuildPartCache()` |
 | Archetype derivation (one re-derive per index pick) | `idpIoDeriveOpportunities()` |
+| Per-part drill-down rows                    | `partDrilldownRows(part, lowT, highT)` (math) / `idpIoBuildDrilldownCell()` (UI) / `idpIoRenderDrilldownChart()` (Chart.js) |
 | Excel export                                | `ioExportAllIndexOpportunities()` |

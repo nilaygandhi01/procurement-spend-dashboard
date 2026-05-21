@@ -704,6 +704,73 @@ function partsFor80PctValue(qualifyingParts) {
 }
 
 /**
+ * Build the 2-row detail breakdown for one part vs. the chosen low/high
+ * index targets — feeds the per-part drill-down on the Index Opportunity
+ * tab (chart lines + the 2-row table below it).
+ *
+ * Returns rows in chronological order [2024, 2025]. Each row has:
+ *   { year, qty, price, spend, lowBenchmark, highBenchmark,
+ *     savingsVsLow, savingsVsHigh }
+ *
+ * Rule of the row layout (locked in by tests):
+ *   - 2024 is the baseline year. Benchmarks equal the actual unit price
+ *     for that row, and both savings columns are exactly 0. This keeps
+ *     the visual story consistent with "the index curves anchor at
+ *     2024 = actual price, then diverge in 2025".
+ *   - 2025 benchmarks are the 2024 actual price grown by the target
+ *     growth % (low and high). Savings = current spend − qty × benchmark.
+ *     A negative number means the part outperformed the benchmark
+ *     (no opportunity — but we return the raw number rather than
+ *     flooring at 0 so the table can show the sign honestly).
+ *
+ * Returns null when the part is missing usable prices for either year
+ * or the target growths are non-finite — caller should fall back to a
+ * "no chart available" message.
+ *
+ * The part object's contract matches what idpIoBuildPartCache puts in
+ * _idpIoPartCache.parts: { priceLow, priceHigh, qtyLow, qtyHigh,
+ * spendLow, spendHigh }.
+ */
+function partDrilldownRows(part, lowTargetPct, highTargetPct) {
+  if (!part) return null;
+  const p24 = +part.priceLow;
+  const p25 = +part.priceHigh;
+  if (!Number.isFinite(p24) || p24 <= 0) return null;
+  if (!Number.isFinite(p25) || p25 <= 0) return null;
+  const lowT = +lowTargetPct;
+  const highT = +highTargetPct;
+  if (!Number.isFinite(lowT) || !Number.isFinite(highT)) return null;
+  const q24 = Number.isFinite(+part.qtyLow) ? +part.qtyLow : 0;
+  const q25 = Number.isFinite(+part.qtyHigh) ? +part.qtyHigh : 0;
+  const s24 = Number.isFinite(+part.spendLow) ? +part.spendLow : 0;
+  const s25 = Number.isFinite(+part.spendHigh) ? +part.spendHigh : 0;
+  const benchLow25 = p24 * (1 + lowT / 100);
+  const benchHigh25 = p24 * (1 + highT / 100);
+  return [
+    {
+      year: 2024,
+      qty: q24,
+      price: p24,
+      spend: s24,
+      lowBenchmark: p24,
+      highBenchmark: p24,
+      savingsVsLow: 0,
+      savingsVsHigh: 0
+    },
+    {
+      year: 2025,
+      qty: q25,
+      price: p25,
+      spend: s25,
+      lowBenchmark: benchLow25,
+      highBenchmark: benchHigh25,
+      savingsVsLow: s25 - q25 * benchLow25,
+      savingsVsHigh: s25 - q25 * benchHigh25
+    }
+  ];
+}
+
+/**
  * Roll up an array of qualifying parts (each with .spendHigh, .lowSavings,
  * .highSavings) into the 5-tile archetype summary used by the Index
  * Opportunity tab.
@@ -769,5 +836,6 @@ export {
   assignLowHigh,
   partCaptureSavings,
   partsFor80PctValue,
+  partDrilldownRows,
   archetypeSummary
 };

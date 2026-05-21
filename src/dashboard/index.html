@@ -2694,6 +2694,73 @@
         }
 
         /**
+         * Build the 2-row detail breakdown for one part vs. the chosen low/high
+         * index targets — feeds the per-part drill-down on the Index Opportunity
+         * tab (chart lines + the 2-row table below it).
+         *
+         * Returns rows in chronological order [2024, 2025]. Each row has:
+         *   { year, qty, price, spend, lowBenchmark, highBenchmark,
+         *     savingsVsLow, savingsVsHigh }
+         *
+         * Rule of the row layout (locked in by tests):
+         *   - 2024 is the baseline year. Benchmarks equal the actual unit price
+         *     for that row, and both savings columns are exactly 0. This keeps
+         *     the visual story consistent with "the index curves anchor at
+         *     2024 = actual price, then diverge in 2025".
+         *   - 2025 benchmarks are the 2024 actual price grown by the target
+         *     growth % (low and high). Savings = current spend − qty × benchmark.
+         *     A negative number means the part outperformed the benchmark
+         *     (no opportunity — but we return the raw number rather than
+         *     flooring at 0 so the table can show the sign honestly).
+         *
+         * Returns null when the part is missing usable prices for either year
+         * or the target growths are non-finite — caller should fall back to a
+         * "no chart available" message.
+         *
+         * The part object's contract matches what idpIoBuildPartCache puts in
+         * _idpIoPartCache.parts: { priceLow, priceHigh, qtyLow, qtyHigh,
+         * spendLow, spendHigh }.
+         */
+        function partDrilldownRows(part, lowTargetPct, highTargetPct) {
+          if (!part) return null;
+          const p24 = +part.priceLow;
+          const p25 = +part.priceHigh;
+          if (!Number.isFinite(p24) || p24 <= 0) return null;
+          if (!Number.isFinite(p25) || p25 <= 0) return null;
+          const lowT = +lowTargetPct;
+          const highT = +highTargetPct;
+          if (!Number.isFinite(lowT) || !Number.isFinite(highT)) return null;
+          const q24 = Number.isFinite(+part.qtyLow) ? +part.qtyLow : 0;
+          const q25 = Number.isFinite(+part.qtyHigh) ? +part.qtyHigh : 0;
+          const s24 = Number.isFinite(+part.spendLow) ? +part.spendLow : 0;
+          const s25 = Number.isFinite(+part.spendHigh) ? +part.spendHigh : 0;
+          const benchLow25 = p24 * (1 + lowT / 100);
+          const benchHigh25 = p24 * (1 + highT / 100);
+          return [
+            {
+              year: 2024,
+              qty: q24,
+              price: p24,
+              spend: s24,
+              lowBenchmark: p24,
+              highBenchmark: p24,
+              savingsVsLow: 0,
+              savingsVsHigh: 0
+            },
+            {
+              year: 2025,
+              qty: q25,
+              price: p25,
+              spend: s25,
+              lowBenchmark: benchLow25,
+              highBenchmark: benchHigh25,
+              savingsVsLow: s25 - q25 * benchLow25,
+              savingsVsHigh: s25 - q25 * benchHigh25
+            }
+          ];
+        }
+
+        /**
          * Roll up an array of qualifying parts (each with .spendHigh, .lowSavings,
          * .highSavings) into the 5-tile archetype summary used by the Index
          * Opportunity tab.
@@ -2752,6 +2819,7 @@
       isInHalfOpenRange: isInHalfOpenRange,
       parsePeriodKey: parsePeriodKey,
       partCaptureSavings: partCaptureSavings,
+      partDrilldownRows: partDrilldownRows,
       partsFor80PctValue: partsFor80PctValue,
       periodKeyOf: periodKeyOf,
       periodSortKey: periodSortKey,
@@ -9511,7 +9579,7 @@
     return (v >= 0 ? "+" : "") + v.toFixed(1) + "%";
   }
 
-  function idpIoBuildDetailTable(parts, archKey, lowT, highT) {
+  function idpIoBuildDetailTable(parts, archKey, lowT, highT, assignment) {
     var wrap = document.createElement("div");
     wrap.className = "overflow-x-auto px-3 pb-3";
     var tbl = document.createElement("table");
@@ -9521,7 +9589,9 @@
     var labels = [
       "Part number", "Description", "Site",
       "2024 → 2025 growth", "Low target", "High target",
-      "Low capture $ savings", "High capture $ savings", "2025 spend"
+      "Low capture $ savings", "High capture $ savings", "2025 spend",
+      "" /* View details column — header intentionally blank to match the
+            existing Harmonization tab pattern */
     ];
     for (var li = 0; li < labels.length; li++) {
       var th = document.createElement("th");
@@ -9545,7 +9615,7 @@
     } else {
       var shown = Math.min(parts.length, _idpIoTableShown[archKey] || IDP_IO_TABLE_PREVIEW_ROWS);
       for (var i = 0; i < shown; i++) {
-        tb.appendChild(idpIoBuildDetailRow(parts[i], lowT, highT));
+        idpIoAppendDetailRowPair(tb, parts[i], archKey, i, lowT, highT, assignment, labels.length);
       }
     }
     tbl.appendChild(tb);
@@ -9569,9 +9639,16 @@
     return wrap;
   }
 
-  function idpIoBuildDetailRow(p, lowT, highT) {
-    var tr = document.createElement("tr");
-    tr.className = "border-b border-[#f0f0f0]";
+  /** Append the main row + a paired hidden detail row to the tbody. The
+   *  detail row opens an inline drill-down (matching the Harmonization
+   *  tab's "View details" pattern) with KPIs, a line chart, and a
+   *  2-row benchmark table. We append in pairs so the detail <tr>
+   *  sits immediately below its main row in the DOM and the click
+   *  handler can toggle .hidden on the sibling. */
+  function idpIoAppendDetailRowPair(tbody, p, archKey, rowIdx, lowT, highT, assignment, colCount) {
+    var mainTr = document.createElement("tr");
+    mainTr.className = "cursor-pointer border-b border-[#f0f0f0] hover:bg-gray-50";
+    mainTr.id = "io-" + archKey + "-main-" + rowIdx;
     var cells = [
       [p.part, ""],
       [p.desc || "—", ""],
@@ -9587,12 +9664,336 @@
       var td = document.createElement("td");
       td.textContent = cells[i][0];
       if (cells[i][1]) td.className = cells[i][1];
-      tr.appendChild(td);
+      mainTr.appendChild(td);
     }
-    return tr;
+    /* "View details" cell — same styling as the harmonization tab's
+     * link so they look identical to the user. */
+    var tdV = document.createElement("td");
+    var vSpan = document.createElement("span");
+    vSpan.textContent = "View details";
+    vSpan.style.cssText = "color:#4a6cf7;cursor:pointer;text-decoration:underline;";
+    tdV.appendChild(vSpan);
+    mainTr.appendChild(tdV);
+    tbody.appendChild(mainTr);
+
+    /* Hidden detail row — fills on first open, cleared on close so we
+     * don't keep dead Chart.js instances or stale DOM around. */
+    var detailTr = document.createElement("tr");
+    detailTr.className = "io-detail-row hidden bg-[#fafafa]";
+    detailTr.setAttribute("data-io-main-tr-id", mainTr.id);
+    var canvasId = "io-" + archKey + "-cnv-" + rowIdx;
+    detailTr.setAttribute("data-io-canvas-id", canvasId);
+    var tdD = document.createElement("td");
+    tdD.colSpan = colCount;
+    tdD.className = "p-0";
+    detailTr.appendChild(tdD);
+    tbody.appendChild(detailTr);
+
+    mainTr.addEventListener("click", function (ev) {
+      /* Clicking inside a button / link / interactive child should not
+       * collapse-expand the row (mirrors the harmonization handler). */
+      if (ev.target.closest && ev.target.closest("button")) return;
+      var isOpen = !detailTr.classList.contains("hidden");
+      /* Close every other open IO drill-down before opening this one
+       * so memory doesn't balloon with idle Chart.js instances. */
+      document.querySelectorAll("tr.io-detail-row").forEach(function (otr) {
+        if (otr === detailTr) return;
+        if (!otr.classList.contains("hidden")) {
+          var cid2 = otr.getAttribute("data-io-canvas-id");
+          if (cid2) harmUnifiedDestroyCanvasChart(document.getElementById(cid2));
+          var tdz = otr.querySelector("td");
+          if (tdz) tdz.innerHTML = "";
+          otr.classList.add("hidden");
+          var mId = otr.getAttribute("data-io-main-tr-id");
+          if (mId) {
+            var m2 = document.getElementById(mId);
+            if (m2) m2.classList.remove("bg-[#FFF7ED]");
+          }
+        }
+      });
+      if (isOpen) {
+        harmUnifiedDestroyCanvasChart(document.getElementById(canvasId));
+        tdD.innerHTML = "";
+        detailTr.classList.add("hidden");
+        mainTr.classList.remove("bg-[#FFF7ED]");
+        return;
+      }
+      idpIoBuildDrilldownCell(tdD, mainTr, detailTr, p, assignment, canvasId);
+      detailTr.classList.remove("hidden");
+      mainTr.classList.add("bg-[#FFF7ED]");
+      setTimeout(function () {
+        try { mainTr.scrollIntoView({ behavior: "smooth", block: "start" }); } catch (eSc) {}
+      }, 150);
+    });
   }
 
-  function idpIoBuildArchetypeSection(label, archKey, parts, summary, lowT, highT) {
+  /** Render the IO drill-down content into `td` — a header bar with a
+   *  close button, the 3-KPI strip (2025 Spend / 2025 Volume / Potential
+   *  Savings), a 2-point line chart (actual price vs low/high index
+   *  targets), the 2-row benchmark table, and the footnote.
+   *
+   *  `p` is an enriched IO part (see idpIoDeriveOpportunities) and
+   *  `assignment` is { low: {code, growthPct}, high: {code, growthPct} }
+   *  from idpIoComputeIndexAssignment. */
+  function idpIoBuildDrilldownCell(td, mainTr, detailTr, p, assignment, canvasId) {
+    td.innerHTML = "";
+    var lowT = assignment && assignment.low ? +assignment.low.growthPct : NaN;
+    var highT = assignment && assignment.high ? +assignment.high.growthPct : NaN;
+    var lowCode = assignment && assignment.low ? assignment.low.code : "Low";
+    var highCode = assignment && assignment.high ? assignment.high.code : "High";
+    var M = window.IDP_INDEX_MATH;
+    var drillRows = M && typeof M.partDrilldownRows === "function"
+      ? M.partDrilldownRows(p, lowT, highT)
+      : null;
+
+    var wrap = document.createElement("div");
+    wrap.className = "idp-harm-detail-cell-wrap";
+
+    /* Header: part key + close button (matches harmonization pattern). */
+    var hdr = document.createElement("div");
+    hdr.className = "idp-harm-detail-hdr";
+    var hdrLeft = document.createElement("div");
+    hdrLeft.className = "idp-harm-detail-title";
+    var pk = (p.part || "—") + (p.site ? " · " + p.site : "");
+    if (p.desc) pk += " — " + p.desc;
+    hdrLeft.textContent = pk;
+    var closeBtn = document.createElement("button");
+    closeBtn.type = "button";
+    closeBtn.className = "idp-harm-detail-close";
+    closeBtn.textContent = "× Close";
+    closeBtn.addEventListener("click", function (ev) {
+      ev.stopPropagation();
+      harmUnifiedDestroyCanvasChart(document.getElementById(canvasId));
+      td.innerHTML = "";
+      detailTr.classList.add("hidden");
+      mainTr.classList.remove("bg-[#FFF7ED]");
+    });
+    hdr.appendChild(hdrLeft);
+    hdr.appendChild(closeBtn);
+    wrap.appendChild(hdr);
+
+    /* 3-KPI strip — 2025 Spend, 2025 Volume, Potential Savings. */
+    var spendVal = isFinite(+p.spendHigh) ? +p.spendHigh : 0;
+    var qtyVal = isFinite(+p.qtyHigh) ? +p.qtyHigh : 0;
+    var savVal = isFinite(+p.lowSavings) ? +p.lowSavings : 0;
+    var savPctSub = spendVal > 0 ? ((100 * savVal) / spendVal).toFixed(1) + "% of current spend" : "";
+    var kpiGrid = document.createElement("div");
+    kpiGrid.className = "idp-harm-detail-kpi-grid";
+    var kpis = [
+      { label: "2025 SPEND", value: fmtOppUSD(Math.round(spendVal)), color: "#333", sub: "" },
+      { label: "2025 VOLUME", value: fmtIntPlain(Math.round(qtyVal)) + " units", color: "#333", sub: "" },
+      { label: "POTENTIAL SAVINGS", value: fmtOppUSD(Math.round(savVal)),
+        color: savVal > 0 ? "#F07F00" : "#333", sub: savPctSub }
+    ];
+    for (var k = 0; k < kpis.length; k++) {
+      var c = document.createElement("div");
+      c.className = "idp-harm-detail-kpi-card";
+      if (kpis[k].label === "POTENTIAL SAVINGS") c.className += " harm-opportunity";
+      c.innerHTML =
+        "<div class='idp-harm-detail-kpi-lbl'>" + esc(kpis[k].label) + "</div>" +
+        "<div class='idp-harm-detail-kpi-val' style='color:" + esc(kpis[k].color) + ";'>" +
+        esc(kpis[k].value) + "</div>" +
+        (kpis[k].sub ? "<div class='idp-harm-detail-kpi-sub'>" + esc(kpis[k].sub) + "</div>" : "");
+      kpiGrid.appendChild(c);
+    }
+    wrap.appendChild(kpiGrid);
+
+    if (!drillRows) {
+      /* Missing one or both year's prices — skip the chart and table. */
+      var miss = document.createElement("p");
+      miss.className = "mt-2 text-xs idp-muted";
+      miss.textContent = "Cannot build drill-down chart for this part — missing 2024 or 2025 unit price.";
+      wrap.appendChild(miss);
+      td.appendChild(wrap);
+      return;
+    }
+
+    /* Line chart — 3 lines × 2 points (2024, 2025). */
+    var chartWrap = document.createElement("div");
+    chartWrap.className = "mt-2";
+    chartWrap.style.cssText = "background:var(--idp-card);border:1px solid var(--idp-line);border-radius:8px;padding:8px 10px;";
+    var cnv = document.createElement("canvas");
+    cnv.id = canvasId;
+    cnv.style.cssText = "max-height:260px;width:100%;";
+    chartWrap.appendChild(cnv);
+    wrap.appendChild(chartWrap);
+
+    /* Detail table — 2 rows × 8 columns. */
+    var tWrap = document.createElement("div");
+    tWrap.className = "overflow-x-auto mt-2";
+    var tbl = document.createElement("table");
+    tbl.className = "idp-harm-cat-table";
+    var th2 = document.createElement("thead");
+    var trh2 = document.createElement("tr");
+    var thLabels = [
+      "Year", "Quantity", "Unit price", "Spend",
+      lowCode + " benchmark $/unit", highCode + " benchmark $/unit",
+      "Savings vs low benchmark", "Savings vs high benchmark"
+    ];
+    for (var li = 0; li < thLabels.length; li++) {
+      var th = document.createElement("th");
+      th.textContent = thLabels[li];
+      if (li > 0) th.className = "idp-harm-num";
+      if (li >= 6) th.className += " harm-opportunity";
+      trh2.appendChild(th);
+    }
+    th2.appendChild(trh2);
+    tbl.appendChild(th2);
+    var tb2 = document.createElement("tbody");
+    for (var ri = 0; ri < drillRows.length; ri++) {
+      var dr = drillRows[ri];
+      var trR = document.createElement("tr");
+      trR.className = "border-b border-[#f0f0f0]";
+      var vals = [
+        [String(dr.year), ""],
+        [fmtIntPlain(Math.round(dr.qty)), "idp-harm-num"],
+        [idpIoFmtUnitPrice(dr.price), "idp-harm-num"],
+        [fmtOppUSD(Math.round(dr.spend)), "idp-harm-num"],
+        [idpIoFmtUnitPrice(dr.lowBenchmark), "idp-harm-num"],
+        [idpIoFmtUnitPrice(dr.highBenchmark), "idp-harm-num"],
+        [idpIoFmtSignedUSD(dr.savingsVsLow), "idp-harm-num harm-opportunity"],
+        [idpIoFmtSignedUSD(dr.savingsVsHigh), "idp-harm-num harm-opportunity"]
+      ];
+      for (var vi = 0; vi < vals.length; vi++) {
+        var tdR = document.createElement("td");
+        tdR.textContent = vals[vi][0];
+        if (vals[vi][1]) tdR.className = vals[vi][1];
+        trR.appendChild(tdR);
+      }
+      tb2.appendChild(trR);
+    }
+    tbl.appendChild(tb2);
+    tWrap.appendChild(tbl);
+    wrap.appendChild(tWrap);
+
+    /* Footnote — spec-mandated exact wording. */
+    var fn = document.createElement("p");
+    fn.className = "mt-2 text-xs idp-muted";
+    fn.textContent = "Savings vs benchmark = current spend − (quantity × benchmark $/unit). Calendar years 2024 and 2025. Only the 2025 row produces a savings opportunity since 2024 is the baseline.";
+    wrap.appendChild(fn);
+
+    td.appendChild(wrap);
+
+    /* Build the chart AFTER the canvas is in the DOM so Chart.js can
+     * measure the container. */
+    setTimeout(function () {
+      idpIoRenderDrilldownChart(canvasId, p, drillRows, assignment);
+    }, 0);
+  }
+
+  /** Build a 3-line, 2-point Chart.js line chart inside `canvasId`.
+   *  Lines:
+   *    1. Actual unit price        2024 priceLow → 2025 priceHigh  (solid, accent)
+   *    2. Low index benchmark      2024 priceLow → 2025 lowBenchmark25  (dashed)
+   *    3. High index benchmark     2024 priceLow → 2025 highBenchmark25 (dashed) */
+  function idpIoRenderDrilldownChart(canvasId, p, drillRows, assignment) {
+    var cnv = document.getElementById(canvasId);
+    if (!cnv || typeof Chart === "undefined") return;
+    harmUnifiedDestroyCanvasChart(cnv);
+    var r24 = drillRows[0];
+    var r25 = drillRows[1];
+    var lowCode = assignment && assignment.low ? assignment.low.code : "Low";
+    var highCode = assignment && assignment.high ? assignment.high.code : "High";
+    var lowG = assignment && assignment.low ? +assignment.low.growthPct : NaN;
+    var highG = assignment && assignment.high ? +assignment.high.growthPct : NaN;
+    var partGrowth = window.IDP_INDEX_MATH && typeof window.IDP_INDEX_MATH.priceGrowthPct === "function"
+      ? window.IDP_INDEX_MATH.priceGrowthPct(r24.price, r25.price)
+      : ((r25.price / r24.price - 1) * 100);
+    var ctx = cnv.getContext("2d");
+    new Chart(ctx, {
+      type: "line",
+      data: {
+        labels: ["2024", "2025"],
+        datasets: [
+          {
+            label: "Actual price (" + idpIoFmtPct(partGrowth) + ")",
+            data: [r24.price, r25.price],
+            borderColor: "#F07F00",
+            backgroundColor: "rgba(240,127,0,0.08)",
+            borderWidth: 3,
+            tension: 0,
+            pointRadius: 5,
+            pointHoverRadius: 7,
+            fill: false
+          },
+          {
+            label: lowCode + " benchmark (" + idpIoFmtPct(lowG) + ")",
+            data: [r24.lowBenchmark, r25.lowBenchmark],
+            borderColor: "#10B981",
+            backgroundColor: "rgba(16,185,129,0.04)",
+            borderWidth: 2,
+            borderDash: [6, 4],
+            tension: 0,
+            pointRadius: 4,
+            pointHoverRadius: 6,
+            fill: false
+          },
+          {
+            label: highCode + " benchmark (" + idpIoFmtPct(highG) + ")",
+            data: [r24.highBenchmark, r25.highBenchmark],
+            borderColor: "#D97706",
+            backgroundColor: "rgba(217,119,6,0.04)",
+            borderWidth: 2,
+            borderDash: [6, 4],
+            tension: 0,
+            pointRadius: 4,
+            pointHoverRadius: 6,
+            fill: false
+          }
+        ]
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: "index", intersect: false },
+        plugins: {
+          legend: { position: "bottom", labels: { boxWidth: 14, font: { size: 11 } } },
+          tooltip: {
+            callbacks: {
+              label: function (ctx2) {
+                var v = +ctx2.parsed.y;
+                return ctx2.dataset.label + ": " + idpIoFmtUnitPrice(v);
+              }
+            }
+          },
+          datalabels: { display: false }
+        },
+        scales: {
+          x: { grid: { display: false } },
+          y: {
+            beginAtZero: false,
+            ticks: { callback: function (v) { return idpIoFmtUnitPrice(v); } },
+            title: { display: true, text: "Unit price ($)" }
+          }
+        }
+      }
+    });
+  }
+
+  /** Format a unit price ($/unit) for display in the drill-down table
+   *  and chart axis. Uses 2 decimals for prices < $10 (typical small
+   *  parts), 0 decimals for larger prices to keep the chart axis tidy. */
+  function idpIoFmtUnitPrice(v) {
+    var x = +v;
+    if (!isFinite(x)) return "—";
+    if (Math.abs(x) >= 1000) return "$" + Math.round(x).toLocaleString();
+    if (Math.abs(x) >= 10) return "$" + x.toFixed(2);
+    return "$" + x.toFixed(3);
+  }
+
+  /** Signed USD formatter — adds a leading "+" for positive, "−" for
+   *  negative. Used in the drill-down savings columns where a positive
+   *  number means the part *outpaced* the benchmark (real opportunity)
+   *  and negative means the part beat it (no opportunity). */
+  function idpIoFmtSignedUSD(v) {
+    var x = +v;
+    if (!isFinite(x)) return "—";
+    if (x === 0) return fmtOppUSD(0);
+    if (x > 0) return "+" + fmtOppUSD(Math.round(x));
+    return "−" + fmtOppUSD(Math.round(-x));
+  }
+
+  function idpIoBuildArchetypeSection(label, archKey, parts, summary, lowT, highT, assignment) {
     var outer = document.createElement("div");
     outer.className = "harmonization-section harm-collapse-block";
     /* Header bar with title + inline meta (opps · savings) */
@@ -9618,7 +10019,7 @@
     var body = document.createElement("div");
     body.className = "section-content";
     body.appendChild(idpIoBuildKpiStrip(summary));
-    body.appendChild(idpIoBuildDetailTable(parts, archKey, lowT, highT));
+    body.appendChild(idpIoBuildDetailTable(parts, archKey, lowT, highT, assignment));
     outer.appendChild(body);
     return outer;
   }
@@ -9693,15 +10094,15 @@
     contentEl.appendChild(idpIoBuildArchetypeSection(
       "US — " + derived.summary.us.n + " opportunities · " + fmtOppUSD(derived.summary.us.totalSavings) + " savings",
       "us", derived.qualifying.us, derived.summary.us,
-      derived.assignment.low.growthPct, derived.assignment.high.growthPct));
+      derived.assignment.low.growthPct, derived.assignment.high.growthPct, derived.assignment));
     contentEl.appendChild(idpIoBuildArchetypeSection(
       "CHINA — " + derived.summary.china.n + " opportunities · " + fmtOppUSD(derived.summary.china.totalSavings) + " savings",
       "china", derived.qualifying.china, derived.summary.china,
-      derived.assignment.low.growthPct, derived.assignment.high.growthPct));
+      derived.assignment.low.growthPct, derived.assignment.high.growthPct, derived.assignment));
     contentEl.appendChild(idpIoBuildArchetypeSection(
       "REST OF WORLD — " + derived.summary.row.n + " opportunities · " + fmtOppUSD(derived.summary.row.totalSavings) + " savings",
       "row", derived.qualifying.row, derived.summary.row,
-      derived.assignment.low.growthPct, derived.assignment.high.growthPct));
+      derived.assignment.low.growthPct, derived.assignment.high.growthPct, derived.assignment));
     /* Honor the Full/Lite toggle on these new DOM nodes too. */
     try { applyHarmonizationViewMode(); } catch (eFh) {}
   }

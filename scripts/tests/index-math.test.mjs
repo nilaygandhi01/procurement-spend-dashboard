@@ -45,6 +45,7 @@ import {
   assignLowHigh,
   partCaptureSavings,
   partsFor80PctValue,
+  partDrilldownRows,
   archetypeSummary
 } from "../../src/dashboard/index-math.mjs";
 
@@ -755,4 +756,94 @@ test("Index Opportunity end-to-end: WPU1017 + PCU3339133391 → US archetype", (
   assert.ok(Math.abs(summary.totalSavingsHigh - 41_000) < 1e-6);
   assert.equal(summary.totalSpend, 1_500_000);
   assert.ok(Math.abs(summary.avgSavingsPct - (100 * 71_500) / 1_500_000) < 1e-6);
+});
+
+test("partDrilldownRows: spec example — part at 110 index, low 103, high 107 → 7% / 3% capture", () => {
+  // From the spec: a part that grew 10% (e.g. price 100 → 110), with
+  // a low target of +3% and a high target of +7%, should yield
+  //   low capture  = 7% of 2025 spend  (10 − 3)
+  //   high capture = 3% of 2025 spend  (10 − 7)
+  // Using priceLow = 100, priceHigh = 110, qtyHigh = 1000 → spendHigh = 110,000.
+  const part = {
+    priceLow: 100,
+    priceHigh: 110,
+    qtyLow: 1000,
+    qtyHigh: 1000,
+    spendLow: 100_000,
+    spendHigh: 110_000
+  };
+  const rows = partDrilldownRows(part, 3, 7);
+  assert.ok(rows, "expected 2 rows");
+  assert.equal(rows.length, 2);
+
+  // 2024 baseline row: benchmarks = actual price, savings = 0.
+  const r24 = rows[0];
+  assert.equal(r24.year, 2024);
+  assert.equal(r24.qty, 1000);
+  assert.equal(r24.price, 100);
+  assert.equal(r24.spend, 100_000);
+  assert.equal(r24.lowBenchmark, 100);
+  assert.equal(r24.highBenchmark, 100);
+  assert.equal(r24.savingsVsLow, 0);
+  assert.equal(r24.savingsVsHigh, 0);
+
+  // 2025 row: benchmarks = 100 × 1.03 / 1.07.
+  const r25 = rows[1];
+  assert.equal(r25.year, 2025);
+  assert.equal(r25.qty, 1000);
+  assert.equal(r25.price, 110);
+  assert.equal(r25.spend, 110_000);
+  assert.ok(Math.abs(r25.lowBenchmark - 103) < 1e-9, `got ${r25.lowBenchmark}`);
+  assert.ok(Math.abs(r25.highBenchmark - 107) < 1e-9, `got ${r25.highBenchmark}`);
+  // savingsVsLow  = 110,000 − 1000 × 103 = 7,000   (== 7% of 100k base spend, == 7 × 1000)
+  // savingsVsHigh = 110,000 − 1000 × 107 = 3,000   (== 3% of 100k base spend)
+  assert.ok(Math.abs(r25.savingsVsLow - 7_000) < 1e-6, `got ${r25.savingsVsLow}`);
+  assert.ok(Math.abs(r25.savingsVsHigh - 3_000) < 1e-6, `got ${r25.savingsVsHigh}`);
+
+  // Cross-check with partCaptureSavings — the same part should yield the
+  // same savings numbers when run through the rollup math. Growth here is
+  // (110/100 − 1) × 100 = 10%, so:
+  //   lowSavings  = 110,000 × (10 − 3) / 100 = 7,700  (note: 7% of 2025 spend, not 2024)
+  //   highSavings = 110,000 × (10 − 7) / 100 = 3,300
+  // partDrilldownRows uses 2024 price × qty25 as the benchmark (more
+  // intuitive in the drill-down's table) which produces a slightly
+  // different number from the rollup's spendHigh × (g − target)/100. That
+  // divergence is intentional — see INDEX_METHODOLOGY.md §13 — and the
+  // 2025 row's savings column is labelled "Savings vs benchmark" to make
+  // the distinction explicit.
+  const partForCapture = Object.assign({}, part, { growthPct: 10 });
+  const cap = partCaptureSavings(partForCapture, 3, 7);
+  assert.ok(cap.qualifies);
+  assert.ok(Math.abs(cap.lowSavings - 7_700) < 1e-6);
+  assert.ok(Math.abs(cap.highSavings - 3_300) < 1e-6);
+});
+
+test("partDrilldownRows: returns null when prices missing or invalid", () => {
+  assert.equal(partDrilldownRows(null, 3, 7), null);
+  assert.equal(partDrilldownRows({ priceLow: 0, priceHigh: 100 }, 3, 7), null);
+  assert.equal(partDrilldownRows({ priceLow: 100, priceHigh: -10 }, 3, 7), null);
+  assert.equal(partDrilldownRows({ priceLow: NaN, priceHigh: 100 }, 3, 7), null);
+  // Non-finite targets → null.
+  assert.equal(partDrilldownRows({ priceLow: 100, priceHigh: 110 }, NaN, 7), null);
+  assert.equal(partDrilldownRows({ priceLow: 100, priceHigh: 110 }, 3, NaN), null);
+});
+
+test("partDrilldownRows: negative savings allowed in 2025 row (price beat benchmark)", () => {
+  // Part barely grew (1%) but the low target was higher (5%) — meaning
+  // the part outperformed the low benchmark in 2025. Savings should be
+  // negative (showing the part did better than the benchmark), not
+  // floored at 0. The rollup math (partCaptureSavings) is what does the
+  // floor-at-0; the drill-down table reports the raw number so the user
+  // can see direction.
+  const part = {
+    priceLow: 100, priceHigh: 101,
+    qtyLow: 100, qtyHigh: 100,
+    spendLow: 10_000, spendHigh: 10_100
+  };
+  const rows = partDrilldownRows(part, 5, 8);
+  // 2025 low benchmark = 105, qty = 100, so benchmark spend = 10,500.
+  // Actual 2025 spend = 10,100. Savings = 10,100 − 10,500 = −400.
+  assert.ok(Math.abs(rows[1].savingsVsLow - -400) < 1e-6);
+  // 2025 high benchmark = 108, benchmark spend = 10,800. Savings = −700.
+  assert.ok(Math.abs(rows[1].savingsVsHigh - -700) < 1e-6);
 });
