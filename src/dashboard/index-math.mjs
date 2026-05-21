@@ -535,6 +535,212 @@ function isInHalfOpenRange(periodKey, startKeyOrNull, endKeyExclusiveOrNull) {
   return true;
 }
 
+// ============================================================================
+// INDEX OPPORTUNITY math
+//
+// Pure-function primitives that back the Harmonization → Index Opportunity tab.
+//
+// What "opportunity" means here:
+//   1. Pick any 2 PPI indexes.
+//   2. The one with the lower 2024→2025 growth % becomes the LOW target
+//      (most aggressive — "your prices should have grown this slowly").
+//      The other becomes the HIGH target (conservative — "at minimum,
+//      prices should not have outrun the higher index either").
+//   3. For each part (deduped by part+site), compute its own 2024→2025
+//      weighted-average unit-price growth using the same Σspend/Σqty
+//      formula that the IA tab uses for the chart.
+//   4. A part "qualifies as an opportunity" iff its growth exceeds the LOW
+//      target — i.e. it outran the better of the two PPI references.
+//   5. Two $ savings numbers per part:
+//        lowSavings  (most aggressive) = spend2025 × max(0, (g − low) /100)
+//        highSavings (conservative)    = spend2025 × max(0, (g − high)/100)
+//      lowSavings ≥ highSavings by construction. lowSavings is the headline
+//      "Total Savings" number shown on the tiles — it's what stakeholders
+//      ask for, even though highSavings is the more defensible floor.
+//
+// All of this is intentionally year-agnostic in the math (every function
+// takes explicit yLow / yHigh inputs). The dashboard hardcodes 2024→2025
+// per spec, but the tests exercise other year pairs to keep the math honest.
+//
+// See INDEX_METHODOLOGY.md §13 for the formal definition.
+// ============================================================================
+
+/**
+ * Weighted-average unit price for one (part+site) bucket and one year.
+ * Σspend / Σqty (the IA tab's default volume-weighted formula).
+ *
+ * Returns NaN when qty <= 0 — never zero, never Infinity, never throws.
+ * Caller is expected to skip the row when the result is non-finite.
+ */
+function weightedUnitPrice(sumSpend, sumQty) {
+  const q = +sumQty;
+  if (!Number.isFinite(q) || q <= 0) return NaN;
+  const s = +sumSpend;
+  if (!Number.isFinite(s)) return NaN;
+  return s / q;
+}
+
+/**
+ * Growth between two prices, as a percent (e.g. +7.5).
+ * Returns NaN when either price is non-positive or non-finite.
+ *
+ * Asymmetric on purpose: we don't want a divide-by-zero or a negative-price
+ * disaster to silently produce a finite-looking growth number.
+ */
+function priceGrowthPct(priceLow, priceHigh) {
+  const a = +priceLow, b = +priceHigh;
+  if (!Number.isFinite(a) || a <= 0) return NaN;
+  if (!Number.isFinite(b) || b <= 0) return NaN;
+  return (b / a - 1) * 100;
+}
+
+/**
+ * Year-over-year growth % for a PPI series, given its raw {year: value} map.
+ * Returns NaN if either year is missing or the low year value is non-positive.
+ *
+ * Identical formula to priceGrowthPct above; named separately so the call
+ * site reads cleanly ("indexYearGrowthPct(WPU1017.rawByYear, 2024, 2025)").
+ */
+function indexYearGrowthPct(rawByYear, yLow, yHigh) {
+  if (!rawByYear || typeof rawByYear !== "object") return NaN;
+  const a = +rawByYear[yLow], b = +rawByYear[yHigh];
+  return priceGrowthPct(a, b);
+}
+
+/**
+ * Assign two indexes into { low, high } based on their 2024→2025 growth %.
+ *
+ * Input objects must have shape: { code, growthPct, ... }.
+ * The one with the SMALLER growth becomes `low` (the most aggressive
+ * benchmark — "your part should have grown at most this much"). The one
+ * with the LARGER growth becomes `high` (the conservative benchmark).
+ *
+ * Tie-break: alphabetic by code so the assignment is deterministic and
+ * stable across renders.
+ *
+ * Throws TypeError if either input is missing or has a non-finite growthPct,
+ * since the UI is responsible for not calling this with bad inputs.
+ */
+function assignLowHigh(idxA, idxB) {
+  if (!idxA || !idxB) throw new TypeError("assignLowHigh: both indexes required");
+  const gA = +idxA.growthPct, gB = +idxB.growthPct;
+  if (!Number.isFinite(gA) || !Number.isFinite(gB)) {
+    throw new TypeError("assignLowHigh: both indexes need a finite growthPct");
+  }
+  if (gA < gB) return { low: idxA, high: idxB };
+  if (gB < gA) return { low: idxB, high: idxA };
+  // Deterministic tie-break: alphabetic by code (so re-renders are stable).
+  const cA = String(idxA.code || ""), cB = String(idxB.code || "");
+  return cA <= cB ? { low: idxA, high: idxB } : { low: idxB, high: idxA };
+}
+
+/**
+ * Per-part capture-savings math.
+ *
+ * Inputs:
+ *   part: { growthPct, spendHigh }
+ *         growthPct = the part's own 2024→2025 weighted-avg unit-price growth
+ *         spendHigh = the part's 2025 spend (used as the base for $ savings)
+ *   lowTargetPct, highTargetPct: index targets from assignLowHigh()
+ *
+ * Returns:
+ *   {
+ *     qualifies:   boolean — true iff growthPct > lowTargetPct,
+ *     lowSavings:  $ — spendHigh × max(0, (growthPct − lowTargetPct)/100),
+ *     highSavings: $ — spendHigh × max(0, (growthPct − highTargetPct)/100),
+ *   }
+ *
+ * Both savings numbers are floored at 0 so a part can never contribute a
+ * negative savings to a rollup (which would silently cancel real savings).
+ * highSavings can be 0 even when qualifies=true (part beat the LOW target
+ * but stayed under the HIGH target).
+ *
+ * If growthPct or spendHigh is non-finite, returns { qualifies: false,
+ * lowSavings: 0, highSavings: 0 } — never NaN.
+ */
+function partCaptureSavings(part, lowTargetPct, highTargetPct) {
+  const g = part ? +part.growthPct : NaN;
+  const s25 = part ? +part.spendHigh : NaN;
+  const lowT = +lowTargetPct, highT = +highTargetPct;
+  if (!Number.isFinite(g) || !Number.isFinite(s25) || !Number.isFinite(lowT) || !Number.isFinite(highT)) {
+    return { qualifies: false, lowSavings: 0, highSavings: 0 };
+  }
+  if (s25 <= 0) return { qualifies: false, lowSavings: 0, highSavings: 0 };
+  const qualifies = g > lowT;
+  if (!qualifies) return { qualifies: false, lowSavings: 0, highSavings: 0 };
+  const lowDelta = Math.max(0, g - lowT) / 100;
+  const highDelta = Math.max(0, g - highT) / 100;
+  return {
+    qualifies: true,
+    lowSavings: s25 * lowDelta,
+    highSavings: s25 * highDelta
+  };
+}
+
+/**
+ * Count of qualifying parts (sorted by lowSavings desc) needed to reach
+ * 80% of total lowSavings. Mirrors the "Parts for 80% Value" tile in the
+ * existing Harmonization rollup but operates on the IO data shape.
+ *
+ * Returns 0 for empty/zero-total inputs.
+ */
+function partsFor80PctValue(qualifyingParts) {
+  if (!qualifyingParts || !qualifyingParts.length) return 0;
+  const sorted = qualifyingParts
+    .map((p) => +p.lowSavings)
+    .filter((v) => Number.isFinite(v) && v > 0)
+    .sort((a, b) => b - a);
+  if (!sorted.length) return 0;
+  let total = 0;
+  for (let i = 0; i < sorted.length; i++) total += sorted[i];
+  if (total <= 0) return 0;
+  const target = total * 0.8;
+  let running = 0;
+  for (let i = 0; i < sorted.length; i++) {
+    running += sorted[i];
+    if (running >= target) return i + 1;
+  }
+  return sorted.length;
+}
+
+/**
+ * Roll up an array of qualifying parts (each with .spendHigh, .lowSavings,
+ * .highSavings) into the 5-tile archetype summary used by the Index
+ * Opportunity tab.
+ *
+ *   n              = count of qualifying parts
+ *   totalSavings   = Σ lowSavings   ← headline number (most aggressive)
+ *   totalSavingsHigh = Σ highSavings ← conservative shadow (not on tiles,
+ *                                      used for the column in the detail
+ *                                      table and the Excel export)
+ *   totalSpend     = Σ spendHigh   (2025 spend)
+ *   avgSavingsPct  = 100 × totalSavings / totalSpend   (spend-weighted; 0 if no spend)
+ *   parts80        = partsFor80PctValue(qualifyingParts)
+ */
+function archetypeSummary(qualifyingParts) {
+  let n = 0, totalSavings = 0, totalSavingsHigh = 0, totalSpend = 0;
+  if (qualifyingParts && qualifyingParts.length) {
+    for (let i = 0; i < qualifyingParts.length; i++) {
+      const p = qualifyingParts[i];
+      if (!p) continue;
+      n += 1;
+      const ls = +p.lowSavings, hs = +p.highSavings, sp = +p.spendHigh;
+      if (Number.isFinite(ls)) totalSavings += ls;
+      if (Number.isFinite(hs)) totalSavingsHigh += hs;
+      if (Number.isFinite(sp)) totalSpend += sp;
+    }
+  }
+  const avgSavingsPct = totalSpend > 0 ? (100 * totalSavings) / totalSpend : 0;
+  return {
+    n,
+    totalSavings,
+    totalSavingsHigh,
+    totalSpend,
+    avgSavingsPct,
+    parts80: partsFor80PctValue(qualifyingParts || [])
+  };
+}
+
 export {
   GRANULARITY,
   WEIGHTING,
@@ -556,5 +762,12 @@ export {
   aggregatePooledReweighted,
   aggregatePartIndexes,
   computeBaselineCoverage,
-  sumByPeriodAcrossParts
+  sumByPeriodAcrossParts,
+  weightedUnitPrice,
+  priceGrowthPct,
+  indexYearGrowthPct,
+  assignLowHigh,
+  partCaptureSavings,
+  partsFor80PctValue,
+  archetypeSummary
 };

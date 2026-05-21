@@ -179,6 +179,70 @@
         padding: var(--idp-space-0) var(--idp-space-1);
         text-align: center;
       }
+      /* Harmonization sub-tabs (Summary / Index Opportunity) */
+      #idp-app .harm-subtab-btn {
+        padding: 6px 14px;
+        font-size: 13px;
+        font-weight: 500;
+        color: #475569;
+        background: transparent;
+        border: none;
+        border-radius: 6px;
+        cursor: pointer;
+        transition: background 0.15s ease, color 0.15s ease;
+      }
+      #idp-app .harm-subtab-btn:hover {
+        background: rgba(31, 58, 138, 0.08);
+        color: #1f3a8a;
+      }
+      #idp-app .harm-subtab-btn.is-active {
+        background: #1f3a8a;
+        color: #fff;
+        box-shadow: 0 1px 3px rgba(31, 58, 138, 0.25);
+      }
+      #idp-app .harm-subtab-btn:focus-visible {
+        outline: 2px solid #4a6cf7;
+        outline-offset: 2px;
+      }
+      #idp-app .io-index-cb-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 10px;
+        border: 1px solid #E6E6E6;
+        border-radius: 6px;
+        background: #fff;
+        cursor: pointer;
+        font-size: 12px;
+        line-height: 1.3;
+        color: #334155;
+        transition: background 0.12s ease, border-color 0.12s ease;
+      }
+      #idp-app .io-index-cb-row:hover { background: #f8fafc; border-color: #cbd5e1; }
+      #idp-app .io-index-cb-row.is-checked { background: #eef2ff; border-color: #1f3a8a; }
+      #idp-app .io-index-cb-row.is-disabled { opacity: 0.55; cursor: not-allowed; }
+      #idp-app .io-index-cb-row input[type="checkbox"] { accent-color: #1f3a8a; }
+      #idp-app .io-archetype-header {
+        display: flex;
+        align-items: baseline;
+        gap: 12px;
+        flex-wrap: wrap;
+      }
+      #idp-app .io-archetype-header .io-arch-title {
+        font-size: 13px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        color: #1f3a8a;
+      }
+      #idp-app .io-archetype-header .io-arch-meta {
+        font-size: 12px;
+        color: #475569;
+      }
+      #idp-app .io-archetype-header .io-arch-meta .io-arch-savings {
+        color: #166534;
+        font-weight: 600;
+      }
       .idp-harm-summary-note {
         font-size: 13px;
         line-height: 1.55;
@@ -2443,6 +2507,212 @@
           return true;
         }
 
+        // ============================================================================
+        // INDEX OPPORTUNITY math
+        //
+        // Pure-function primitives that back the Harmonization → Index Opportunity tab.
+        //
+        // What "opportunity" means here:
+        //   1. Pick any 2 PPI indexes.
+        //   2. The one with the lower 2024→2025 growth % becomes the LOW target
+        //      (most aggressive — "your prices should have grown this slowly").
+        //      The other becomes the HIGH target (conservative — "at minimum,
+        //      prices should not have outrun the higher index either").
+        //   3. For each part (deduped by part+site), compute its own 2024→2025
+        //      weighted-average unit-price growth using the same Σspend/Σqty
+        //      formula that the IA tab uses for the chart.
+        //   4. A part "qualifies as an opportunity" iff its growth exceeds the LOW
+        //      target — i.e. it outran the better of the two PPI references.
+        //   5. Two $ savings numbers per part:
+        //        lowSavings  (most aggressive) = spend2025 × max(0, (g − low) /100)
+        //        highSavings (conservative)    = spend2025 × max(0, (g − high)/100)
+        //      lowSavings ≥ highSavings by construction. lowSavings is the headline
+        //      "Total Savings" number shown on the tiles — it's what stakeholders
+        //      ask for, even though highSavings is the more defensible floor.
+        //
+        // All of this is intentionally year-agnostic in the math (every function
+        // takes explicit yLow / yHigh inputs). The dashboard hardcodes 2024→2025
+        // per spec, but the tests exercise other year pairs to keep the math honest.
+        //
+        // See INDEX_METHODOLOGY.md §13 for the formal definition.
+        // ============================================================================
+
+        /**
+         * Weighted-average unit price for one (part+site) bucket and one year.
+         * Σspend / Σqty (the IA tab's default volume-weighted formula).
+         *
+         * Returns NaN when qty <= 0 — never zero, never Infinity, never throws.
+         * Caller is expected to skip the row when the result is non-finite.
+         */
+        function weightedUnitPrice(sumSpend, sumQty) {
+          const q = +sumQty;
+          if (!Number.isFinite(q) || q <= 0) return NaN;
+          const s = +sumSpend;
+          if (!Number.isFinite(s)) return NaN;
+          return s / q;
+        }
+
+        /**
+         * Growth between two prices, as a percent (e.g. +7.5).
+         * Returns NaN when either price is non-positive or non-finite.
+         *
+         * Asymmetric on purpose: we don't want a divide-by-zero or a negative-price
+         * disaster to silently produce a finite-looking growth number.
+         */
+        function priceGrowthPct(priceLow, priceHigh) {
+          const a = +priceLow, b = +priceHigh;
+          if (!Number.isFinite(a) || a <= 0) return NaN;
+          if (!Number.isFinite(b) || b <= 0) return NaN;
+          return (b / a - 1) * 100;
+        }
+
+        /**
+         * Year-over-year growth % for a PPI series, given its raw {year: value} map.
+         * Returns NaN if either year is missing or the low year value is non-positive.
+         *
+         * Identical formula to priceGrowthPct above; named separately so the call
+         * site reads cleanly ("indexYearGrowthPct(WPU1017.rawByYear, 2024, 2025)").
+         */
+        function indexYearGrowthPct(rawByYear, yLow, yHigh) {
+          if (!rawByYear || typeof rawByYear !== "object") return NaN;
+          const a = +rawByYear[yLow], b = +rawByYear[yHigh];
+          return priceGrowthPct(a, b);
+        }
+
+        /**
+         * Assign two indexes into { low, high } based on their 2024→2025 growth %.
+         *
+         * Input objects must have shape: { code, growthPct, ... }.
+         * The one with the SMALLER growth becomes `low` (the most aggressive
+         * benchmark — "your part should have grown at most this much"). The one
+         * with the LARGER growth becomes `high` (the conservative benchmark).
+         *
+         * Tie-break: alphabetic by code so the assignment is deterministic and
+         * stable across renders.
+         *
+         * Throws TypeError if either input is missing or has a non-finite growthPct,
+         * since the UI is responsible for not calling this with bad inputs.
+         */
+        function assignLowHigh(idxA, idxB) {
+          if (!idxA || !idxB) throw new TypeError("assignLowHigh: both indexes required");
+          const gA = +idxA.growthPct, gB = +idxB.growthPct;
+          if (!Number.isFinite(gA) || !Number.isFinite(gB)) {
+            throw new TypeError("assignLowHigh: both indexes need a finite growthPct");
+          }
+          if (gA < gB) return { low: idxA, high: idxB };
+          if (gB < gA) return { low: idxB, high: idxA };
+          // Deterministic tie-break: alphabetic by code (so re-renders are stable).
+          const cA = String(idxA.code || ""), cB = String(idxB.code || "");
+          return cA <= cB ? { low: idxA, high: idxB } : { low: idxB, high: idxA };
+        }
+
+        /**
+         * Per-part capture-savings math.
+         *
+         * Inputs:
+         *   part: { growthPct, spendHigh }
+         *         growthPct = the part's own 2024→2025 weighted-avg unit-price growth
+         *         spendHigh = the part's 2025 spend (used as the base for $ savings)
+         *   lowTargetPct, highTargetPct: index targets from assignLowHigh()
+         *
+         * Returns:
+         *   {
+         *     qualifies:   boolean — true iff growthPct > lowTargetPct,
+         *     lowSavings:  $ — spendHigh × max(0, (growthPct − lowTargetPct)/100),
+         *     highSavings: $ — spendHigh × max(0, (growthPct − highTargetPct)/100),
+         *   }
+         *
+         * Both savings numbers are floored at 0 so a part can never contribute a
+         * negative savings to a rollup (which would silently cancel real savings).
+         * highSavings can be 0 even when qualifies=true (part beat the LOW target
+         * but stayed under the HIGH target).
+         *
+         * If growthPct or spendHigh is non-finite, returns { qualifies: false,
+         * lowSavings: 0, highSavings: 0 } — never NaN.
+         */
+        function partCaptureSavings(part, lowTargetPct, highTargetPct) {
+          const g = part ? +part.growthPct : NaN;
+          const s25 = part ? +part.spendHigh : NaN;
+          const lowT = +lowTargetPct, highT = +highTargetPct;
+          if (!Number.isFinite(g) || !Number.isFinite(s25) || !Number.isFinite(lowT) || !Number.isFinite(highT)) {
+            return { qualifies: false, lowSavings: 0, highSavings: 0 };
+          }
+          if (s25 <= 0) return { qualifies: false, lowSavings: 0, highSavings: 0 };
+          const qualifies = g > lowT;
+          if (!qualifies) return { qualifies: false, lowSavings: 0, highSavings: 0 };
+          const lowDelta = Math.max(0, g - lowT) / 100;
+          const highDelta = Math.max(0, g - highT) / 100;
+          return {
+            qualifies: true,
+            lowSavings: s25 * lowDelta,
+            highSavings: s25 * highDelta
+          };
+        }
+
+        /**
+         * Count of qualifying parts (sorted by lowSavings desc) needed to reach
+         * 80% of total lowSavings. Mirrors the "Parts for 80% Value" tile in the
+         * existing Harmonization rollup but operates on the IO data shape.
+         *
+         * Returns 0 for empty/zero-total inputs.
+         */
+        function partsFor80PctValue(qualifyingParts) {
+          if (!qualifyingParts || !qualifyingParts.length) return 0;
+          const sorted = qualifyingParts
+            .map((p) => +p.lowSavings)
+            .filter((v) => Number.isFinite(v) && v > 0)
+            .sort((a, b) => b - a);
+          if (!sorted.length) return 0;
+          let total = 0;
+          for (let i = 0; i < sorted.length; i++) total += sorted[i];
+          if (total <= 0) return 0;
+          const target = total * 0.8;
+          let running = 0;
+          for (let i = 0; i < sorted.length; i++) {
+            running += sorted[i];
+            if (running >= target) return i + 1;
+          }
+          return sorted.length;
+        }
+
+        /**
+         * Roll up an array of qualifying parts (each with .spendHigh, .lowSavings,
+         * .highSavings) into the 5-tile archetype summary used by the Index
+         * Opportunity tab.
+         *
+         *   n              = count of qualifying parts
+         *   totalSavings   = Σ lowSavings   ← headline number (most aggressive)
+         *   totalSavingsHigh = Σ highSavings ← conservative shadow (not on tiles,
+         *                                      used for the column in the detail
+         *                                      table and the Excel export)
+         *   totalSpend     = Σ spendHigh   (2025 spend)
+         *   avgSavingsPct  = 100 × totalSavings / totalSpend   (spend-weighted; 0 if no spend)
+         *   parts80        = partsFor80PctValue(qualifyingParts)
+         */
+        function archetypeSummary(qualifyingParts) {
+          let n = 0, totalSavings = 0, totalSavingsHigh = 0, totalSpend = 0;
+          if (qualifyingParts && qualifyingParts.length) {
+            for (let i = 0; i < qualifyingParts.length; i++) {
+              const p = qualifyingParts[i];
+              if (!p) continue;
+              n += 1;
+              const ls = +p.lowSavings, hs = +p.highSavings, sp = +p.spendHigh;
+              if (Number.isFinite(ls)) totalSavings += ls;
+              if (Number.isFinite(hs)) totalSavingsHigh += hs;
+              if (Number.isFinite(sp)) totalSpend += sp;
+            }
+          }
+          const avgSavingsPct = totalSpend > 0 ? (100 * totalSavings) / totalSpend : 0;
+          return {
+            n,
+            totalSavings,
+            totalSavingsHigh,
+            totalSpend,
+            avgSavingsPct,
+            parts80: partsFor80PctValue(qualifyingParts || [])
+          };
+        }
+
         root.IDP_INDEX_MATH = {
       AGGREGATION: AGGREGATION,
       GRANULARITY: GRANULARITY,
@@ -2451,20 +2721,27 @@
       aggregatePartIndexes: aggregatePartIndexes,
       aggregatePooledReweighted: aggregatePooledReweighted,
       aggregateSimpleMean: aggregateSimpleMean,
+      archetypeSummary: archetypeSummary,
+      assignLowHigh: assignLowHigh,
       bucketRowsByPeriod: bucketRowsByPeriod,
       comparePeriodKeys: comparePeriodKeys,
       computeBaselineCoverage: computeBaselineCoverage,
       computePartIndex: computePartIndex,
       expandPeriodRange: expandPeriodRange,
       expandYearlyToQuarterly: expandYearlyToQuarterly,
+      indexYearGrowthPct: indexYearGrowthPct,
       isInDisplayWindow: isInDisplayWindow,
       isInHalfOpenRange: isInHalfOpenRange,
       parsePeriodKey: parsePeriodKey,
+      partCaptureSavings: partCaptureSavings,
+      partsFor80PctValue: partsFor80PctValue,
       periodKeyOf: periodKeyOf,
       periodSortKey: periodSortKey,
+      priceGrowthPct: priceGrowthPct,
       quarterOf: quarterOf,
       rebaseToBaseline: rebaseToBaseline,
       sumByPeriodAcrossParts: sumByPeriodAcrossParts,
+      weightedUnitPrice: weightedUnitPrice,
       weightedUnitPriceByPeriod: weightedUnitPriceByPeriod
         };
         try { root.dispatchEvent(new Event("idp-index-math-ready")); } catch (e) {}
@@ -3511,13 +3788,28 @@
           </div>
           <button
             type="button"
+            id="harm-dl-summary-btn"
             onclick="exportAllHarmonizationOpportunities()"
             class="download-all-btn"
             aria-label="Download all harmonization opportunities as Excel"
           >
             Download All Opportunities (Excel)
           </button>
+          <button
+            type="button"
+            id="harm-dl-index-opp-btn"
+            onclick="ioExportAllIndexOpportunities()"
+            class="download-all-btn hidden"
+            aria-label="Download all index opportunities as Excel"
+          >
+            Download All Index Opportunities (Excel)
+          </button>
         </div>
+        <div id="harm-subtabs" class="mb-3 inline-flex rounded-lg border border-[#E6E6E6] bg-[#f8fafc] p-1" role="tablist" aria-label="Harmonization views">
+          <button type="button" role="tab" data-harm-subtab="summary" class="harm-subtab-btn is-active" aria-selected="true" aria-controls="harm-pane-summary">Summary</button>
+          <button type="button" role="tab" data-harm-subtab="index-opp" class="harm-subtab-btn" aria-selected="false" aria-controls="harm-pane-index-opp">Index Opportunity</button>
+        </div>
+        <div id="harm-pane-summary" data-harm-subtab-pane="summary" role="tabpanel" aria-labelledby="harm-subtab-summary-btn">
         <p
           class="mb-3 hidden rounded-lg border border-[#E6E6E6] bg-[#FFF7ED] px-3 py-2 text-sm"
           id="harm-message"
@@ -3680,6 +3972,24 @@
         </div>
         <div id="harm-comparison-grid" class="idp-harm-grid-tight flex flex-col gap-4">
           <p class="text-sm idp-muted" id="harm-empty">Load data from refresh_data.py to see harmonization.</p>
+        </div>
+        </div>
+        <div id="harm-pane-index-opp" data-harm-subtab-pane="index-opp" class="hidden" role="tabpanel" aria-labelledby="harm-subtab-index-opp-btn">
+          <div class="mb-3 rounded-lg border border-[#E6E6E6] bg-white p-3 shadow-sm">
+            <div class="flex flex-wrap items-baseline justify-between gap-2 mb-2">
+              <div>
+                <p class="text-xs font-semibold uppercase tracking-wide" style="color:#333">Select 2 PPI Indexes</p>
+                <p class="text-xs leading-snug idp-muted">Pick exactly 2. The one with the lower 2024→2025 growth becomes the LOW (aggressive) target.</p>
+              </div>
+              <p id="io-index-assignment" class="text-xs font-medium tabular-nums hidden" style="color:#1f3a8a"></p>
+            </div>
+            <div id="io-index-cb-list" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2"></div>
+            <p id="io-index-status" class="mt-3 text-xs idp-muted">Pick 2 PPI indexes to see opportunity.</p>
+          </div>
+          <div id="io-empty-state" class="rounded-lg border border-dashed border-[#E6E6E6] bg-white px-4 py-10 text-center text-sm idp-muted">
+            Pick 2 PPI indexes to see opportunity.
+          </div>
+          <div id="io-content" class="hidden flex-col gap-4"></div>
         </div>
       </section>
       <section
@@ -7030,6 +7340,11 @@
       _idpHarmKeySetCache.snap = null;
       _idpHarmKeySetCache.set = null;
     } catch (eC) {}
+    /* Invalidate the Index Opportunity part-level cache too — D.rows
+     * has changed underneath us, so the 2024/2025 price aggregates are
+     * stale. Cheap: just null the cache; it'll be rebuilt lazily next
+     * time the user activates the IO sub-tab. */
+    try { _idpIoPartCache = null; } catch (eIoC) {}
   }
   function idpTeardownHarmonizationView() {
     destroyHarmonizationCharts();
@@ -8808,6 +9123,699 @@
       } catch (eHarmView) { }
       if (typeof console !== "undefined" && console.log) console.log("=== HARMONIZATION TAB COMPLETE ===");
     }
+  }
+
+  /* ============================================
+  SECTION: HARMONIZATION → INDEX OPPORTUNITY TAB
+
+  "Index Opportunity" surfaces parts whose 2024→2025 weighted-average
+  unit-price growth outpaced both selected PPI indexes. It mirrors the
+  layout of the Harmonization Summary tab (overall tile strip + three
+  archetype sections with KPI strip + lazy detail table) but the
+  "opportunity" definition is PPI-relative, not supplier/plant-relative.
+
+  Math primitives live in src/dashboard/index-math.mjs (and are inlined
+  into window.IDP_INDEX_MATH by scripts/inline-index-math.py). See
+  INDEX_METHODOLOGY.md §13 for the formal definition.
+  ============================================ */
+
+  /* Hardcoded per spec: opportunity is 2024 vs 2025. Both years must
+   * exist in the SpendCube for the part to be classified — parts with
+   * data in only one year are silently dropped (we can't compute growth
+   * for them without making something up). */
+  var IDP_IO_YEAR_LOW = 2024;
+  var IDP_IO_YEAR_HIGH = 2025;
+
+  /* "Top N" rows shown in each archetype detail table before "Show all".
+   * Reuses the same number as the Summary tab so the two tabs feel
+   * consistent without dragging in coupling. */
+  var IDP_IO_TABLE_PREVIEW_ROWS = 20;
+
+  /* In-memory cache of per-part-site growth data built once when the
+   * SpendCube finishes loading. Re-derived only on D.rows changes (e.g.
+   * a fresh data.json load), NOT on every index pick — the index pick
+   * just re-derives qualifies/savings. Shape:
+   *   {
+   *     builtAt: <Date.now()>,
+   *     rowCount: <number used to detect stale cache>,
+   *     parts: [ {
+   *       key, part, site,
+   *       cumminsCountry, archetype,    // "us" | "china" | "row"
+   *       desc,                         // best-effort part description for the detail table
+   *       spendLow, qtyLow, spendHigh, qtyHigh,
+   *       priceLow, priceHigh, growthPct
+   *     }, ... ]
+   *   }
+   */
+  var _idpIoPartCache = null;
+  var _idpIoSelectedCodes = [];          // codes currently checked in the IO picker
+  var _idpIoPickerWired = false;
+  var _idpIoSubtabsWired = false;
+  var _idpIoCurrentSubtab = "summary";   // last activated sub-tab; persisted to localStorage
+  /* How many rows are currently rendered in each archetype's detail table
+   * (incremented when the user clicks "Show all"). */
+  var _idpIoTableShown = { us: IDP_IO_TABLE_PREVIEW_ROWS, china: IDP_IO_TABLE_PREVIEW_ROWS, row: IDP_IO_TABLE_PREVIEW_ROWS };
+
+  /** Classify a Cummins country string into one of the three archetypes.
+   *  Per spec:
+   *    US     — "US" or "United States" (any common spelling / case)
+   *    China  — "China"
+   *    RoW    — anything else (including blank)
+   *  Done in plain JS (not the math module) because it's a pure string
+   *  classification, not an indexing computation. */
+  function idpIoClassifyArchetype(country) {
+    var c = country == null ? "" : String(country).trim().toLowerCase();
+    if (!c) return "row";
+    if (c === "us" || c === "u.s." || c === "u.s.a." || c === "usa"
+        || c === "united states" || c === "united states of america"
+        || c === "united-states" || c === "united_states") return "us";
+    if (c === "china" || c === "p.r. china" || c === "prc"
+        || c === "people's republic of china" || c === "peoples republic of china"
+        || c === "mainland china") return "china";
+    return "row";
+  }
+
+  /** Best-effort archetype assignment for a row, preferring the explicit
+   *  Cummins_Country column and falling back to the generic country/co
+   *  field if it's missing — matches normalizeRowForD's field ordering. */
+  function idpIoRowArchetype(r) {
+    if (!r) return "row";
+    var raw = r.cummins_country_exact || r.cummins_country || r.country_exact || r.country || r.co || "";
+    return idpIoClassifyArchetype(raw);
+  }
+
+  /** Build the part-level growth cache once. Iterates D.rows ONCE:
+   *  for each row, look up part+site key and accumulate spend/qty into
+   *  either the 2024 or 2025 bucket. Then derive priceLow / priceHigh
+   *  / growthPct per part. Parts with no qty in either year are dropped.
+   *  Description / archetype are remembered from the first contributing
+   *  row in each year (whichever year has the larger qty wins).
+   *
+   *  Complexity: O(N) over D.rows + O(P) over unique parts. On a ~250k
+   *  row cube with ~30k unique part+site combos this finishes in <250ms
+   *  on a laptop CPU. */
+  function idpIoBuildPartCache() {
+    var rows, n, i, r, year, partKey, siteKey, part, site, country, key,
+        bucket, qty, spend, descCandidate, ctryCandidate;
+    rows = (typeof D !== "undefined" && D && D.rows) ? D.rows : null;
+    if (!rows || !rows.length) {
+      _idpIoPartCache = { builtAt: Date.now(), rowCount: 0, parts: [] };
+      return _idpIoPartCache;
+    }
+    n = rows.length;
+    var byKey = Object.create(null);
+    for (i = 0; i < n; i++) {
+      r = rows[i];
+      if (!r) continue;
+      year = +r.year;
+      if (!isFinite(year)) continue;
+      if (year !== IDP_IO_YEAR_LOW && year !== IDP_IO_YEAR_HIGH) continue;
+      part = r.part != null ? String(r.part).trim() : "";
+      if (!part) continue;
+      site = r.site != null ? String(r.site).trim() : "";
+      siteKey = site || "—";
+      partKey = part;
+      key = partKey + "\u241F" + siteKey;  /* unit-separator: never appears in real data */
+      bucket = byKey[key];
+      if (!bucket) {
+        bucket = byKey[key] = {
+          key: key,
+          part: part,
+          site: site,
+          desc: "",
+          descQty: 0,
+          cumminsCountry: "",
+          archetype: "row",
+          archetypeQty: 0,
+          spendLow: 0, qtyLow: 0,
+          spendHigh: 0, qtyHigh: 0
+        };
+      }
+      spend = +r.spend;
+      if (!isFinite(spend)) spend = 0;
+      qty = +(r.quantity != null ? r.quantity : r.qty);
+      if (!isFinite(qty)) qty = 0;
+      if (year === IDP_IO_YEAR_LOW) { bucket.spendLow += spend; bucket.qtyLow += qty; }
+      else { bucket.spendHigh += spend; bucket.qtyHigh += qty; }
+      /* Pick the description and country from whichever single row
+       * contributes the most qty — beats first-seen wins which can
+       * misclassify a part if its first row happens to be from a tiny
+       * one-off shipment in a different country. */
+      if (qty > bucket.descQty) {
+        descCandidate = (r.noun || r.material || r.cname || "");
+        if (descCandidate) { bucket.desc = String(descCandidate).trim(); bucket.descQty = qty; }
+      }
+      if (qty > bucket.archetypeQty) {
+        ctryCandidate = r.cummins_country_exact || r.cummins_country || r.country_exact || r.country || r.co || "";
+        if (ctryCandidate) {
+          bucket.cumminsCountry = String(ctryCandidate).trim();
+          bucket.archetype = idpIoClassifyArchetype(bucket.cumminsCountry);
+          bucket.archetypeQty = qty;
+        }
+      }
+    }
+    /* Materialize and decorate with prices + growth %. */
+    var M = (typeof window !== "undefined" && window.IDP_INDEX_MATH) || null;
+    var wup = M && typeof M.weightedUnitPrice === "function" ? M.weightedUnitPrice : function (s, q) { var qq = +q; if (!isFinite(qq) || qq <= 0) return NaN; var ss = +s; return isFinite(ss) ? ss / qq : NaN; };
+    var pg = M && typeof M.priceGrowthPct === "function" ? M.priceGrowthPct : function (a, b) { if (!(a > 0) || !(b > 0)) return NaN; return (b / a - 1) * 100; };
+    var parts = [];
+    for (var k in byKey) {
+      if (!Object.prototype.hasOwnProperty.call(byKey, k)) continue;
+      var b = byKey[k];
+      b.priceLow = wup(b.spendLow, b.qtyLow);
+      b.priceHigh = wup(b.spendHigh, b.qtyHigh);
+      b.growthPct = pg(b.priceLow, b.priceHigh);
+      /* Drop parts where we can't compute growth — they would never
+       * qualify anyway and they pollute the detail table. */
+      if (!isFinite(b.growthPct)) continue;
+      parts.push(b);
+    }
+    _idpIoPartCache = { builtAt: Date.now(), rowCount: n, parts: parts };
+    return _idpIoPartCache;
+  }
+
+  function idpIoEnsurePartCache() {
+    var n = (typeof D !== "undefined" && D && D.rows) ? D.rows.length : 0;
+    if (_idpIoPartCache && _idpIoPartCache.rowCount === n) return _idpIoPartCache;
+    return idpIoBuildPartCache();
+  }
+
+  /** Compute the index assignment for the currently picked 2 codes.
+   *  Returns null if the user hasn't picked exactly 2 codes with finite
+   *  2024→2025 growth values. */
+  function idpIoComputeIndexAssignment() {
+    if (!_idpIoSelectedCodes || _idpIoSelectedCodes.length !== 2) return null;
+    var M = window.IDP_INDEX_MATH;
+    if (!M) return null;
+    var infos = [];
+    for (var i = 0; i < 2; i++) {
+      var code = _idpIoSelectedCodes[i];
+      var rec = idpExcelIndexCatalog && idpExcelIndexCatalog[code];
+      if (!rec || !rec.rawByYear) return null;
+      var g = M.indexYearGrowthPct(rec.rawByYear, IDP_IO_YEAR_LOW, IDP_IO_YEAR_HIGH);
+      if (!isFinite(g)) return null;
+      infos.push({ code: code, displayName: rec.displayName || code, growthPct: g });
+    }
+    try {
+      return M.assignLowHigh(infos[0], infos[1]);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /** Decorate the cached parts with this index pick's savings, partitioned
+   *  by archetype. Returns:
+   *    {
+   *      assignment: { low, high },                  // from assignLowHigh
+   *      qualifying: { us:[], china:[], row:[], all:[] },
+   *      summary:    { us, china, row, overall },    // archetypeSummary outputs
+   *    }
+   *  All four "qualifying" arrays are sorted by lowSavings desc. */
+  function idpIoDeriveOpportunities() {
+    var asg = idpIoComputeIndexAssignment();
+    if (!asg) return null;
+    var cache = idpIoEnsurePartCache();
+    if (!cache || !cache.parts || !cache.parts.length) {
+      return { assignment: asg, qualifying: { us: [], china: [], row: [], all: [] },
+               summary: { us: emptySummary(), china: emptySummary(), row: emptySummary(), overall: emptySummary() } };
+    }
+    function emptySummary() { return { n: 0, totalSavings: 0, totalSavingsHigh: 0, totalSpend: 0, avgSavingsPct: 0, parts80: 0 }; }
+    var M = window.IDP_INDEX_MATH;
+    var lowT = asg.low.growthPct, highT = asg.high.growthPct;
+    var us = [], china = [], row = [], all = [];
+    for (var i = 0; i < cache.parts.length; i++) {
+      var p = cache.parts[i];
+      var cap = M.partCaptureSavings(p, lowT, highT);
+      if (!cap.qualifies) continue;
+      var enriched = {
+        key: p.key, part: p.part, site: p.site, desc: p.desc,
+        cumminsCountry: p.cumminsCountry, archetype: p.archetype,
+        spendLow: p.spendLow, qtyLow: p.qtyLow, spendHigh: p.spendHigh, qtyHigh: p.qtyHigh,
+        priceLow: p.priceLow, priceHigh: p.priceHigh, growthPct: p.growthPct,
+        lowSavings: cap.lowSavings, highSavings: cap.highSavings
+      };
+      all.push(enriched);
+      if (p.archetype === "us") us.push(enriched);
+      else if (p.archetype === "china") china.push(enriched);
+      else row.push(enriched);
+    }
+    function sortBySavings(a, b) { return (+b.lowSavings || 0) - (+a.lowSavings || 0); }
+    us.sort(sortBySavings); china.sort(sortBySavings); row.sort(sortBySavings); all.sort(sortBySavings);
+    return {
+      assignment: asg,
+      qualifying: { us: us, china: china, row: row, all: all },
+      summary: {
+        us: M.archetypeSummary(us),
+        china: M.archetypeSummary(china),
+        row: M.archetypeSummary(row),
+        overall: M.archetypeSummary(all)
+      }
+    };
+  }
+
+  /* ----- DOM rendering helpers ----- */
+
+  function idpIoBuildKpiStrip(summary) {
+    var box = document.createElement("div");
+    box.className = "idp-harm-category-summary mx-3 mb-3 rounded-lg p-4 text-white";
+    var g = document.createElement("div");
+    g.className = "grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5";
+    var s = summary || { n: 0, totalSavings: 0, totalSavingsHigh: 0, totalSpend: 0, avgSavingsPct: 0, parts80: 0 };
+    var pairs = [
+      ["Total Opportunities", String(s.n)],
+      ["Total Savings", fmtOppUSD(s.totalSavings)],
+      ["Total Spend", fmtOppUSD(s.totalSpend)],
+      ["Avg Savings %", (s.avgSavingsPct != null && isFinite(s.avgSavingsPct) ? s.avgSavingsPct.toFixed(1) : "0") + "%"],
+      ["Parts for 80% Value", String(s.parts80)]
+    ];
+    for (var i = 0; i < pairs.length; i++) {
+      var card = document.createElement("div");
+      card.className = "idp-harm-summary-card";
+      /* Apply harm-opportunity on the same cards as the Summary tab so
+       * the Full/Lite view toggle hides them in lockstep. */
+      if (pairs[i][0] === "Total Opportunities" || pairs[i][0] === "Total Savings"
+          || pairs[i][0] === "Avg Savings %" || pairs[i][0] === "Parts for 80% Value") {
+        card.className += " harm-opportunity";
+      }
+      var lab = document.createElement("div");
+      lab.className = "text-[11px] font-medium uppercase tracking-wide opacity-90";
+      lab.textContent = pairs[i][0];
+      var val = document.createElement("div");
+      val.className = "mt-1 text-xl font-bold tabular-nums";
+      val.textContent = pairs[i][1];
+      card.appendChild(lab);
+      card.appendChild(val);
+      g.appendChild(card);
+    }
+    box.appendChild(g);
+    return box;
+  }
+
+  function idpIoFmtPct(v) {
+    if (v == null || !isFinite(v)) return "—";
+    return (v >= 0 ? "+" : "") + v.toFixed(1) + "%";
+  }
+
+  function idpIoBuildDetailTable(parts, archKey, lowT, highT) {
+    var wrap = document.createElement("div");
+    wrap.className = "overflow-x-auto px-3 pb-3";
+    var tbl = document.createElement("table");
+    tbl.className = "idp-harm-cat-table";
+    var thead = document.createElement("thead");
+    var trh = document.createElement("tr");
+    var labels = [
+      "Part number", "Description", "Site",
+      "2024 → 2025 growth", "Low target", "High target",
+      "Low capture $ savings", "High capture $ savings", "2025 spend"
+    ];
+    for (var li = 0; li < labels.length; li++) {
+      var th = document.createElement("th");
+      th.textContent = labels[li];
+      if (/growth|target|spend|savings/i.test(labels[li])) th.className = "idp-harm-num";
+      if (/Low capture|High capture/.test(labels[li])) th.className += " harm-opportunity";
+      trh.appendChild(th);
+    }
+    thead.appendChild(trh);
+    tbl.appendChild(thead);
+    var tb = document.createElement("tbody");
+    tb.className = "idp-harm-cat-tbody";
+    tb.setAttribute("data-io-arch", archKey);
+    if (!parts || !parts.length) {
+      var tr = document.createElement("tr");
+      var td = document.createElement("td");
+      td.colSpan = labels.length;
+      td.className = "py-4 text-sm idp-muted";
+      td.textContent = "No opportunities in this archetype for the selected indexes.";
+      tr.appendChild(td); tb.appendChild(tr);
+    } else {
+      var shown = Math.min(parts.length, _idpIoTableShown[archKey] || IDP_IO_TABLE_PREVIEW_ROWS);
+      for (var i = 0; i < shown; i++) {
+        tb.appendChild(idpIoBuildDetailRow(parts[i], lowT, highT));
+      }
+    }
+    tbl.appendChild(tb);
+    wrap.appendChild(tbl);
+    /* Show all / Show less control */
+    if (parts && parts.length > IDP_IO_TABLE_PREVIEW_ROWS) {
+      var btnWrap = document.createElement("div");
+      btnWrap.className = "px-3 pt-2 text-xs";
+      var btn = document.createElement("button");
+      btn.type = "button";
+      var allShown = (_idpIoTableShown[archKey] || IDP_IO_TABLE_PREVIEW_ROWS) >= parts.length;
+      btn.textContent = allShown ? "Show top " + IDP_IO_TABLE_PREVIEW_ROWS : "Show all " + parts.length + " opportunities";
+      btn.style.cssText = "color:#4a6cf7;cursor:pointer;background:none;border:none;text-decoration:underline;padding:0;font-size:12px;";
+      btn.addEventListener("click", function () {
+        _idpIoTableShown[archKey] = allShown ? IDP_IO_TABLE_PREVIEW_ROWS : parts.length;
+        idpIoRenderContent();
+      });
+      btnWrap.appendChild(btn);
+      wrap.appendChild(btnWrap);
+    }
+    return wrap;
+  }
+
+  function idpIoBuildDetailRow(p, lowT, highT) {
+    var tr = document.createElement("tr");
+    tr.className = "border-b border-[#f0f0f0]";
+    var cells = [
+      [p.part, ""],
+      [p.desc || "—", ""],
+      [p.site || "—", ""],
+      [idpIoFmtPct(p.growthPct), "idp-harm-num"],
+      [idpIoFmtPct(lowT), "idp-harm-num"],
+      [idpIoFmtPct(highT), "idp-harm-num"],
+      [fmtOppUSD(p.lowSavings), "idp-harm-num harm-opportunity"],
+      [fmtOppUSD(p.highSavings), "idp-harm-num harm-opportunity"],
+      [fmtOppUSD(p.spendHigh), "idp-harm-num"]
+    ];
+    for (var i = 0; i < cells.length; i++) {
+      var td = document.createElement("td");
+      td.textContent = cells[i][0];
+      if (cells[i][1]) td.className = cells[i][1];
+      tr.appendChild(td);
+    }
+    return tr;
+  }
+
+  function idpIoBuildArchetypeSection(label, archKey, parts, summary, lowT, highT) {
+    var outer = document.createElement("div");
+    outer.className = "harmonization-section harm-collapse-block";
+    /* Header bar with title + inline meta (opps · savings) */
+    var head = document.createElement("div");
+    head.className = "harm-collapse-section-header px-3 pt-3";
+    var hb = document.createElement("div");
+    hb.className = "io-archetype-header";
+    var tt = document.createElement("p");
+    tt.className = "io-arch-title m-0";
+    tt.textContent = label;
+    hb.appendChild(tt);
+    var meta = document.createElement("p");
+    meta.className = "io-arch-meta m-0 tabular-nums";
+    var sav = document.createElement("span");
+    sav.className = "io-arch-savings harm-opportunity";
+    sav.textContent = fmtOppUSD(summary.totalSavings);
+    meta.appendChild(document.createTextNode(summary.n + " opportunities · "));
+    meta.appendChild(sav);
+    meta.appendChild(document.createTextNode(" potential savings"));
+    hb.appendChild(meta);
+    head.appendChild(hb);
+    outer.appendChild(head);
+    var body = document.createElement("div");
+    body.className = "section-content";
+    body.appendChild(idpIoBuildKpiStrip(summary));
+    body.appendChild(idpIoBuildDetailTable(parts, archKey, lowT, highT));
+    outer.appendChild(body);
+    return outer;
+  }
+
+  function idpIoBuildOverallSection(allParts, summary) {
+    var outer = document.createElement("div");
+    outer.className = "harmonization-section";
+    var inner = document.createElement("div");
+    inner.className = "harmonization-section-inner";
+    var head = document.createElement("p");
+    head.className = "io-arch-title px-3 pt-3 m-0";
+    head.textContent = "ALL ARCHETYPES (combined)";
+    inner.appendChild(head);
+    inner.appendChild(idpIoBuildKpiStrip(summary));
+    outer.appendChild(inner);
+    return outer;
+  }
+
+  function idpIoUpdateIndexAssignmentLabel(asg) {
+    var lab = $("io-index-assignment");
+    if (!lab) return;
+    if (!asg) {
+      lab.classList.add("hidden");
+      lab.textContent = "";
+      return;
+    }
+    lab.classList.remove("hidden");
+    lab.textContent = "Low: " + asg.low.code + " (" + idpIoFmtPct(asg.low.growthPct)
+                    + ")  ·  High: " + asg.high.code + " (" + idpIoFmtPct(asg.high.growthPct) + ")";
+  }
+
+  function idpIoSetStatus(text) {
+    var el = $("io-index-status");
+    if (el) el.textContent = text || "";
+  }
+
+  /** Render the main IO content area (overall + 3 archetypes) based on
+   *  the current index selection. Resets _idpIoTableShown on a fresh
+   *  pick so a previous archetype's "Show all" state doesn't survive a
+   *  reload with new data. */
+  function idpIoRenderContent() {
+    var emptyEl = $("io-empty-state");
+    var contentEl = $("io-content");
+    if (!emptyEl || !contentEl) return;
+    /* No picks yet (or one pick) → empty state. */
+    if (!_idpIoSelectedCodes || _idpIoSelectedCodes.length < 2) {
+      idpIoUpdateIndexAssignmentLabel(null);
+      idpIoSetStatus(_idpIoSelectedCodes.length === 1
+        ? "Pick one more index (currently selected: " + _idpIoSelectedCodes[0] + ")"
+        : "Pick 2 PPI indexes to see opportunity.");
+      emptyEl.classList.remove("hidden");
+      contentEl.classList.add("hidden");
+      contentEl.innerHTML = "";
+      return;
+    }
+    var derived = idpIoDeriveOpportunities();
+    if (!derived) {
+      idpIoUpdateIndexAssignmentLabel(null);
+      idpIoSetStatus("One of the selected indexes is missing 2024 or 2025 data. Pick a different index.");
+      emptyEl.classList.remove("hidden");
+      contentEl.classList.add("hidden");
+      contentEl.innerHTML = "";
+      return;
+    }
+    idpIoUpdateIndexAssignmentLabel(derived.assignment);
+    idpIoSetStatus("Showing opportunities where part growth exceeded " + idpIoFmtPct(derived.assignment.low.growthPct) + ".");
+    emptyEl.classList.add("hidden");
+    contentEl.classList.remove("hidden");
+    contentEl.classList.add("flex");
+    contentEl.innerHTML = "";
+    contentEl.appendChild(idpIoBuildOverallSection(derived.qualifying.all, derived.summary.overall));
+    contentEl.appendChild(idpIoBuildArchetypeSection(
+      "US — " + derived.summary.us.n + " opportunities · " + fmtOppUSD(derived.summary.us.totalSavings) + " savings",
+      "us", derived.qualifying.us, derived.summary.us,
+      derived.assignment.low.growthPct, derived.assignment.high.growthPct));
+    contentEl.appendChild(idpIoBuildArchetypeSection(
+      "CHINA — " + derived.summary.china.n + " opportunities · " + fmtOppUSD(derived.summary.china.totalSavings) + " savings",
+      "china", derived.qualifying.china, derived.summary.china,
+      derived.assignment.low.growthPct, derived.assignment.high.growthPct));
+    contentEl.appendChild(idpIoBuildArchetypeSection(
+      "REST OF WORLD — " + derived.summary.row.n + " opportunities · " + fmtOppUSD(derived.summary.row.totalSavings) + " savings",
+      "row", derived.qualifying.row, derived.summary.row,
+      derived.assignment.low.growthPct, derived.assignment.high.growthPct));
+    /* Honor the Full/Lite toggle on these new DOM nodes too. */
+    try { applyHarmonizationViewMode(); } catch (eFh) {}
+  }
+
+  /** One-time wiring of the IO index picker. Renders one checkbox per
+   *  code in idpExcelIndexCatalog (built-ins + any user-loaded indexes
+   *  that have been seeded). Caps selection at 2 — any further clicks
+   *  are silently ignored unless the user unchecks one first. */
+  function idpIoWireIndexPickerOnce() {
+    if (_idpIoPickerWired) return;
+    var host = $("io-index-cb-list");
+    if (!host) return;
+    /* Make sure the IA tab has seeded the built-in pack so we have a
+     * catalog to render from — this is a no-op if the IA tab has been
+     * visited already. */
+    try { idpIa2SeedBuiltinCatalogOnce(); } catch (eSeed) {}
+    var codes = (typeof IDP_BUILTIN_INDEX_CODES !== "undefined" && IDP_BUILTIN_INDEX_CODES) || [];
+    host.innerHTML = "";
+    for (var i = 0; i < codes.length; i++) {
+      (function (code) {
+        var rec = (idpExcelIndexCatalog && idpExcelIndexCatalog[code]) || {};
+        var lab = document.createElement("label");
+        lab.className = "io-index-cb-row";
+        lab.setAttribute("data-io-code", code);
+        var cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.value = code;
+        cb.addEventListener("change", function () {
+          if (cb.checked) {
+            /* Cap at 2 — if user already has 2 selected, refuse a 3rd. */
+            if (_idpIoSelectedCodes.length >= 2) {
+              cb.checked = false;
+              idpIoSetStatus("Only 2 indexes can be picked at once. Uncheck one first.");
+              return;
+            }
+            _idpIoSelectedCodes.push(code);
+            lab.classList.add("is-checked");
+          } else {
+            var ix = _idpIoSelectedCodes.indexOf(code);
+            if (ix >= 0) _idpIoSelectedCodes.splice(ix, 1);
+            lab.classList.remove("is-checked");
+          }
+          /* Reset per-archetype "Show all" state on every pick change
+           * so users don't end up with a 4000-row table left over from
+           * the previous pick. */
+          _idpIoTableShown = { us: IDP_IO_TABLE_PREVIEW_ROWS, china: IDP_IO_TABLE_PREVIEW_ROWS, row: IDP_IO_TABLE_PREVIEW_ROWS };
+          idpIoRenderContent();
+        });
+        var span = document.createElement("span");
+        span.style.flex = "1";
+        span.style.minWidth = "0";
+        var dn = (rec && rec.displayName) || code;
+        var bold = document.createElement("span");
+        bold.style.fontWeight = "600";
+        bold.textContent = code;
+        span.appendChild(bold);
+        span.appendChild(document.createTextNode(" · " + dn));
+        lab.appendChild(cb);
+        lab.appendChild(span);
+        host.appendChild(lab);
+      })(codes[i]);
+    }
+    _idpIoPickerWired = true;
+  }
+
+  /** Show/hide the two sub-tab panes. Also swaps which download button
+   *  is visible in the header (Summary vs Index Opportunity). */
+  function idpIoActivateSubtab(name) {
+    var panes = document.querySelectorAll("#view-harmonization [data-harm-subtab-pane]");
+    var btns = document.querySelectorAll("#harm-subtabs .harm-subtab-btn");
+    var i;
+    for (i = 0; i < panes.length; i++) {
+      var p = panes[i];
+      if (p.getAttribute("data-harm-subtab-pane") === name) {
+        p.classList.remove("hidden");
+      } else {
+        p.classList.add("hidden");
+      }
+    }
+    for (i = 0; i < btns.length; i++) {
+      var b = btns[i];
+      var active = b.getAttribute("data-harm-subtab") === name;
+      b.classList.toggle("is-active", active);
+      b.setAttribute("aria-selected", active ? "true" : "false");
+    }
+    var summaryDl = $("harm-dl-summary-btn");
+    var ioDl = $("harm-dl-index-opp-btn");
+    if (summaryDl) summaryDl.classList.toggle("hidden", name !== "summary");
+    if (ioDl) ioDl.classList.toggle("hidden", name !== "index-opp");
+    _idpIoCurrentSubtab = name;
+    try { localStorage.setItem("idp.harm.subtab", name); } catch (eLS) {}
+    if (name === "index-opp") {
+      try {
+        idpIoWireIndexPickerOnce();
+        idpIoEnsurePartCache();
+        idpIoRenderContent();
+      } catch (eR) {
+        if (typeof console !== "undefined" && console.error) console.error("[io] activate", eR);
+      }
+    }
+  }
+
+  function idpIoWireSubtabsOnce() {
+    if (_idpIoSubtabsWired) return;
+    var bar = $("harm-subtabs");
+    if (!bar) return;
+    bar.addEventListener("click", function (ev) {
+      var b = ev.target.closest && ev.target.closest(".harm-subtab-btn");
+      if (!b) return;
+      var name = b.getAttribute("data-harm-subtab");
+      if (!name || name === _idpIoCurrentSubtab) return;
+      idpIoActivateSubtab(name);
+    });
+    /* Restore last-used sub-tab from a previous visit. */
+    var saved = null;
+    try { saved = localStorage.getItem("idp.harm.subtab"); } catch (eLS) {}
+    if (saved === "index-opp") idpIoActivateSubtab("index-opp");
+    _idpIoSubtabsWired = true;
+  }
+
+  /** Excel export — one workbook, four sheets:
+   *    All Index Opportunities (combined, sorted by lowSavings desc)
+   *    US / China / RoW (per-archetype sheets) */
+  function ioExportAllIndexOpportunities() {
+    if (typeof XLSX === "undefined") {
+      alert("Excel export library not loaded.");
+      return;
+    }
+    var derived = idpIoDeriveOpportunities();
+    if (!derived) {
+      alert("Pick 2 PPI indexes first.");
+      return;
+    }
+    var asg = derived.assignment;
+    var lowT = asg.low.growthPct, highT = asg.high.growthPct;
+    function rowsFor(parts, archLabel) {
+      var out = [];
+      for (var i = 0; i < parts.length; i++) {
+        var p = parts[i];
+        out.push({
+          "Part Number": p.part,
+          "Description": p.desc || "",
+          "Site": p.site || "",
+          "Archetype": archLabel,
+          "Cummins Country": p.cumminsCountry || "",
+          "2024 Price (USD)": isFinite(p.priceLow) ? Math.round(p.priceLow * 100) / 100 : "",
+          "2025 Price (USD)": isFinite(p.priceHigh) ? Math.round(p.priceHigh * 100) / 100 : "",
+          "2024 Spend (USD)": Math.round(p.spendLow * 100) / 100,
+          "2024 Quantity": Math.round(p.qtyLow * 100) / 100,
+          "2025 Spend (USD)": Math.round(p.spendHigh * 100) / 100,
+          "2025 Quantity": Math.round(p.qtyHigh * 100) / 100,
+          "Part Growth %": isFinite(p.growthPct) ? Math.round(p.growthPct * 100) / 100 : "",
+          "Low Target % (" + asg.low.code + ")": Math.round(lowT * 100) / 100,
+          "High Target % (" + asg.high.code + ")": Math.round(highT * 100) / 100,
+          "Low Capture $ Savings": Math.round(p.lowSavings * 100) / 100,
+          "High Capture $ Savings": Math.round(p.highSavings * 100) / 100
+        });
+      }
+      return out;
+    }
+    var labelFor = { us: "US", china: "China", row: "Rest of World" };
+    var combined = [];
+    var keys = ["us", "china", "row"];
+    for (var ki = 0; ki < keys.length; ki++) {
+      combined = combined.concat(rowsFor(derived.qualifying[keys[ki]], labelFor[keys[ki]]));
+    }
+    /* Combined sheet is already sorted by lowSavings within each archetype;
+     * re-sort across archetypes by Low Capture $ Savings desc. */
+    combined.sort(function (a, b) { return (+b["Low Capture $ Savings"] || 0) - (+a["Low Capture $ Savings"] || 0); });
+    var wb = XLSX.utils.book_new();
+    var cols = [
+      { wch: 14 }, { wch: 32 }, { wch: 18 }, { wch: 12 }, { wch: 18 },
+      { wch: 14 }, { wch: 14 }, { wch: 16 }, { wch: 14 }, { wch: 16 }, { wch: 14 },
+      { wch: 14 }, { wch: 22 }, { wch: 22 }, { wch: 18 }, { wch: 18 }
+    ];
+    function addSheet(name, data) {
+      var ws;
+      if (data && data.length) {
+        ws = XLSX.utils.json_to_sheet(data);
+        ws["!cols"] = cols;
+      } else {
+        ws = XLSX.utils.json_to_sheet([{ Information: "No opportunities in this archetype for the selected indexes." }]);
+        ws["!cols"] = [{ wch: 80 }];
+      }
+      XLSX.utils.book_append_sheet(wb, ws, name);
+    }
+    addSheet("All Index Opportunities", combined);
+    addSheet("US",           rowsFor(derived.qualifying.us, "US"));
+    addSheet("China",        rowsFor(derived.qualifying.china, "China"));
+    addSheet("Rest of World",rowsFor(derived.qualifying.row, "Rest of World"));
+    var ts = new Date().toISOString().slice(0, 10);
+    var filename = "Index_Opportunities_" + asg.low.code + "_vs_" + asg.high.code + "_" + ts + ".xlsx";
+    XLSX.writeFile(wb, filename);
+    alert(
+      "Downloaded " + filename +
+      "\n\nAll: " + combined.length + " line items" +
+      "\nUS: " + derived.qualifying.us.length +
+      "\nChina: " + derived.qualifying.china.length +
+      "\nRest of World: " + derived.qualifying.row.length
+    );
+  }
+
+  /* Expose for the inline onclick handler (declared as a property on
+   * window so older code that bundles to non-strict mode still finds it). */
+  if (typeof window !== "undefined") {
+    window.ioExportAllIndexOpportunities = ioExportAllIndexOpportunities;
+    window.idpIoActivateSubtab = idpIoActivateSubtab;
+    window.idpIoBuildPartCache = idpIoBuildPartCache;
+    window.idpIoWireSubtabsOnce = idpIoWireSubtabsOnce;
   }
 
   /* ============================================
@@ -14905,6 +15913,18 @@
         }
       } catch (eHarmTab) {
         if (typeof console !== "undefined" && console.error) console.error("[harmonization tab]", eHarmTab);
+      }
+      try {
+        idpIoWireSubtabsOnce();
+        /* Re-render IO if the user was on that sub-tab last time and a
+         * data reload happened in the background. */
+        if (_idpIoCurrentSubtab === "index-opp") {
+          idpIoWireIndexPickerOnce();
+          idpIoEnsurePartCache();
+          idpIoRenderContent();
+        }
+      } catch (eIoTab) {
+        if (typeof console !== "undefined" && console.error) console.error("[index-opp tab]", eIoTab);
       }
       setTimeout(function () {
         var k2;

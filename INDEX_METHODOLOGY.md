@@ -309,3 +309,112 @@ selection.
 | `scripts/tests/index-math.test.mjs`        | `node --test` suite locking in the math              |
 | `scripts/run-tests.ps1` / `run-tests.sh`   | Convenience runners                                  |
 | `INDEX_METHODOLOGY.md` (this file)         | Human-readable spec                                  |
+
+---
+
+## 13. Harmonization → Index Opportunity tab
+
+A second tab on the Harmonization page surfaces parts whose 2024→2025
+weighted-average unit-price growth **outpaced both selected PPI indexes**.
+It mirrors the visual structure of the existing Harmonization Summary
+view (overall tile strip + three archetype sections, each with the same
+five KPI tiles and a lazy detail table) but the definition of an
+"opportunity" is PPI-relative, not supplier/plant-relative.
+
+### 13a. User flow
+
+1. The user picks **exactly two** PPI indexes from the picker at the top
+   of the tab (any code from `IDP_BUILTIN_INDEX_CODES` whose `rawByYear`
+   map contains both 2024 and 2025).
+2. The dashboard computes each index's 2024→2025 growth %, picks the
+   smaller as the **LOW target** (most aggressive — "your prices should
+   have grown at most this slowly") and the larger as the **HIGH target**
+   (conservative floor). Ties break alphabetically by code so the
+   assignment is deterministic.
+3. The tab then renders three archetype sections — **US**, **China**,
+   **Rest of World** — split by the SpendCube's Cummins Country column
+   (`Cummins_Country` / `Cummins Country` / `CMI Country`).
+4. A combined "All archetypes" KPI strip sits above the three sections.
+
+### 13b. Math (per part+site bucket)
+
+```
+priceLow   = Σspend_2024  / Σqty_2024           (NaN if qty_2024 ≤ 0)
+priceHigh  = Σspend_2025  / Σqty_2025           (NaN if qty_2025 ≤ 0)
+growthPct  = (priceHigh / priceLow − 1) × 100   (NaN if either price ≤ 0)
+
+qualifies  = growthPct > lowTargetPct
+lowSavings  = qualifies ? spend_2025 × max(0, (growthPct − lowTargetPct ) / 100) : 0
+highSavings = qualifies ? spend_2025 × max(0, (growthPct − highTargetPct) / 100) : 0
+```
+
+`lowSavings ≥ highSavings` by construction. `highSavings` can be 0 even
+when `qualifies = true` (a part that beat the LOW target but stayed
+under the HIGH target). Both savings numbers are **floored at 0** — a
+part never contributes negative savings to a rollup.
+
+### 13c. Archetype rollup (per US / China / RoW and overall)
+
+```
+Total Opportunities  = count of qualifying parts
+Total Savings        = Σ lowSavings              ← headline (aggressive)
+Total Spend          = Σ spend_2025
+Avg Savings %        = 100 × Total Savings / Total Spend (spend-weighted; 0 if no spend)
+Parts for 80% Value  = count of qualifying parts (sorted by lowSavings desc)
+                       needed to reach 80% of Total Savings
+```
+
+`Total Savings` shown on tiles is the **aggressive** (LOW target) number
+because that's what stakeholders ask for. `highSavings` is still
+recorded per row in the detail table and the Excel export for anyone
+who wants the conservative floor.
+
+### 13d. Cummins Country → archetype classification
+
+```
+US     : "US", "U.S.", "U.S.A.", "USA", "United States", "United States of America"
+China  : "China", "P.R. China", "PRC", "People's Republic of China", "Mainland China"
+RoW    : anything else (including blank / null)
+```
+
+Matching is case-insensitive and uses the row's most representative
+Cummins Country value — picked as the country attached to the largest
+single qty row for that part+site, so a one-off shipment in a different
+country doesn't misclassify a part.
+
+### 13e. Adding a new PPI series
+
+Drop a new BLS workbook (FRED-export style or sparse-sample shape — both
+layouts are detected) into `data/inputs/indexes/`, then run:
+
+```
+py scripts/build-builtin-index-pack.py --write   # regenerates data/inputs/index-data/generated-index-pack.json
+py scripts/inline-index-math.py                  # re-inlines the math module + new pack into index.html
+```
+
+The new code is automatically picked up by:
+
+- the **Index Analysis** tab (chart),
+- the **Index Opportunity** picker on the Harmonization tab,
+- the validation tests in `scripts/tests/index-math.test.mjs`.
+
+### 13f. Quarterly view: flat-step expansion
+
+PPI raw data is published yearly. When the IA tab is in **Quarterly**
+view, each year's index value is flat-stepped across its 4 quarters
+(Q1..Q4 of year Y all share the yearly Y value). This is implemented in
+`expandYearlyToQuarterly()` and documented inline in `index-math.mjs`.
+The Index Opportunity tab does not have a granularity toggle — it's
+always 2024→2025 yearly per spec.
+
+### 13g. Implementation pointers
+
+| Concern | Where |
+|---|---|
+| Math primitives (pure, unit-tested)        | `src/dashboard/index-math.mjs` (§ "Index Opportunity math") |
+| Tests                                       | `scripts/tests/index-math.test.mjs` (last block) |
+| Tab UI                                      | `src/dashboard/index.html` → `<div id="harm-pane-index-opp">` |
+| Tab JS (cache, render, export)              | `src/dashboard/index.html` → "HARMONIZATION → INDEX OPPORTUNITY TAB" |
+| Part-level growth cache (one rebuild per data load) | `idpIoBuildPartCache()` |
+| Archetype derivation (one re-derive per index pick) | `idpIoDeriveOpportunities()` |
+| Excel export                                | `ioExportAllIndexOpportunities()` |

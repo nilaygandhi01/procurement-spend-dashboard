@@ -38,7 +38,14 @@ import {
   aggregatePooledReweighted,
   aggregatePartIndexes,
   computeBaselineCoverage,
-  sumByPeriodAcrossParts
+  sumByPeriodAcrossParts,
+  weightedUnitPrice,
+  priceGrowthPct,
+  indexYearGrowthPct,
+  assignLowHigh,
+  partCaptureSavings,
+  partsFor80PctValue,
+  archetypeSummary
 } from "../../src/dashboard/index-math.mjs";
 
 // --------------------------------------------------------------------------
@@ -565,4 +572,187 @@ test("generated index pack values rebase cleanly to 2024 = 100", async () => {
       assert.ok(Number.isFinite(iv), `${code}: indexed[${yk}] = ${iv} is not finite`);
     }
   }
+});
+
+// --------------------------------------------------------------------------
+// Index Opportunity primitives (Harmonization → Index Opportunity tab)
+// --------------------------------------------------------------------------
+
+test("weightedUnitPrice = Σspend / Σqty; NaN on non-positive qty", () => {
+  assert.equal(weightedUnitPrice(1000, 10), 100);
+  assert.equal(weightedUnitPrice(0, 10), 0);
+  assert.ok(Number.isNaN(weightedUnitPrice(1000, 0)));
+  assert.ok(Number.isNaN(weightedUnitPrice(1000, -5)));
+  assert.ok(Number.isNaN(weightedUnitPrice("bad", 10)));
+});
+
+test("priceGrowthPct: (high/low − 1)×100; NaN on non-positive inputs", () => {
+  assert.ok(Math.abs(priceGrowthPct(100, 110) - 10) < 1e-9);
+  assert.equal(priceGrowthPct(100, 100), 0);
+  assert.ok(Math.abs(priceGrowthPct(100, 90) - -10) < 1e-9);
+  // Non-positive low → NaN (we don't extrapolate from a zero baseline).
+  assert.ok(Number.isNaN(priceGrowthPct(0, 100)));
+  assert.ok(Number.isNaN(priceGrowthPct(-5, 100)));
+  assert.ok(Number.isNaN(priceGrowthPct(100, 0)));
+  assert.ok(Number.isNaN(priceGrowthPct(100, NaN)));
+});
+
+test("indexYearGrowthPct uses the same rule against a rawByYear map", () => {
+  const r = { 2023: 100, 2024: 105, 2025: 110.25 };
+  assert.ok(Math.abs(indexYearGrowthPct(r, 2024, 2025) - 5) < 1e-9);
+  assert.ok(Math.abs(indexYearGrowthPct(r, 2023, 2025) - 10.25) < 1e-9);
+  assert.ok(Number.isNaN(indexYearGrowthPct(r, 2020, 2025)));
+  assert.ok(Number.isNaN(indexYearGrowthPct(null, 2024, 2025)));
+});
+
+test("assignLowHigh: smaller-growth index becomes the low (aggressive) target", () => {
+  const a = { code: "WPU1017", growthPct: 4.2 };
+  const b = { code: "PCU3339133391", growthPct: 7.8 };
+  const r1 = assignLowHigh(a, b);
+  assert.equal(r1.low.code, "WPU1017");
+  assert.equal(r1.high.code, "PCU3339133391");
+  // Order of arguments must not change the assignment.
+  const r2 = assignLowHigh(b, a);
+  assert.equal(r2.low.code, "WPU1017");
+  assert.equal(r2.high.code, "PCU3339133391");
+});
+
+test("assignLowHigh: ties broken alphabetically by code (deterministic)", () => {
+  const r = assignLowHigh({ code: "ZZZ", growthPct: 5 }, { code: "AAA", growthPct: 5 });
+  assert.equal(r.low.code, "AAA");
+  assert.equal(r.high.code, "ZZZ");
+});
+
+test("assignLowHigh: throws when growth is missing / non-finite", () => {
+  assert.throws(() => assignLowHigh(null, { code: "X", growthPct: 5 }));
+  assert.throws(() => assignLowHigh({ code: "X", growthPct: 5 }, { code: "Y", growthPct: "bad" }));
+  assert.throws(() => assignLowHigh({ code: "X", growthPct: NaN }, { code: "Y", growthPct: 5 }));
+});
+
+test("partCaptureSavings: part above low target → both savings non-negative", () => {
+  // Part grew 12%. Low target 4%, high target 8% → qualifies vs both.
+  // Spend25 = $1,000,000.
+  const r = partCaptureSavings({ growthPct: 12, spendHigh: 1_000_000 }, 4, 8);
+  assert.equal(r.qualifies, true);
+  assert.ok(Math.abs(r.lowSavings - 80_000) < 1e-6, `low got ${r.lowSavings}`);
+  assert.ok(Math.abs(r.highSavings - 40_000) < 1e-6, `high got ${r.highSavings}`);
+  assert.ok(r.lowSavings >= r.highSavings, "low must be >= high (more aggressive)");
+});
+
+test("partCaptureSavings: part between targets → low > 0, high = 0", () => {
+  // Part grew 6%. Low target 4% (qualifies), high target 8% (doesn't beat).
+  const r = partCaptureSavings({ growthPct: 6, spendHigh: 500_000 }, 4, 8);
+  assert.equal(r.qualifies, true);
+  assert.ok(Math.abs(r.lowSavings - 10_000) < 1e-6);
+  assert.equal(r.highSavings, 0);
+});
+
+test("partCaptureSavings: part at or below low target → does not qualify", () => {
+  const atLow = partCaptureSavings({ growthPct: 4, spendHigh: 1_000_000 }, 4, 8);
+  assert.equal(atLow.qualifies, false);
+  assert.equal(atLow.lowSavings, 0);
+  assert.equal(atLow.highSavings, 0);
+
+  const below = partCaptureSavings({ growthPct: 2, spendHigh: 1_000_000 }, 4, 8);
+  assert.equal(below.qualifies, false);
+  assert.equal(below.lowSavings, 0);
+  assert.equal(below.highSavings, 0);
+});
+
+test("partCaptureSavings: bad inputs → silent zero, never NaN", () => {
+  const r1 = partCaptureSavings(null, 4, 8);
+  assert.equal(r1.qualifies, false);
+  assert.equal(r1.lowSavings, 0);
+  assert.equal(r1.highSavings, 0);
+  const r2 = partCaptureSavings({ growthPct: NaN, spendHigh: 1000 }, 4, 8);
+  assert.equal(r2.qualifies, false);
+  const r3 = partCaptureSavings({ growthPct: 10, spendHigh: -100 }, 4, 8);
+  assert.equal(r3.qualifies, false);
+});
+
+test("partsFor80PctValue: matches the harmonization rule (cumulative count)", () => {
+  // Savings 50, 30, 10, 5, 5 — total 100. 80% target = 80.
+  // 50 + 30 = 80 → 2 parts.
+  const parts = [
+    { lowSavings: 50 },
+    { lowSavings: 30 },
+    { lowSavings: 10 },
+    { lowSavings: 5 },
+    { lowSavings: 5 }
+  ];
+  assert.equal(partsFor80PctValue(parts), 2);
+  // Single dominant part.
+  assert.equal(partsFor80PctValue([{ lowSavings: 1000 }, { lowSavings: 1 }]), 1);
+  // Empty / zero inputs.
+  assert.equal(partsFor80PctValue([]), 0);
+  assert.equal(partsFor80PctValue(null), 0);
+  assert.equal(partsFor80PctValue([{ lowSavings: 0 }, { lowSavings: 0 }]), 0);
+});
+
+test("archetypeSummary: 5-tile rollup mirrors the qualifying parts", () => {
+  // Three qualifying parts, all with finite spend & savings.
+  const parts = [
+    { spendHigh: 600_000, lowSavings: 60_000, highSavings: 30_000 },
+    { spendHigh: 300_000, lowSavings: 30_000, highSavings: 15_000 },
+    { spendHigh: 100_000, lowSavings: 10_000, highSavings: 5_000 }
+  ];
+  const r = archetypeSummary(parts);
+  assert.equal(r.n, 3);
+  assert.equal(r.totalSavings, 100_000);
+  assert.equal(r.totalSavingsHigh, 50_000);
+  assert.equal(r.totalSpend, 1_000_000);
+  assert.ok(Math.abs(r.avgSavingsPct - 10) < 1e-9, `got ${r.avgSavingsPct}`);
+  // 60k + 30k = 90k ≥ 80k → 2 parts hit 80% of savings.
+  assert.equal(r.parts80, 2);
+});
+
+test("archetypeSummary: empty input → all zeros (no NaN / Infinity)", () => {
+  const r = archetypeSummary([]);
+  assert.equal(r.n, 0);
+  assert.equal(r.totalSavings, 0);
+  assert.equal(r.totalSavingsHigh, 0);
+  assert.equal(r.totalSpend, 0);
+  assert.equal(r.avgSavingsPct, 0);
+  assert.equal(r.parts80, 0);
+});
+
+test("Index Opportunity end-to-end: WPU1017 + PCU3339133391 → US archetype", () => {
+  // Realistic rebased-from-2024 sample numbers:
+  //   WPU1017       2024→2025 growth ≈ +2.4% (low target)
+  //   PCU3339133391 2024→2025 growth ≈ +4.9% (high target)
+  const wpu = { code: "WPU1017", growthPct: 2.4 };
+  const pcu = { code: "PCU3339133391", growthPct: 4.9 };
+  const { low, high } = assignLowHigh(wpu, pcu);
+  assert.equal(low.code, "WPU1017");
+  assert.equal(high.code, "PCU3339133391");
+
+  // Three US parts with varying growth.
+  const us = [
+    // Below low target → does not qualify, drops out of the archetype list.
+    { part: "P1", spendHigh: 100_000, growthPct: 1.0 },
+    // Between targets — qualifies, lowSavings > 0, highSavings = 0.
+    { part: "P2", spendHigh: 500_000, growthPct: 3.5 },
+    // Above both — qualifies fully.
+    { part: "P3", spendHigh: 1_000_000, growthPct: 9.0 }
+  ];
+
+  // Enrich each part with its savings.
+  const enriched = us
+    .map((p) => Object.assign({}, p, partCaptureSavings(p, low.growthPct, high.growthPct)))
+    .filter((p) => p.qualifies);
+
+  // Only P2 and P3 qualify.
+  assert.equal(enriched.length, 2);
+  // P3 lowSavings = 1,000,000 × (9 − 2.4) / 100 = 66,000
+  // P2 lowSavings = 500,000   × (3.5 − 2.4) / 100 = 5,500
+  // Total low savings = 71,500
+  // P3 highSavings = 1,000,000 × (9 − 4.9) / 100 = 41,000
+  // P2 highSavings = 0
+  // Total high savings = 41,000
+  const summary = archetypeSummary(enriched);
+  assert.equal(summary.n, 2);
+  assert.ok(Math.abs(summary.totalSavings - 71_500) < 1e-6, `got ${summary.totalSavings}`);
+  assert.ok(Math.abs(summary.totalSavingsHigh - 41_000) < 1e-6);
+  assert.equal(summary.totalSpend, 1_500_000);
+  assert.ok(Math.abs(summary.avgSavingsPct - (100 * 71_500) / 1_500_000) < 1e-6);
 });
