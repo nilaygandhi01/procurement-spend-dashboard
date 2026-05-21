@@ -18,8 +18,8 @@
 image:
   repository: mckinsey-cummins-idp-dashboard-docker-local.jfrog.io/procurement-spend-dashboard
   # Pinned to the SHA-suffixed tag emitted by the docker build that ran
-  # for commit 9cc9bad (feat(harmonization): add Index Opportunity tab with
-  # US/China/RoW archetypes and 2-index range targeting). Pinning to a
+  # for commit da89380 (fix(filters): stop BU dropdown overlapping
+  # sidebar and make BU/etc. apply on every tab). Pinning to a
   # SHA-suffixed tag
   # forces a digest-different image reference, which together with
   # `pullPolicy: Always` below guarantees a fresh registry pull on the
@@ -28,7 +28,7 @@ image:
   # node-cached layer due to IfNotPresent, shipping stale bits). Keep
   # this value in lockstep with the same field in procurement-spend-
   # dashboard.yaml (the rendered manifest).
-  tag: "0.1.0-9cc9bad5"
+  tag: "0.1.0-da89380c"
   # Bumped from IfNotPresent → Always so future tag floats can't
   # silently degrade to a cached node image.
   pullPolicy: Always
