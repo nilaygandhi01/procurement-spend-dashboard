@@ -312,14 +312,31 @@ selection.
 
 ---
 
-## 13. Harmonization → Index Opportunity tab
+## 13. Index Opportunity page
 
-A second tab on the Harmonization page surfaces parts whose 2024→2025
-weighted-average unit-price growth **outpaced both selected PPI indexes**.
-It mirrors the visual structure of the existing Harmonization Summary
-view (overall tile strip + three archetype sections, each with the same
-five KPI tiles and a lazy detail table) but the definition of an
-"opportunity" is PPI-relative, not supplier/plant-relative.
+A top-level page under Spend Analysis (parallel to Harmonization,
+Single Source Analysis, Index Analysis, and Cleansheet Analysis) that
+surfaces parts whose 2024→2025 weighted-average unit-price growth
+**outpaced both selected PPI indexes**. It mirrors the visual structure
+of the Harmonization Summary view (overall tile strip + three archetype
+sections, each with the same five KPI tiles and a lazy detail table)
+but the definition of an "opportunity" is PPI-relative, not
+supplier/plant-relative.
+
+**History:** Originally shipped as a "Summary / Index Opportunity"
+sub-tab inside the Harmonization page (2026-05-18 → 2026-05-21), then
+promoted to its own top-level Spend Analysis entry on 2026-05-21 so
+it's discoverable from the nav and doesn't need a tab switch from
+the harmonization summary.
+
+**Year-filter independence (important):** The IO part cache walks
+every row that passes `rowOkIgnoreYm()` — i.e. every Spend Review
+filter EXCEPT the time filter. Year-over-year growth needs both 2024
+and 2025 history per part, so the global "Time = 2025" default cannot
+strip 2024 from the cube. If you find yourself debugging "zero
+opportunities" again, this is the first place to look: confirm
+`idpIoBuildPartCache` is NOT calling `getFiltered()` (which gates on
+the time filter).
 
 ### 13a. User flow
 
@@ -404,7 +421,7 @@ PPI raw data is published yearly. When the IA tab is in **Quarterly**
 view, each year's index value is flat-stepped across its 4 quarters
 (Q1..Q4 of year Y all share the yearly Y value). This is implemented in
 `expandYearlyToQuarterly()` and documented inline in `index-math.mjs`.
-The Index Opportunity tab does not have a granularity toggle — it's
+The Index Opportunity page does not have a granularity toggle — it's
 always 2024→2025 yearly per spec.
 
 ### 13g. Per-part drill-down ("View details")

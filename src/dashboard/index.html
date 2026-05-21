@@ -179,31 +179,6 @@
         padding: var(--idp-space-0) var(--idp-space-1);
         text-align: center;
       }
-      /* Harmonization sub-tabs (Summary / Index Opportunity) */
-      #idp-app .harm-subtab-btn {
-        padding: 6px 14px;
-        font-size: 13px;
-        font-weight: 500;
-        color: #475569;
-        background: transparent;
-        border: none;
-        border-radius: 6px;
-        cursor: pointer;
-        transition: background 0.15s ease, color 0.15s ease;
-      }
-      #idp-app .harm-subtab-btn:hover {
-        background: rgba(31, 58, 138, 0.08);
-        color: #1f3a8a;
-      }
-      #idp-app .harm-subtab-btn.is-active {
-        background: #1f3a8a;
-        color: #fff;
-        box-shadow: 0 1px 3px rgba(31, 58, 138, 0.25);
-      }
-      #idp-app .harm-subtab-btn:focus-visible {
-        outline: 2px solid #4a6cf7;
-        outline-offset: 2px;
-      }
       #idp-app .io-index-cb-row {
         display: flex;
         align-items: center;
@@ -3011,6 +2986,10 @@
                   <svg class="idp-nav-icon" viewBox="0 0 16 16" aria-hidden="true" fill="none"><path d="M8 2 L14 8 L8 14 L2 8 Z" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" /></svg>
                   <span class="sidebar-when-expanded">Harmonization</span>
                 </button>
+                <button type="button" class="app-nav-btn" data-app-view="index-opportunity" id="nav-index-opportunity">
+                  <svg class="idp-nav-icon" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="M2 13 L6 9 L9 11 L14 5" /><path d="M10 5 L14 5 L14 9" /><circle cx="6" cy="9" r="0.9" fill="currentColor" /><circle cx="9" cy="11" r="0.9" fill="currentColor" /></svg>
+                  <span class="sidebar-when-expanded">Index Opportunity</span>
+                </button>
                 <button type="button" class="app-nav-btn" data-app-view="single-source" id="nav-single-source">
                   <svg class="idp-nav-icon" viewBox="0 0 16 16" aria-hidden="true" fill="none"><circle cx="8" cy="6" r="3" stroke="currentColor" stroke-width="1.4" fill="none"/><path d="M4 14c0-2.2 1.8-4 4-4s4 1.8 4 4" stroke="currentColor" stroke-width="1.4" fill="none" stroke-linecap="round"/></svg>
                   <span class="sidebar-when-expanded">Single Source Analysis</span>
@@ -3881,21 +3860,7 @@
           >
             Download All Opportunities (Excel)
           </button>
-          <button
-            type="button"
-            id="harm-dl-index-opp-btn"
-            onclick="ioExportAllIndexOpportunities()"
-            class="download-all-btn hidden"
-            aria-label="Download all index opportunities as Excel"
-          >
-            Download All Index Opportunities (Excel)
-          </button>
         </div>
-        <div id="harm-subtabs" class="mb-3 inline-flex rounded-lg border border-[#E6E6E6] bg-[#f8fafc] p-1" role="tablist" aria-label="Harmonization views">
-          <button type="button" role="tab" data-harm-subtab="summary" class="harm-subtab-btn is-active" aria-selected="true" aria-controls="harm-pane-summary">Summary</button>
-          <button type="button" role="tab" data-harm-subtab="index-opp" class="harm-subtab-btn" aria-selected="false" aria-controls="harm-pane-index-opp">Index Opportunity</button>
-        </div>
-        <div id="harm-pane-summary" data-harm-subtab-pane="summary" role="tabpanel" aria-labelledby="harm-subtab-summary-btn">
         <p
           class="mb-3 hidden rounded-lg border border-[#E6E6E6] bg-[#FFF7ED] px-3 py-2 text-sm"
           id="harm-message"
@@ -4059,24 +4024,45 @@
         <div id="harm-comparison-grid" class="idp-harm-grid-tight flex flex-col gap-4">
           <p class="text-sm idp-muted" id="harm-empty">Load data from refresh_data.py to see harmonization.</p>
         </div>
+      </section>
+      <section
+        id="view-index-opportunity"
+        class="hidden w-full max-w-full min-w-0 pt-1 pb-3"
+        aria-hidden="true"
+        aria-label="Index opportunity analysis"
+      >
+        <div class="mb-3 border-b border-[#E6E6E6] pb-2 idp-harm-header-bar">
+          <div class="idp-harm-header-bar-text">
+            <h2 class="m-0 text-base font-semibold" style="color: #333">Index Opportunity</h2>
+            <p class="mt-0.5 text-xs leading-snug idp-muted">
+              Parts whose 2024→2025 weighted-avg unit-price growth outpaced both selected PPI indexes, grouped by Cummins Country archetype (US, China, Rest of World). See <a href="../../INDEX_METHODOLOGY.md" class="underline">INDEX_METHODOLOGY.md</a> §13 for the math.
+            </p>
+          </div>
+          <button
+            type="button"
+            id="io-dl-btn"
+            onclick="ioExportAllIndexOpportunities()"
+            class="download-all-btn hidden"
+            aria-label="Download all index opportunities as Excel"
+          >
+            Download All Index Opportunities (Excel)
+          </button>
         </div>
-        <div id="harm-pane-index-opp" data-harm-subtab-pane="index-opp" class="hidden" role="tabpanel" aria-labelledby="harm-subtab-index-opp-btn">
-          <div class="mb-3 rounded-lg border border-[#E6E6E6] bg-white p-3 shadow-sm">
-            <div class="flex flex-wrap items-baseline justify-between gap-2 mb-2">
-              <div>
-                <p class="text-xs font-semibold uppercase tracking-wide" style="color:#333">Select 2 PPI Indexes</p>
-                <p class="text-xs leading-snug idp-muted">Pick exactly 2. The one with the lower 2024→2025 growth becomes the LOW (aggressive) target.</p>
-              </div>
-              <p id="io-index-assignment" class="text-xs font-medium tabular-nums hidden" style="color:#1f3a8a"></p>
+        <div class="mb-3 rounded-lg border border-[#E6E6E6] bg-white p-3 shadow-sm">
+          <div class="flex flex-wrap items-baseline justify-between gap-2 mb-2">
+            <div>
+              <p class="text-xs font-semibold uppercase tracking-wide" style="color:#333">Select 2 PPI Indexes</p>
+              <p class="text-xs leading-snug idp-muted">Pick exactly 2. The one with the lower 2024→2025 growth becomes the LOW (aggressive) target.</p>
             </div>
-            <div id="io-index-cb-list" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2"></div>
-            <p id="io-index-status" class="mt-3 text-xs idp-muted">Pick 2 PPI indexes to see opportunity.</p>
+            <p id="io-index-assignment" class="text-xs font-medium tabular-nums hidden" style="color:#1f3a8a"></p>
           </div>
-          <div id="io-empty-state" class="rounded-lg border border-dashed border-[#E6E6E6] bg-white px-4 py-10 text-center text-sm idp-muted">
-            Pick 2 PPI indexes to see opportunity.
-          </div>
-          <div id="io-content" class="hidden flex-col gap-4"></div>
+          <div id="io-index-cb-list" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2"></div>
+          <p id="io-index-status" class="mt-3 text-xs idp-muted">Pick 2 PPI indexes to see opportunity.</p>
         </div>
+        <div id="io-empty-state" class="rounded-lg border border-dashed border-[#E6E6E6] bg-white px-4 py-10 text-center text-sm idp-muted">
+          Pick 2 PPI indexes to see opportunity.
+        </div>
+        <div id="io-content" class="hidden flex-col gap-4"></div>
       </section>
       <section
         id="view-single-source"
@@ -4577,7 +4563,7 @@
   var harmCleanViewEnabled = false;
   currentAppView = document.body && document.body.getAttribute("data-idp-app-view") ? String(document.body.getAttribute("data-idp-app-view")) : "overview";
   if (currentAppView === "harmonization-direct" || currentAppView === "harmonization-indirect") { currentAppView = "harmonization"; }
-  if (currentAppView !== "overview" && currentAppView !== "part-search" && currentAppView !== "rap" && currentAppView !== "harmonization" && currentAppView !== "single-source" && currentAppView !== "index-analysis" && currentAppView !== "price-explanation" && currentAppView !== "cleansheet") { currentAppView = "overview"; }
+  if (currentAppView !== "overview" && currentAppView !== "part-search" && currentAppView !== "rap" && currentAppView !== "harmonization" && currentAppView !== "single-source" && currentAppView !== "index-analysis" && currentAppView !== "index-opportunity" && currentAppView !== "price-explanation" && currentAppView !== "cleansheet") { currentAppView = "overview"; }
   if (document.body) { document.body.setAttribute("data-idp-app-view", currentAppView); }
   /** DOM helper — defined early so tab handlers never reference it before initialization. */
   function $(id) {
@@ -6101,14 +6087,15 @@
       destroyHarmonizationCharts();
       renderHarmonizationUnified();
       _idpHarmDirty = false;
-      /* Index Opportunity sub-tab uses its own part-level cache that
-       * was just invalidated by idpMarkHarmonizationDirty(). If the
-       * user is currently looking at it, force an immediate re-render
-       * so tiles and rows reflect the new filter slice instead of
-       * going briefly stale. */
-      if (typeof _idpIoCurrentSubtab !== "undefined" && _idpIoCurrentSubtab === "index-opp"
-          && typeof idpIoRenderContent === "function") {
-        try { idpIoRenderContent(); } catch (eIoR) {}
+    } else if (currentAppView === "index-opportunity") {
+      /* IO uses its own part-level cache that was just invalidated by
+       * idpMarkHarmonizationDirty(). Re-render so tiles and rows
+       * reflect the new filter slice instead of going briefly stale. */
+      if (typeof idpIoRenderContent === "function") {
+        try {
+          idpIoEnsurePartCache();
+          idpIoRenderContent();
+        } catch (eIoR) {}
       }
     }
     updateHarmFilterButtonLabels();
@@ -8286,14 +8273,12 @@
       destroyHarmonizationCharts();
       renderHarmonizationUnified();
       _idpHarmDirty = false;
-      /* Index Opportunity sub-tab uses its own part-level cache that
-       * was just invalidated by idpMarkHarmonizationDirty(). If the
-       * user is currently looking at it, force an immediate re-render
-       * so tiles and rows reflect the new filter slice instead of
-       * going briefly stale. */
-      if (typeof _idpIoCurrentSubtab !== "undefined" && _idpIoCurrentSubtab === "index-opp"
-          && typeof idpIoRenderContent === "function") {
-        try { idpIoRenderContent(); } catch (eIoR) {}
+    } else if (currentAppView === "index-opportunity") {
+      if (typeof idpIoRenderContent === "function") {
+        try {
+          idpIoEnsurePartCache();
+          idpIoRenderContent();
+        } catch (eIoR) {}
       }
     }
     idpToastFiltersReset();
@@ -9312,8 +9297,10 @@
   var _idpIoPartCache = null;
   var _idpIoSelectedCodes = [];          // codes currently checked in the IO picker
   var _idpIoPickerWired = false;
-  var _idpIoSubtabsWired = false;
-  var _idpIoCurrentSubtab = "summary";   // last activated sub-tab; persisted to localStorage
+  /* IO is now a top-level page (not a sub-tab of Harmonization). The
+   * old _idpIoSubtabsWired / _idpIoCurrentSubtab globals were removed
+   * with the sub-tab strip on 2026-05-21. Code that needs to know if
+   * the user is "on the IO page" now checks currentAppView directly. */
   /* How many rows are currently rendered in each archetype's detail table
    * (incremented when the user clicks "Show all"). */
   var _idpIoTableShown = { us: IDP_IO_TABLE_PREVIEW_ROWS, china: IDP_IO_TABLE_PREVIEW_ROWS, row: IDP_IO_TABLE_PREVIEW_ROWS };
@@ -9346,19 +9333,27 @@
     return idpIoClassifyArchetype(raw);
   }
 
-  /** Build the part-level growth cache. Iterates getFiltered() ONCE so
-   *  the cache honours every Spend Review filter currently in effect
-   *  (BU, L1–L4, Country, sites, suppliers, time-range). For each
-   *  surviving row, look up part+site key and accumulate spend/qty into
-   *  either the 2024 or 2025 bucket. Then derive priceLow / priceHigh
-   *  / growthPct per part. Parts with no qty in either year are dropped.
-   *  Description / archetype are remembered from the heaviest single row
-   *  in each bucket — beats first-seen wins which can misclassify a part
-   *  if its first row happens to be a tiny one-off shipment elsewhere.
+  /** Build the part-level growth cache. Iterates rows that pass
+   *  rowOkIgnoreYm() ONCE so the cache honours every Spend Review
+   *  filter currently in effect — BU, L1-L4, Country, sites, suppliers,
+   *  supplier set, RAP category — but DELIBERATELY ignores the time
+   *  filter. IO compares 2024 vs 2025 per part, so the cache MUST see
+   *  rows from both years even when the global time filter is set to
+   *  "2025" only (the dashboard's default). Using getFiltered() here
+   *  would strip 2024 history and zero out every part's growth → the
+   *  bug fixed by this rewrite.
+   *
+   *  For each surviving row, look up part+site key and accumulate
+   *  spend/qty into either the 2024 or 2025 bucket. Then derive
+   *  priceLow / priceHigh / growthPct per part. Parts with no qty in
+   *  either year are dropped. Description / archetype are remembered
+   *  from the heaviest single row in each bucket — beats first-seen
+   *  wins which can misclassify a part if its first row happens to be
+   *  a tiny one-off shipment elsewhere.
    *
    *  Cache is invalidated by idpMarkHarmonizationDirty() (called on
    *  every Spend Review filter change), so the rebuild fires lazily on
-   *  the next IO sub-tab activation. No extra fingerprinting needed.
+   *  the next IO activation. No extra fingerprinting needed.
    *
    *  Complexity: O(F) over filtered rows + O(P) over unique parts. On a
    *  ~300k row cube with ~30k unique part+site combos this finishes in
@@ -9371,17 +9366,22 @@
       _idpIoPartCache = { builtAt: Date.now(), rowCount: 0, parts: [] };
       return _idpIoPartCache;
     }
-    /* Use the Spend Review filter result, not raw D.rows, so BU /
-     * L1-L4 / Country / sites / suppliers / time-range filter IO too.
-     * Falls back to raw rows if getFiltered is missing for any reason. */
+    /* Walk every row and apply rowOkIgnoreYm — that's the same Spend
+     * Review predicate as rowOk but without inYm(). If the predicate
+     * is genuinely missing (partial app boot during data load), fall
+     * back to iterating every raw row. An empty result from the
+     * predicate is honest — the user's filter wiped everything — so
+     * we do NOT fall back to "all rows" in that case. */
+    var lim = typeof D !== "undefined" && D && typeof D.n === "number" ? D.n : rows.length;
     var idx = null;
-    try { if (typeof getFiltered === "function") idx = getFiltered(); } catch (eGf) { idx = null; }
-    n = idx && idx.length ? idx.length : 0;
-    /* If getFiltered returned nothing, fall back to all rows so an
-     * empty result here is honest (and the cache will rebuild once
-     * filters are loosened). */
-    var iterAll = !idx;
-    if (iterAll) n = rows.length;
+    if (typeof rowOkIgnoreYm === "function") {
+      try {
+        idx = [];
+        for (var j = 0; j < lim; j++) { if (rowOkIgnoreYm(j)) idx.push(j); }
+      } catch (eIgn) { idx = null; }
+    }
+    var iterAll = idx === null;
+    n = iterAll ? rows.length : idx.length;
     var byKey = Object.create(null);
     for (i = 0; i < n; i++) {
       ix = iterAll ? i : idx[i];
@@ -10063,6 +10063,7 @@
   function idpIoRenderContent() {
     var emptyEl = $("io-empty-state");
     var contentEl = $("io-content");
+    var dlBtn = $("io-dl-btn");
     if (!emptyEl || !contentEl) return;
     /* No picks yet (or one pick) → empty state. */
     if (!_idpIoSelectedCodes || _idpIoSelectedCodes.length < 2) {
@@ -10073,6 +10074,7 @@
       emptyEl.classList.remove("hidden");
       contentEl.classList.add("hidden");
       contentEl.innerHTML = "";
+      if (dlBtn) dlBtn.classList.add("hidden");
       return;
     }
     var derived = idpIoDeriveOpportunities();
@@ -10082,6 +10084,7 @@
       emptyEl.classList.remove("hidden");
       contentEl.classList.add("hidden");
       contentEl.innerHTML = "";
+      if (dlBtn) dlBtn.classList.add("hidden");
       return;
     }
     idpIoUpdateIndexAssignmentLabel(derived.assignment);
@@ -10089,6 +10092,7 @@
     emptyEl.classList.add("hidden");
     contentEl.classList.remove("hidden");
     contentEl.classList.add("flex");
+    if (dlBtn) dlBtn.classList.remove("hidden");
     contentEl.innerHTML = "";
     contentEl.appendChild(idpIoBuildOverallSection(derived.qualifying.all, derived.summary.overall));
     contentEl.appendChild(idpIoBuildArchetypeSection(
@@ -10168,60 +10172,12 @@
     _idpIoPickerWired = true;
   }
 
-  /** Show/hide the two sub-tab panes. Also swaps which download button
-   *  is visible in the header (Summary vs Index Opportunity). */
-  function idpIoActivateSubtab(name) {
-    var panes = document.querySelectorAll("#view-harmonization [data-harm-subtab-pane]");
-    var btns = document.querySelectorAll("#harm-subtabs .harm-subtab-btn");
-    var i;
-    for (i = 0; i < panes.length; i++) {
-      var p = panes[i];
-      if (p.getAttribute("data-harm-subtab-pane") === name) {
-        p.classList.remove("hidden");
-      } else {
-        p.classList.add("hidden");
-      }
-    }
-    for (i = 0; i < btns.length; i++) {
-      var b = btns[i];
-      var active = b.getAttribute("data-harm-subtab") === name;
-      b.classList.toggle("is-active", active);
-      b.setAttribute("aria-selected", active ? "true" : "false");
-    }
-    var summaryDl = $("harm-dl-summary-btn");
-    var ioDl = $("harm-dl-index-opp-btn");
-    if (summaryDl) summaryDl.classList.toggle("hidden", name !== "summary");
-    if (ioDl) ioDl.classList.toggle("hidden", name !== "index-opp");
-    _idpIoCurrentSubtab = name;
-    try { localStorage.setItem("idp.harm.subtab", name); } catch (eLS) {}
-    if (name === "index-opp") {
-      try {
-        idpIoWireIndexPickerOnce();
-        idpIoEnsurePartCache();
-        idpIoRenderContent();
-      } catch (eR) {
-        if (typeof console !== "undefined" && console.error) console.error("[io] activate", eR);
-      }
-    }
-  }
-
-  function idpIoWireSubtabsOnce() {
-    if (_idpIoSubtabsWired) return;
-    var bar = $("harm-subtabs");
-    if (!bar) return;
-    bar.addEventListener("click", function (ev) {
-      var b = ev.target.closest && ev.target.closest(".harm-subtab-btn");
-      if (!b) return;
-      var name = b.getAttribute("data-harm-subtab");
-      if (!name || name === _idpIoCurrentSubtab) return;
-      idpIoActivateSubtab(name);
-    });
-    /* Restore last-used sub-tab from a previous visit. */
-    var saved = null;
-    try { saved = localStorage.getItem("idp.harm.subtab"); } catch (eLS) {}
-    if (saved === "index-opp") idpIoActivateSubtab("index-opp");
-    _idpIoSubtabsWired = true;
-  }
+  /* The IO sub-tab strip on the Harmonization page was retired on
+   * 2026-05-21 — Index Opportunity is now its own top-level page. The
+   * sub-tab activation helpers (idpIoActivateSubtab / idpIoWireSubtabsOnce)
+   * have been removed; setAppView("index-opportunity") in the routing
+   * block now handles the activation directly. The download button
+   * lives in the new page's header so no show/hide is needed either. */
 
   /** Excel export — one workbook, four sheets:
    *    All Index Opportunities (combined, sorted by lowSavings desc)
@@ -10318,9 +10274,7 @@
    * window so older code that bundles to non-strict mode still finds it). */
   if (typeof window !== "undefined") {
     window.ioExportAllIndexOpportunities = ioExportAllIndexOpportunities;
-    window.idpIoActivateSubtab = idpIoActivateSubtab;
     window.idpIoBuildPartCache = idpIoBuildPartCache;
-    window.idpIoWireSubtabsOnce = idpIoWireSubtabsOnce;
   }
 
   /* ============================================
@@ -11777,6 +11731,10 @@
         if (v === "index-analysis" && !$("view-index-analysis")) {
           ok = false;
           idpDiagLog("nav maps to missing view-index-analysis");
+        }
+        if (v === "index-opportunity" && !$("view-index-opportunity")) {
+          ok = false;
+          idpDiagLog("nav maps to missing view-index-opportunity");
         }
         if (v === "price-explanation" && !$("view-price-explanation")) {
           ok = false;
@@ -16229,6 +16187,18 @@
           } catch (eLi) {}
         }
         break;
+      case "index-opportunity":
+        /* IO seeds its index catalog from the same built-in pack the
+         * IA tab uses — call the seeder so the picker has something
+         * to render even if the user lands on IO before opening IA. */
+        try {
+          idpIa2SeedBuiltinCatalogOnce();
+        } catch (eIoInit) {
+          try {
+            if (typeof console !== "undefined" && console.error) console.error("[index-opportunity] init", eIoInit);
+          } catch (eLi2) {}
+        }
+        break;
       case "price-explanation":
         initPriceExplanationWireOnce();
         break;
@@ -16241,9 +16211,9 @@
   }
 
   function setAppView(name) {
-    var o, h, c, p, r, ss, idx, pe, bulk, bO, bPS, bH, bC, bR, bSS, bIdx, bPE, fw, prevView, appMainWrap;
+    var o, h, c, p, r, ss, idx, io, pe, bulk, bO, bPS, bH, bC, bR, bSS, bIdx, bIO, bPE, fw, prevView, appMainWrap;
     appMainWrap = $("app-main-wrap");
-    if (name !== "overview" && name !== "part-search" && name !== "rap" && name !== "harmonization" && name !== "single-source" && name !== "index-analysis" && name !== "price-explanation" && name !== "cleansheet") name = "overview";
+    if (name !== "overview" && name !== "part-search" && name !== "rap" && name !== "harmonization" && name !== "single-source" && name !== "index-analysis" && name !== "index-opportunity" && name !== "price-explanation" && name !== "cleansheet") name = "overview";
     prevView = document.body ? String(document.body.getAttribute("data-idp-app-view") || "") : "";
     if (prevView && prevView !== name) idpScrollStoreForView(prevView);
     currentAppView = name;
@@ -16288,6 +16258,7 @@
     c = $("view-cleansheet");
     ss = $("view-single-source");
     idx = $("view-index-analysis");
+    io = $("view-index-opportunity");
     pe = $("view-price-explanation");
     bO = $("nav-overview");
     bPS = $("nav-part-search");
@@ -16296,6 +16267,7 @@
     bC = $("nav-cleansheet");
     bSS = $("nav-single-source");
     bIdx = $("nav-index-analysis");
+    bIO = $("nav-index-opportunity");
     bPE = $("nav-price-explanation");
     fw = $("filter-wrap");
     if (fw) {
@@ -16314,6 +16286,7 @@
       if (c) { c.classList.add("hidden"); c.setAttribute("aria-hidden", "true"); }
       if (ss) { ss.classList.add("hidden"); ss.setAttribute("aria-hidden", "true"); }
       if (idx) { idx.classList.add("hidden"); idx.setAttribute("aria-hidden", "true"); }
+      if (io) { io.classList.add("hidden"); io.setAttribute("aria-hidden", "true"); }
     }
     function hideAllMain() {
       idpPeDestroyCharts();
@@ -16343,6 +16316,7 @@
       if (bC) bC.classList.remove("is-active");
       if (bSS) bSS.classList.remove("is-active");
       if (bIdx) bIdx.classList.remove("is-active");
+      if (bIO) bIO.classList.remove("is-active");
       if (bPE) bPE.classList.remove("is-active");
       setTimeout(function () {
         var k2;
@@ -16369,6 +16343,7 @@
       if (bC) bC.classList.remove("is-active");
       if (bSS) bSS.classList.remove("is-active");
       if (bIdx) bIdx.classList.remove("is-active");
+      if (bIO) bIO.classList.remove("is-active");
       if (bPE) bPE.classList.remove("is-active");
       try {
         syncPartSearchAfterFilter();
@@ -16390,6 +16365,7 @@
       if (bC) bC.classList.remove("is-active");
       if (bSS) bSS.classList.remove("is-active");
       if (bIdx) bIdx.classList.remove("is-active");
+      if (bIO) bIO.classList.remove("is-active");
       if (bPE) bPE.classList.remove("is-active");
       try {
         readFiltersFromForm();
@@ -16407,6 +16383,7 @@
       deactivateSpendReview();
       if (bSS) bSS.classList.remove("is-active");
       if (bIdx) bIdx.classList.remove("is-active");
+      if (bIO) bIO.classList.remove("is-active");
       if (bPE) bPE.classList.remove("is-active");
       if (bH) bH.classList.add("is-active");
       if (bC) bC.classList.remove("is-active");
@@ -16420,24 +16397,40 @@
       } catch (eHarmTab) {
         if (typeof console !== "undefined" && console.error) console.error("[harmonization tab]", eHarmTab);
       }
-      try {
-        idpIoWireSubtabsOnce();
-        /* Re-render IO if the user was on that sub-tab last time and a
-         * data reload happened in the background. */
-        if (_idpIoCurrentSubtab === "index-opp") {
-          idpIoWireIndexPickerOnce();
-          idpIoEnsurePartCache();
-          idpIoRenderContent();
-        }
-      } catch (eIoTab) {
-        if (typeof console !== "undefined" && console.error) console.error("[index-opp tab]", eIoTab);
-      }
       setTimeout(function () {
         var k2;
         for (k2 = 0; k2 < harmCharts.length; k2++) {
           try { if (harmCharts[k2] && harmCharts[k2].resize) harmCharts[k2].resize(); } catch (eH2) { }
         }
       }, 120);
+      idpNavFinishScroll(name);
+      return;
+    }
+    if (name === "index-opportunity") {
+      /* Index Opportunity is its own top-level page (parallel to
+       * Harmonization / Single Source / Index Analysis / Cleansheet)
+       * as of the 2026-05-21 nav promotion. The math + UI live in
+       * idpIoRenderContent() and friends — the page activation just
+       * mounts the existing view container, wires the picker once,
+       * makes sure the part cache is built, and renders. */
+      idpTeardownHarmonizationView();
+      destroyCleansheetChart();
+      hideAllMain();
+      if (io) { io.classList.remove("hidden"); io.removeAttribute("aria-hidden"); }
+      deactivateSpendReview();
+      if (bH) bH.classList.remove("is-active");
+      if (bC) bC.classList.remove("is-active");
+      if (bSS) bSS.classList.remove("is-active");
+      if (bIdx) bIdx.classList.remove("is-active");
+      if (bPE) bPE.classList.remove("is-active");
+      if (bIO) bIO.classList.add("is-active");
+      try {
+        idpIoWireIndexPickerOnce();
+        idpIoEnsurePartCache();
+        idpIoRenderContent();
+      } catch (eIoTab) {
+        if (typeof console !== "undefined" && console.error) console.error("[index-opp tab]", eIoTab);
+      }
       idpNavFinishScroll(name);
       return;
     }
@@ -16453,6 +16446,7 @@
       if (bH) bH.classList.remove("is-active");
       if (bC) bC.classList.remove("is-active");
       if (bIdx) bIdx.classList.remove("is-active");
+      if (bIO) bIO.classList.remove("is-active");
       if (bPE) bPE.classList.remove("is-active");
       if (bSS) bSS.classList.add("is-active");
       try {
@@ -16480,6 +16474,7 @@
         if (bH) bH.classList.remove("is-active");
         if (bC) bC.classList.remove("is-active");
         if (bSS) bSS.classList.remove("is-active");
+        if (bIO) bIO.classList.remove("is-active");
         if (bPE) bPE.classList.remove("is-active");
         if (bIdx) bIdx.classList.add("is-active");
         if (prevView && prevView !== "index-analysis") {
@@ -16540,6 +16535,7 @@
       if (bC) bC.classList.remove("is-active");
       if (bSS) bSS.classList.remove("is-active");
       if (bIdx) bIdx.classList.remove("is-active");
+      if (bIO) bIO.classList.remove("is-active");
       if (bPE) bPE.classList.add("is-active");
       try {
         readFiltersFromForm();
@@ -16565,6 +16561,7 @@
     deactivateSpendReview();
     if (bSS) bSS.classList.remove("is-active");
     if (bIdx) bIdx.classList.remove("is-active");
+    if (bIO) bIO.classList.remove("is-active");
     if (bPE) bPE.classList.remove("is-active");
     if (bH) bH.classList.remove("is-active");
     if (bC) bC.classList.add("is-active");
@@ -17397,14 +17394,15 @@
       destroyHarmonizationCharts();
       renderHarmonizationUnified();
       _idpHarmDirty = false;
-      /* Index Opportunity sub-tab uses its own part-level cache that
-       * was just invalidated by idpMarkHarmonizationDirty(). If the
-       * user is currently looking at it, force an immediate re-render
-       * so tiles and rows reflect the new filter slice instead of
-       * going briefly stale. */
-      if (typeof _idpIoCurrentSubtab !== "undefined" && _idpIoCurrentSubtab === "index-opp"
-          && typeof idpIoRenderContent === "function") {
-        try { idpIoRenderContent(); } catch (eIoR) {}
+    } else if (currentAppView === "index-opportunity") {
+      /* IO uses its own part-level cache that was just invalidated by
+       * idpMarkHarmonizationDirty(). Re-render so tiles and rows
+       * reflect the new filter slice instead of going briefly stale. */
+      if (typeof idpIoRenderContent === "function") {
+        try {
+          idpIoEnsurePartCache();
+          idpIoRenderContent();
+        } catch (eIoR) {}
       }
     }
     if (currentAppView === "rap") {

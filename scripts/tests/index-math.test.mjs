@@ -847,3 +847,48 @@ test("partDrilldownRows: negative savings allowed in 2025 row (price beat benchm
   // 2025 high benchmark = 108, benchmark spend = 10,800. Savings = −700.
   assert.ok(Math.abs(rows[1].savingsVsHigh - -700) < 1e-6);
 });
+
+test("regression: any part whose growth exceeds the low target qualifies — would have caught the zero-opportunities bug", () => {
+  // The zero-opportunities bug in prod was that idpIoBuildPartCache used
+  // getFiltered() (which gates on the time filter) instead of
+  // rowOkIgnoreYm. With the dashboard's default "Time = 2025" filter,
+  // every part's 2024 history got stripped → priceLow = NaN → growthPct
+  // = NaN → nothing qualified across a 250k-row cube.
+  //
+  // This pure test would NOT have caught the upstream filter bug
+  // (rowOkIgnoreYm is in index.html, not the math module), but it
+  // *would* have caught any future regression where partCaptureSavings
+  // mistakenly returned 0 for a clearly-qualifying part. That's the
+  // floor we need: given a synthetic dataset with at least one part
+  // whose growth > low target, the qualification result must be > 0.
+  //
+  // We synthesize a small dataset matching the user's reported scenario
+  // (WPU1017 = +2.4 low, PCU3339133391 = +4.9 high) and confirm that a
+  // part growing faster than the low target produces a positive
+  // archetype.n. If this ever returns 0, the math is broken.
+  const lowTarget = 2.4;
+  const highTarget = 4.9;
+  // Three parts: one slow (1%), one mid (5%), one fast (12%).
+  // Only the second and third should qualify under low=2.4%.
+  const enriched = [
+    { part: "SLOW",  spendHigh: 100_000, growthPct: 1.0 },
+    { part: "MID",   spendHigh: 250_000, growthPct: 5.0 },
+    { part: "FAST",  spendHigh: 500_000, growthPct: 12.0 }
+  ]
+    .map((p) => Object.assign({}, p, partCaptureSavings(p, lowTarget, highTarget)))
+    .filter((p) => p.qualifies);
+
+  assert.ok(enriched.length > 0,
+    "Expected at least one qualifying part — if this returns 0 the IO " +
+    "tab will show empty tiles for the entire user base.");
+  const summary = archetypeSummary(enriched);
+  assert.ok(summary.n > 0,
+    `archetypeSummary.n must be > 0 (got ${summary.n})`);
+  assert.ok(summary.totalSavings > 0,
+    `archetypeSummary.totalSavings must be > 0 (got ${summary.totalSavings})`);
+  // Sanity: MID and FAST should qualify, SLOW should not.
+  assert.equal(enriched.length, 2);
+  assert.ok(enriched.find((p) => p.part === "FAST"));
+  assert.ok(enriched.find((p) => p.part === "MID"));
+  assert.ok(!enriched.find((p) => p.part === "SLOW"));
+});
