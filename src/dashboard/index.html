@@ -610,9 +610,12 @@
         outline: 2px solid rgba(31, 58, 138, 0.35);
         outline-offset: 1px;
       }
-      body[data-idp-app-view="harmonization"] #filter-wrap {
-        display: none !important;
-      }
+      /* Note: the global Spend Review filter bar (#filter-wrap) used to be
+       * hidden on Harmonization. It now stays visible across all tabs so
+       * BU / L1-L4 / Country / sites / suppliers / time-range are
+       * filterable everywhere. The Harmonization tab also has its own
+       * #harm-uni-filters bar for Year / Spend type / sites / L1-L4 — both
+       * compose (global filters apply first, then the harm-local refinements). */
       #app-layout-inner {
         max-width: 100%;
         overflow-x: hidden;
@@ -639,11 +642,20 @@
         position: relative;
         max-width: 100%;
       }
+      /* Default anchor: LEFT edge of the trigger (panel extends RIGHTWARD).
+       * This is correct for every filter that isn't pinned to the right
+       * edge of the viewport — without this, the leftmost filter (BU)
+       * anchored its panel to the RIGHT edge of its 10.5rem trigger and
+       * the 18.75rem panel extended LEFT into the sidebar.
+       *
+       * For the rightmost filters (where a left-anchored panel would
+       * overflow the viewport), idpFfSmartAnchor() flips the panel to
+       * `right: 0; left: auto` at open time via measurement. */
       #idp-app #filter-bar .ff-group > .ff-panel,
       #idp-app #harm-filter-bar .ff-group > .ff-panel {
         box-sizing: border-box;
-        left: auto !important;
-        right: 0 !important;
+        left: 0 !important;
+        right: auto !important;
         width: min(18.75rem, calc(100vw - 1rem)) !important;
         max-width: min(18.75rem, calc(100vw - 1rem)) !important;
         min-width: 0 !important;
@@ -652,6 +664,12 @@
         overflow-y: auto !important;
         -webkit-overflow-scrolling: touch;
         z-index: 10000 !important;
+      }
+      /* Smart-anchor inline override (set by idpFfSmartAnchor on open). */
+      #idp-app #filter-bar .ff-group > .ff-panel.idp-ff-anchor-right,
+      #idp-app #harm-filter-bar .ff-group > .ff-panel.idp-ff-anchor-right {
+        left: auto !important;
+        right: 0 !important;
       }
       @media (max-width: 360px) {
         #idp-app #filter-bar .ff-group > .ff-panel,
@@ -5690,6 +5708,33 @@
   function fmtYm(s) { if (!s) return "—"; var m2 = (s + "").match(/(\d{4})[\/\-](\w+)/i); if (m2) { var mth = m2[2].length > 3 ? m2[2].slice(0, 3) : m2[2]; return mth + " " + m2[1]; } return s + ""; }
   function getMulti2(sel, arr) { var S = new Set(), a = arr || [""]; if (!sel) return S; for (var o = 0; o < sel.options.length; o++) { if (sel.options[o].selected) S.add(a[parseInt(sel.options[o].value, 10)] || ""); } return S; }
   function ffGetPanel(sid) { return document.querySelector('.ff-panel[data-ff-for="' + sid + '"]'); }
+
+  /** After opening a Spend Review or Harmonization filter panel, decide
+   *  whether to anchor it to the trigger's LEFT edge (panel extends right)
+   *  or its RIGHT edge (panel extends left) based on which one keeps the
+   *  panel inside the viewport.
+   *
+   *  Why: the default CSS anchors all panels to the LEFT edge of their
+   *  trigger so the leftmost filter (Business Unit) doesn't push its
+   *  panel into the sidebar. But the rightmost filters would then push
+   *  their panel past the viewport's right edge. This function fixes
+   *  the rightmost case by adding a class that flips the anchor to the
+   *  RIGHT edge.
+   *
+   *  No-op if the panel is hidden — we measure layout, so we need the
+   *  panel rendered first. */
+  function idpFfSmartAnchor(panel) {
+    if (!panel || panel.classList.contains("hidden")) return;
+    /* Default: left-anchored (matches the base CSS). */
+    panel.classList.remove("idp-ff-anchor-right");
+    var rect = panel.getBoundingClientRect();
+    var vw = window.innerWidth || document.documentElement.clientWidth;
+    /* If the left-anchored panel pokes past the viewport's right edge
+     * (minus a small breathing margin), flip it to right-anchored. */
+    if (rect.right > vw - 8) {
+      panel.classList.add("idp-ff-anchor-right");
+    }
+  }
   function ffChkStyle(inp) { var r = inp && inp.closest && inp.closest(".ff-chk-row"), saL = inp && inp.closest && inp.closest(".ff-sa"); if (r) { r.classList.toggle("ff-chk-sel", !!inp.checked); } if (saL && (inp.getAttribute("data-selall") != null)) { saL.classList.toggle("ff-sa-sel", !!inp.checked); } }
   function ffSyncSelectAll(panel) { var cbs, sa, n, tot, j, sL; if (!panel) return; cbs = panel.querySelectorAll(".ff-opts .ff-cb"); sa = panel.querySelector(".ff-cb-sa"); if (!sa) return; if (!cbs || !cbs.length) { sa.checked = false; sa.indeterminate = false; sL = sa.closest(".ff-sa"); if (sL) sL.classList.remove("ff-sa-sel"); return; } n = 0; tot = cbs.length; for (j = 0; j < cbs.length; j++) { if (cbs[j].checked) { n++; } } if (n === 0) { sa.checked = false; sa.indeterminate = false; } else if (n === tot) { sa.checked = true; sa.indeterminate = false; } else { sa.checked = false; sa.indeterminate = true; } sL = sa.closest(".ff-sa"); if (sL) { sL.classList.toggle("ff-sa-sel", !!(sa.checked || sa.indeterminate)); } }
   function getStrSetFromChk(sid, dkey) { var p = ffGetPanel(sid), d = dicts && dicts[dkey], cbs, i, ix, v, S, n, tot; S = new Set(); if (!p) return S; cbs = p.querySelectorAll(".ff-opts .ff-cb"); tot = cbs.length; n = 0; for (i = 0; i < tot; i++) { if (cbs[i].checked) n++; } if (tot === 0 || n === 0 || n === tot) return S; for (i = 0; i < tot; i++) { if (!cbs[i].checked) { continue; } ix = +cbs[i].getAttribute("data-ix"); v = d && d[ix] != null ? d[ix] : ""; v = (v + "").trim(); S.add((v + "") || ""); } return S; }
@@ -5764,11 +5809,19 @@
   }
   function closeAllFilterPanels() {
     idpClearPeriodPanelViewport();
-    document.querySelectorAll("#filter-bar .ff-panel").forEach(function (p) { p.classList.add("hidden"); });
+    document.querySelectorAll("#filter-bar .ff-panel").forEach(function (p) {
+      p.classList.add("hidden");
+      /* Reset smart-anchor so a stale class doesn't pin the panel on
+       * its next open before idpFfSmartAnchor re-measures. */
+      p.classList.remove("idp-ff-anchor-right");
+    });
     document.querySelectorAll("#filter-bar .ff-btn").forEach(function (b) { b.setAttribute("aria-expanded", "false"); });
   }
   function closeHarmFilterPanels() {
-    document.querySelectorAll("#harm-filter-bar .ff-panel").forEach(function (p) { p.classList.add("hidden"); });
+    document.querySelectorAll("#harm-filter-bar .ff-panel").forEach(function (p) {
+      p.classList.add("hidden");
+      p.classList.remove("idp-ff-anchor-right");
+    });
     document.querySelectorAll("#harm-filter-bar .ff-btn").forEach(function (b) { b.setAttribute("aria-expanded", "false"); });
   }
   function closeAllFfPanelsEverywhere() {
@@ -5980,6 +6033,15 @@
       destroyHarmonizationCharts();
       renderHarmonizationUnified();
       _idpHarmDirty = false;
+      /* Index Opportunity sub-tab uses its own part-level cache that
+       * was just invalidated by idpMarkHarmonizationDirty(). If the
+       * user is currently looking at it, force an immediate re-render
+       * so tiles and rows reflect the new filter slice instead of
+       * going briefly stale. */
+      if (typeof _idpIoCurrentSubtab !== "undefined" && _idpIoCurrentSubtab === "index-opp"
+          && typeof idpIoRenderContent === "function") {
+        try { idpIoRenderContent(); } catch (eIoR) {}
+      }
     }
     updateHarmFilterButtonLabels();
   }
@@ -6080,11 +6142,14 @@
         var g = btn.closest && btn.closest(".ff-group"), panel = g && g.querySelector(".ff-panel"), isOpen, srch;
         if (!panel) return;
         isOpen = !panel.classList.contains("hidden");
-        document.querySelectorAll("#harm-filter-bar .ff-panel").forEach(function (p2) { p2.classList.add("hidden"); });
+        document.querySelectorAll("#harm-filter-bar .ff-panel").forEach(function (p2) { p2.classList.add("hidden"); p2.classList.remove("idp-ff-anchor-right"); });
         document.querySelectorAll("#harm-filter-bar .ff-btn").forEach(function (b2) { b2.setAttribute("aria-expanded", "false"); });
         if (isOpen) return;
         panel.classList.remove("hidden");
         btn.setAttribute("aria-expanded", "true");
+        /* Decide LEFT vs RIGHT anchor based on measured layout (fixes
+         * the leftmost-filter-panels-into-sidebar bug). */
+        requestAnimationFrame(function () { idpFfSmartAnchor(panel); });
         srch = panel.querySelector(".ff-search");
         if (srch) {
           srch.value = "";
@@ -8153,6 +8218,15 @@
       destroyHarmonizationCharts();
       renderHarmonizationUnified();
       _idpHarmDirty = false;
+      /* Index Opportunity sub-tab uses its own part-level cache that
+       * was just invalidated by idpMarkHarmonizationDirty(). If the
+       * user is currently looking at it, force an immediate re-render
+       * so tiles and rows reflect the new filter slice instead of
+       * going briefly stale. */
+      if (typeof _idpIoCurrentSubtab !== "undefined" && _idpIoCurrentSubtab === "index-opp"
+          && typeof idpIoRenderContent === "function") {
+        try { idpIoRenderContent(); } catch (eIoR) {}
+      }
     }
     idpToastFiltersReset();
   }
@@ -9204,28 +9278,46 @@
     return idpIoClassifyArchetype(raw);
   }
 
-  /** Build the part-level growth cache once. Iterates D.rows ONCE:
-   *  for each row, look up part+site key and accumulate spend/qty into
+  /** Build the part-level growth cache. Iterates getFiltered() ONCE so
+   *  the cache honours every Spend Review filter currently in effect
+   *  (BU, L1–L4, Country, sites, suppliers, time-range). For each
+   *  surviving row, look up part+site key and accumulate spend/qty into
    *  either the 2024 or 2025 bucket. Then derive priceLow / priceHigh
    *  / growthPct per part. Parts with no qty in either year are dropped.
-   *  Description / archetype are remembered from the first contributing
-   *  row in each year (whichever year has the larger qty wins).
+   *  Description / archetype are remembered from the heaviest single row
+   *  in each bucket — beats first-seen wins which can misclassify a part
+   *  if its first row happens to be a tiny one-off shipment elsewhere.
    *
-   *  Complexity: O(N) over D.rows + O(P) over unique parts. On a ~250k
-   *  row cube with ~30k unique part+site combos this finishes in <250ms
-   *  on a laptop CPU. */
+   *  Cache is invalidated by idpMarkHarmonizationDirty() (called on
+   *  every Spend Review filter change), so the rebuild fires lazily on
+   *  the next IO sub-tab activation. No extra fingerprinting needed.
+   *
+   *  Complexity: O(F) over filtered rows + O(P) over unique parts. On a
+   *  ~300k row cube with ~30k unique part+site combos this finishes in
+   *  ~250ms on a laptop CPU. */
   function idpIoBuildPartCache() {
-    var rows, n, i, r, year, partKey, siteKey, part, site, country, key,
+    var n, i, ix, r, year, partKey, siteKey, part, site, key,
         bucket, qty, spend, descCandidate, ctryCandidate;
-    rows = (typeof D !== "undefined" && D && D.rows) ? D.rows : null;
+    var rows = (typeof D !== "undefined" && D && D.rows) ? D.rows : null;
     if (!rows || !rows.length) {
       _idpIoPartCache = { builtAt: Date.now(), rowCount: 0, parts: [] };
       return _idpIoPartCache;
     }
-    n = rows.length;
+    /* Use the Spend Review filter result, not raw D.rows, so BU /
+     * L1-L4 / Country / sites / suppliers / time-range filter IO too.
+     * Falls back to raw rows if getFiltered is missing for any reason. */
+    var idx = null;
+    try { if (typeof getFiltered === "function") idx = getFiltered(); } catch (eGf) { idx = null; }
+    n = idx && idx.length ? idx.length : 0;
+    /* If getFiltered returned nothing, fall back to all rows so an
+     * empty result here is honest (and the cache will rebuild once
+     * filters are loosened). */
+    var iterAll = !idx;
+    if (iterAll) n = rows.length;
     var byKey = Object.create(null);
     for (i = 0; i < n; i++) {
-      r = rows[i];
+      ix = iterAll ? i : idx[i];
+      r = rows[ix];
       if (!r) continue;
       year = +r.year;
       if (!isFinite(year)) continue;
@@ -9295,8 +9387,11 @@
   }
 
   function idpIoEnsurePartCache() {
-    var n = (typeof D !== "undefined" && D && D.rows) ? D.rows.length : 0;
-    if (_idpIoPartCache && _idpIoPartCache.rowCount === n) return _idpIoPartCache;
+    /* The cache is nullified on every filter change by
+     * idpMarkHarmonizationDirty(), so the only state we have to detect
+     * here is "data was loaded since last cache" — covered by the row
+     * count. Filter-induced rebuilds are guaranteed by the dirty mark. */
+    if (_idpIoPartCache) return _idpIoPartCache;
     return idpIoBuildPartCache();
   }
 
@@ -15794,12 +15889,13 @@
     bPE = $("nav-price-explanation");
     fw = $("filter-wrap");
     if (fw) {
-      if (name === "harmonization") {
-        fw.setAttribute("aria-hidden", "true");
-        closeAllFfPanelsEverywhere();
-      } else {
-        fw.removeAttribute("aria-hidden");
-      }
+      /* Global Spend Review filter bar stays visible on every tab — BU /
+       * L1-L4 / Country / sites / suppliers / time-range filter every
+       * downstream view including Harmonization and Index Opportunity.
+       * Just close any open dropdowns when we cross tab boundaries so a
+       * stale panel doesn't bleed into the new view. */
+      fw.removeAttribute("aria-hidden");
+      closeAllFfPanelsEverywhere();
     }
     function hideNonSpendReviewShellViews() {
       if (p) { p.classList.add("hidden"); p.setAttribute("aria-hidden", "true"); }
@@ -16408,6 +16504,7 @@
         idpClearPeriodPanelViewport();
         document.querySelectorAll("#filter-bar .ff-panel").forEach(function (p) {
           p.classList.add("hidden");
+          p.classList.remove("idp-ff-anchor-right");
         });
         document.querySelectorAll("#filter-bar .ff-btn").forEach(function (b) { b.setAttribute("aria-expanded", "false"); });
         if (isOpen) return;
@@ -16417,6 +16514,11 @@
           requestAnimationFrame(function () {
             idpSyncPeriodPanelViewport(btn);
           });
+        } else {
+          /* Decide LEFT vs RIGHT anchor based on measured layout (fixes
+           * the leftmost-filter-panels-into-sidebar bug). The period
+           * panel has its own viewport-fixed positioning above. */
+          requestAnimationFrame(function () { idpFfSmartAnchor(panel); });
         }
         srch = panel.querySelector(".ff-search");
         if (srch) { srch.value = ""; ffApplyPanelSearch(panel); setTimeout(function () { try { srch.focus(); } catch (e2) { } }, 0); }
@@ -16885,6 +16987,15 @@
       destroyHarmonizationCharts();
       renderHarmonizationUnified();
       _idpHarmDirty = false;
+      /* Index Opportunity sub-tab uses its own part-level cache that
+       * was just invalidated by idpMarkHarmonizationDirty(). If the
+       * user is currently looking at it, force an immediate re-render
+       * so tiles and rows reflect the new filter slice instead of
+       * going briefly stale. */
+      if (typeof _idpIoCurrentSubtab !== "undefined" && _idpIoCurrentSubtab === "index-opp"
+          && typeof idpIoRenderContent === "function") {
+        try { idpIoRenderContent(); } catch (eIoR) {}
+      }
     }
     if (currentAppView === "rap") {
       renderRapTab(idx);
