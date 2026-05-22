@@ -5054,11 +5054,22 @@
     if (fState.rapCat && fState.rapCat.size > 0 && !fState.rapCat.has(idpGetRapCategoryForRowIx(i))) return false;
     return true;
   }
-  /** Harmonization base slice: Spend Review BU / country / site / supplier / period (same spend cube as Overview); harmonization tab applies extra Year / spend type / L1–L4 there. */
+  /** Harmonization base slice — must honour every Spend Review filter
+   *  including L1-L4. Pre-2026-05-22 this skipped c1-c4 because the
+   *  harm tab had its own L1-L4 dropdown row, which has since been
+   *  removed (see harm-uni-filters comment block). Now that the global
+   *  Spend Review bar is the only filter surface, the L1-L4 checks
+   *  MUST be applied here or those dropdowns have no visible effect on
+   *  the Harmonization view. (Identical predicate to rowOk minus the
+   *  skipRapCat parameter, by design.) */
   function rowOkHarmonization(i) {
     if (!inYm(i)) return false;
     if (fState.suSet && fState.suSet.size > 0 && !fState.suSet.has(D.iSu[i])) return false;
     if (!sel(fState.bu, dicts.business_unit, D.iBu[i])) return false;
+    if (!sel(fState.c1, dicts.category_l1, D.iC1[i])) return false;
+    if (!sel(fState.c2, dicts.category_l2, D.iC2[i])) return false;
+    if (!sel(fState.c3, dicts.category_l3, D.iC3[i])) return false;
+    if (!sel(fState.c4, dicts.category_l4, D.iC4[i])) return false;
     if (!sel(fState.co, dicts.country, D.iCo[i])) return false;
     if (!sel(fState.site, dicts.site, D.iSite[i])) return false;
     if (fState.rapCat && fState.rapCat.size > 0 && !fState.rapCat.has(idpGetRapCategoryForRowIx(i))) return false;
