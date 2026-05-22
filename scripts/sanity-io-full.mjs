@@ -54,6 +54,8 @@ for (const r of rows) {
 
 // Derive per-part prices + growth, drop incomplete parts.
 const parts = [];
+let outliersLowSpend = 0;
+let outliersExtremeGrowth = 0;
 for (const [, b] of buckets) {
   const priceLow = m.weightedUnitPrice(b.spendLow, b.qtyLow);
   const priceHigh = m.weightedUnitPrice(b.spendHigh, b.qtyHigh);
@@ -61,9 +63,18 @@ for (const [, b] of buckets) {
   if (!Number.isFinite(priceHigh) || priceHigh <= 0) continue;
   const growthPct = m.priceGrowthPct(priceLow, priceHigh);
   if (!Number.isFinite(growthPct)) continue;
-  parts.push(Object.assign({}, b, { priceLow, priceHigh, growthPct }));
+  const enriched = Object.assign({}, b, { priceLow, priceHigh, growthPct });
+  // Apply the same outlier exclusion the runtime cache layer applies.
+  if (m.isOutlierPart(enriched)) {
+    if (enriched.spendLow < m.IO_OUTLIER_DEFAULTS.minSpendLow) outliersLowSpend++;
+    else outliersExtremeGrowth++;
+    continue;
+  }
+  parts.push(enriched);
 }
-console.log("Eligible part+site combos (both years present):", parts.length);
+console.log("Eligible part+site combos (both years, post-outlier-cut):", parts.length);
+console.log(`  Excluded — low spend (< $${m.IO_OUTLIER_DEFAULTS.minSpendLow}):       ${outliersLowSpend}`);
+console.log(`  Excluded — extreme growth (> ${m.IO_OUTLIER_DEFAULTS.maxGrowthPct}%): ${outliersExtremeGrowth}`);
 
 const lowTarget = 2.4;
 const highTarget = 4.9;

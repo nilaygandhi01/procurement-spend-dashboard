@@ -195,6 +195,19 @@
       }
       #idp-app .io-index-cb-row:hover { background: #f8fafc; border-color: #cbd5e1; }
       #idp-app .io-index-cb-row.is-checked { background: #eef2ff; border-color: #1f3a8a; }
+      #idp-app .idp-info-tip {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 14px;
+        height: 14px;
+        font-size: 11px;
+        line-height: 1;
+        color: #64748b;
+        cursor: help;
+        user-select: none;
+      }
+      #idp-app .idp-info-tip:hover, #idp-app .idp-info-tip:focus { color: #1f3a8a; outline: none; }
       #idp-app .io-index-cb-row.is-disabled { opacity: 0.55; cursor: not-allowed; }
       #idp-app .io-index-cb-row input[type="checkbox"] { accent-color: #1f3a8a; }
       #idp-app .io-archetype-header {
@@ -2749,6 +2762,73 @@
          *   avgSavingsPct  = 100 × totalSavings / totalSpend   (spend-weighted; 0 if no spend)
          *   parts80        = partsFor80PctValue(qualifyingParts)
          */
+        /**
+         * Hard outlier thresholds applied to the Index Opportunity dataset.
+         * Co-located here (rather than in the consumer) so the unit-test suite
+         * and the live runtime are guaranteed to use the same cutoffs.
+         *
+         *   minSpendLow  — Drop parts whose 2024 spend is below this floor.
+         *                  Below ~$1 the weighted-avg unit price is dominated
+         *                  by rounding error and growth % explodes (the user
+         *                  reported +845% / +344% rows that all traced back
+         *                  to sub-dollar 2024 spends).
+         *   maxGrowthPct — Drop parts whose YoY growth exceeds this many
+         *                  percent. Above 500% the math is virtually always a
+         *                  data-quality artifact (zero-cost line, decimal-
+         *                  point error, unit mismatch), not a real inflation
+         *                  opportunity. Trimming at 500% removes the long
+         *                  tail without nicking real high-growth parts —
+         *                  legitimate top-of-distribution opportunities sit
+         *                  comfortably under 200%.
+         *
+         * Used by isOutlierPart() and INDEX_METHODOLOGY.md §13c references
+         * these exact values.
+         */
+        const IO_OUTLIER_DEFAULTS = Object.freeze({
+          minSpendLow: 1,
+          maxGrowthPct: 500
+        });
+
+        /**
+         * Return true if `part` should be excluded from Index Opportunity
+         * results because its data is suspect.
+         *
+         * Operates on an enriched IO part record (the kind produced by
+         * idpIoBuildPartCache in index.html), specifically:
+         *   - part.spendLow   — 2024 total spend in the part+site bucket
+         *   - part.growthPct  — 2024→2025 unit-price growth percent (NOT a
+         *                       ratio — 250% means 250, not 2.5)
+         *
+         * Returns false for null/non-finite inputs (callers should already
+         * have dropped those upstream, but defensiveness costs us nothing).
+         *
+         * `thresholds` defaults to IO_OUTLIER_DEFAULTS but can be overridden
+         * for tests or future tuning. Pass { minSpendLow: 0, maxGrowthPct:
+         * Infinity } to disable both rules.
+         */
+        function isOutlierPart(part, thresholds) {
+          if (!part) return false;
+          const t = thresholds || IO_OUTLIER_DEFAULTS;
+          /* Accept finite numbers OR ±Infinity as legitimate threshold inputs.
+           * +Infinity = "no upper bound" (lets every growth value through);
+           * any other non-number / NaN falls back to the documented default. */
+          const minSpend = (typeof t.minSpendLow === "number" && !Number.isNaN(t.minSpendLow))
+            ? t.minSpendLow : IO_OUTLIER_DEFAULTS.minSpendLow;
+          const maxG = (typeof t.maxGrowthPct === "number" && !Number.isNaN(t.maxGrowthPct))
+            ? t.maxGrowthPct : IO_OUTLIER_DEFAULTS.maxGrowthPct;
+          const sp = +part.spendLow;
+          const g = +part.growthPct;
+          /* Spend rule: finite numbers below the floor are outliers. NaN
+           * inputs defer to the upstream "valid growth" filter. */
+          if (Number.isFinite(sp) && sp < minSpend) return true;
+          /* Growth rule: explicit +Infinity is always an outlier (caller can
+           * opt out by passing maxGrowthPct = +Infinity, which is handled in
+           * the comparison — Infinity > Infinity is false). */
+          if (g === Infinity) return true;
+          if (Number.isFinite(g) && g > maxG) return true;
+          return false;
+        }
+
         function archetypeSummary(qualifyingParts) {
           let n = 0, totalSavings = 0, totalSavingsHigh = 0, totalSpend = 0;
           if (qualifyingParts && qualifyingParts.length) {
@@ -2776,6 +2856,7 @@
         root.IDP_INDEX_MATH = {
       AGGREGATION: AGGREGATION,
       GRANULARITY: GRANULARITY,
+      IO_OUTLIER_DEFAULTS: IO_OUTLIER_DEFAULTS,
       WEIGHTING: WEIGHTING,
       aggregateLaspeyres: aggregateLaspeyres,
       aggregatePartIndexes: aggregatePartIndexes,
@@ -2792,6 +2873,7 @@
       indexYearGrowthPct: indexYearGrowthPct,
       isInDisplayWindow: isInDisplayWindow,
       isInHalfOpenRange: isInHalfOpenRange,
+      isOutlierPart: isOutlierPart,
       parsePeriodKey: parsePeriodKey,
       partCaptureSavings: partCaptureSavings,
       partDrilldownRows: partDrilldownRows,
@@ -3849,7 +3931,24 @@
         <div class="mb-3 border-b border-[#E6E6E6] pb-2 idp-harm-header-bar">
           <div class="idp-harm-header-bar-text">
             <h2 class="m-0 text-base font-semibold" style="color: #333" id="harm-page-title">Harmonization</h2>
-            <p class="mt-0.5 text-xs leading-snug idp-muted" id="harm-strap">Unit-price harmonization (MECE 1 &amp; 3). Use Spend Review filters above, then refine by year, spend type, sites, and L1–L4.</p>
+            <p class="mt-0.5 text-xs leading-snug idp-muted" id="harm-strap">Unit-price harmonization opportunities. Use the Spend Review filters above to slice the data.</p>
+          </div>
+          <div class="flex shrink-0 items-center gap-2" id="harm-view-toggle-wrap">
+            <label for="harm-view-toggle" class="text-xs" style="color: #64748b">View</label>
+            <button
+              type="button"
+              id="harm-view-toggle"
+              role="switch"
+              aria-checked="false"
+              class="harm-toggle"
+              style="position: relative; width: 44px; height: 24px; border-radius: 12px; border: 1px solid #d1d5db; background: #f1f5f9; cursor: pointer; transition: all 0.2s; flex-shrink: 0"
+            >
+              <span
+                class="harm-toggle-slider"
+                style="position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: white; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2); transition: all 0.2s"
+              ></span>
+            </button>
+            <span id="harm-view-label" class="text-xs" style="color: #64748b; white-space: nowrap">Full</span>
           </div>
           <button
             type="button"
@@ -3866,160 +3965,30 @@
           id="harm-message"
           style="color: #333; border-color: #f07f00"
         ></p>
-        <div id="harm-uni-filters" class="mb-3 rounded-lg border border-[#E6E6E6] bg-white p-2.5 shadow-sm">
-          <div id="harm-filter-bar" class="ff-root flex min-w-0 max-w-full flex-wrap items-end gap-1.5">
-            <div class="ff-group relative shrink-0" data-ff="harm-f-year">
-              <p class="mb-0.5 pl-0.5 text-[0.65rem] font-medium uppercase tracking-wide idp-muted">Year</p>
-              <button type="button" class="ff-btn flex w-[10rem] max-w-[14vw] min-w-[8rem] items-stretch overflow-hidden rounded-lg border border-sky-500/50 bg-slate-900/90 text-left shadow" aria-haspopup="listbox" aria-expanded="false">
-                <span class="ff-ic flex w-7 shrink-0 items-center justify-center border-r border-slate-700/80 bg-slate-800/90 text-sky-300" aria-hidden="true"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M8 2v4M16 2v4"/></svg></span>
-                <span class="ff-val min-w-0 flex-1 truncate py-1.5 pl-1.5 pr-0.5 text-xs text-slate-200" data-ff-summ>All years</span>
-                <span class="ff-caret flex w-4 shrink-0 items-center text-slate-500">▾</span>
-              </button>
-              <div class="ff-panel pointer-events-auto absolute left-0 top-full z-[9999] mt-1 flex hidden max-h-[20rem] w-64 min-w-0 flex-col overflow-hidden rounded-lg border border-slate-600 bg-slate-900 shadow-2xl" data-ff-for="harm-f-year" role="listbox" aria-multiselectable="false">
-                <div class="ff-search-wrap shrink-0 border-b border-slate-600/80 px-2 pt-2 pb-2">
-                  <input type="search" class="ff-search w-full px-2 py-1.5 text-sm" placeholder="Search…" autocomplete="off" aria-label="Search years" />
-                </div>
-                <div class="ff-opts harm-ff-single min-h-0 max-h-48 min-w-0 flex-1 overflow-y-auto py-0.5"></div>
-                <div class="shrink-0 border-t border-slate-600/80 p-2">
-                  <button type="button" class="ff-apply harm-ff-apply w-full rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-500">Apply</button>
-                </div>
-                <select id="harm-f-year" class="f-select sr-only" tabindex="-1" aria-hidden="true"></select>
-              </div>
-            </div>
-            <div class="ff-group relative shrink-0" data-ff="harm-f-spend-type">
-              <p class="mb-0.5 pl-0.5 text-[0.65rem] font-medium uppercase tracking-wide idp-muted">Spend type</p>
-              <button type="button" class="ff-btn flex w-[10rem] max-w-[14vw] min-w-[8rem] items-stretch overflow-hidden rounded-lg border border-emerald-500/45 bg-slate-900/90 text-left shadow" aria-haspopup="listbox" aria-expanded="false">
-                <span class="ff-ic flex w-7 shrink-0 items-center justify-center border-r border-slate-700/80 text-emerald-300" aria-hidden="true"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 3v18M3 12h18"/></svg></span>
-                <span class="ff-val min-w-0 flex-1 truncate py-1.5 pl-1.5 pr-0.5 text-xs text-slate-200" data-ff-summ>All</span>
-                <span class="ff-caret flex w-4 shrink-0 items-center text-slate-500">▾</span>
-              </button>
-              <div class="ff-panel pointer-events-auto absolute left-0 top-full z-[9999] mt-1 flex hidden max-h-[20rem] w-56 min-w-0 flex-col overflow-hidden rounded-lg border border-slate-600 bg-slate-900 shadow-2xl" data-ff-for="harm-f-spend-type" role="listbox">
-                <div class="ff-opts harm-ff-single min-h-0 max-h-48 flex-1 overflow-y-auto py-0.5 px-0.5"></div>
-                <div class="shrink-0 border-t border-slate-600/80 p-2">
-                  <button type="button" class="ff-apply harm-ff-apply w-full rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-500">Apply</button>
-                </div>
-                <select id="harm-f-spend-type" class="f-select sr-only" tabindex="-1" aria-hidden="true">
-                  <option value="all" selected>All</option>
-                  <option value="Direct">Direct</option>
-                  <option value="Indirect">Indirect</option>
-                </select>
-              </div>
-            </div>
-            <div class="ff-group relative shrink-0" data-ff="harm-f-site">
-              <p class="mb-0.5 pl-0.5 text-[0.65rem] font-medium uppercase tracking-wide idp-muted">CMI site(s)</p>
-              <button type="button" class="ff-btn flex w-[10.5rem] max-w-[14vw] min-w-[8rem] items-stretch overflow-hidden rounded-lg border border-cyan-500/45 bg-slate-900/90 text-left shadow" aria-haspopup="listbox" aria-expanded="false">
-                <span class="ff-ic flex w-7 shrink-0 items-center justify-center border-r border-slate-700/80 text-cyan-300" aria-hidden="true"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 21c-3-4-6-6.5-6-9.5a6 6 0 1112 0c0 3-3 5.5-6 9.5z"/><circle cx="12" cy="11" r="2" fill="currentColor"/></svg></span>
-                <span class="ff-val min-w-0 flex-1 truncate py-1.5 pl-1.5 pr-0.5 text-xs text-slate-200" data-ff-summ>All sites</span>
-                <span class="ff-caret flex w-4 shrink-0 items-center text-slate-500">▾</span>
-              </button>
-              <div class="ff-panel pointer-events-auto absolute left-0 top-full z-[9999] mt-1 flex hidden max-h-[24rem] w-64 min-w-0 flex-col overflow-hidden rounded-lg border border-slate-600 bg-slate-900 shadow-2xl" data-ff-for="harm-f-site" data-ff-kind="str" role="listbox" aria-multiselectable="true">
-                <div class="ff-search-wrap shrink-0 border-b border-slate-600/80 px-2 pt-2 pb-2">
-                  <input type="search" class="ff-search w-full px-2 py-1.5 text-sm" placeholder="Search…" autocomplete="off" aria-label="Search CMI sites" />
-                </div>
-                <label class="ff-sa group flex cursor-pointer select-none items-center gap-2 border-b border-slate-600/80 px-2.5 py-2 text-left text-sm text-slate-200 hover:bg-slate-800/60"
-                  ><input type="checkbox" class="ff-cb ff-cb-sa h-3.5 w-3.5 shrink-0 rounded" data-selall="1" data-harm-site-sa="1" /><span class="font-medium">Select all</span></label
-                >
-                <div class="ff-opts min-h-0 max-h-52 min-w-0 flex-1 overflow-y-auto py-0.5"></div>
-                <div class="shrink-0 border-t border-slate-600/80 p-2">
-                  <button type="button" class="ff-apply harm-ff-apply w-full rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-500">Apply</button>
-                </div>
-                <select id="harm-f-site" class="f-select sr-only" multiple size="0" tabindex="-1" aria-hidden="true"></select>
-              </div>
-            </div>
-            <div class="ff-group relative shrink-0" data-ff="harm-f-l1">
-              <p class="mb-0.5 pl-0.5 text-[0.65rem] font-medium uppercase tracking-wide idp-muted">L1</p>
-              <button type="button" class="ff-btn flex w-[10rem] max-w-[14vw] min-w-[8rem] items-stretch overflow-hidden rounded-lg border border-emerald-500/45 bg-slate-900/90 text-left shadow" aria-haspopup="listbox" aria-expanded="false">
-                <span class="ff-ic flex w-7 shrink-0 items-center justify-center border-r border-slate-700/80 text-emerald-300" aria-hidden="true"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg></span>
-                <span class="ff-val min-w-0 flex-1 truncate py-1.5 pl-1.5 pr-0.5 text-xs text-slate-200" data-ff-summ>All L1</span>
-                <span class="ff-caret flex w-4 shrink-0 items-center text-slate-500">▾</span>
-              </button>
-              <div class="ff-panel pointer-events-auto absolute left-0 top-full z-[9999] mt-1 flex hidden max-h-[20rem] w-64 min-w-0 flex-col overflow-hidden rounded-lg border border-slate-600 bg-slate-900 shadow-2xl" data-ff-for="harm-f-l1" role="listbox">
-                <div class="ff-search-wrap shrink-0 border-b border-slate-600/80 px-2 pt-2 pb-2">
-                  <input type="search" class="ff-search w-full px-2 py-1.5 text-sm" placeholder="Search…" autocomplete="off" aria-label="Search L1" />
-                </div>
-                <div class="ff-opts harm-ff-single min-h-0 max-h-48 min-w-0 flex-1 overflow-y-auto py-0.5"></div>
-                <div class="shrink-0 border-t border-slate-600/80 p-2">
-                  <button type="button" class="ff-apply harm-ff-apply w-full rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-500">Apply</button>
-                </div>
-                <select id="harm-f-l1" class="f-select sr-only" tabindex="-1" aria-hidden="true"></select>
-              </div>
-            </div>
-            <div class="ff-group relative shrink-0" data-ff="harm-f-l2">
-              <p class="mb-0.5 pl-0.5 text-[0.65rem] font-medium uppercase tracking-wide idp-muted">L2</p>
-              <button type="button" class="ff-btn flex w-[10rem] max-w-[14vw] min-w-[8rem] items-stretch overflow-hidden rounded-lg border border-amber-400/45 bg-slate-900/90 text-left shadow" aria-haspopup="listbox" aria-expanded="false">
-                <span class="ff-ic flex w-7 shrink-0 items-center justify-center border-r border-slate-700/80 text-amber-200" aria-hidden="true"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 3h6v6H3V3zm12 0h6v6h-6V3zM3 15h6v6H3v-6zm6-6h6v6H9V9z"/></svg></span>
-                <span class="ff-val min-w-0 flex-1 truncate py-1.5 pl-1.5 pr-0.5 text-xs text-slate-200" data-ff-summ>All L2</span>
-                <span class="ff-caret flex w-4 shrink-0 items-center text-slate-500">▾</span>
-              </button>
-              <div class="ff-panel pointer-events-auto absolute left-0 top-full z-[9999] mt-1 flex hidden max-h-[20rem] w-64 min-w-0 flex-col overflow-hidden rounded-lg border border-slate-600 bg-slate-900 shadow-2xl" data-ff-for="harm-f-l2" role="listbox">
-                <div class="ff-search-wrap shrink-0 border-b border-slate-600/80 px-2 pt-2 pb-2">
-                  <input type="search" class="ff-search w-full px-2 py-1.5 text-sm" placeholder="Search…" autocomplete="off" aria-label="Search L2" />
-                </div>
-                <div class="ff-opts harm-ff-single min-h-0 max-h-48 min-w-0 flex-1 overflow-y-auto py-0.5"></div>
-                <div class="shrink-0 border-t border-slate-600/80 p-2">
-                  <button type="button" class="ff-apply harm-ff-apply w-full rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-500">Apply</button>
-                </div>
-                <select id="harm-f-l2" class="f-select sr-only" tabindex="-1" aria-hidden="true"></select>
-              </div>
-            </div>
-            <div class="ff-group relative shrink-0" data-ff="harm-f-l3">
-              <p class="mb-0.5 pl-0.5 text-[0.65rem] font-medium uppercase tracking-wide idp-muted">L3</p>
-              <button type="button" class="ff-btn flex w-[10rem] max-w-[14vw] min-w-[8rem] items-stretch overflow-hidden rounded-lg border border-red-500/50 bg-slate-900/90 text-left shadow" aria-haspopup="listbox" aria-expanded="false">
-                <span class="ff-ic flex w-7 shrink-0 items-center justify-center border-r border-slate-700/80 text-red-300" aria-hidden="true"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 3h6v6H3V3zm6 0h6v6H9V3zM3 9h6v6H3V9zm0 6h6v6H3v-6zm6 0h6v6H9v-6z"/></svg></span>
-                <span class="ff-val min-w-0 flex-1 truncate py-1.5 pl-1.5 pr-0.5 text-xs text-slate-200" data-ff-summ>All L3</span>
-                <span class="ff-caret flex w-4 shrink-0 items-center text-slate-500">▾</span>
-              </button>
-              <div class="ff-panel pointer-events-auto absolute left-0 top-full z-[9999] mt-1 flex hidden max-h-[20rem] w-64 min-w-0 flex-col overflow-hidden rounded-lg border border-slate-600 bg-slate-900 shadow-2xl" data-ff-for="harm-f-l3" role="listbox">
-                <div class="ff-search-wrap shrink-0 border-b border-slate-600/80 px-2 pt-2 pb-2">
-                  <input type="search" class="ff-search w-full px-2 py-1.5 text-sm" placeholder="Search…" autocomplete="off" aria-label="Search L3" />
-                </div>
-                <div class="ff-opts harm-ff-single min-h-0 max-h-48 min-w-0 flex-1 overflow-y-auto py-0.5"></div>
-                <div class="shrink-0 border-t border-slate-600/80 p-2">
-                  <button type="button" class="ff-apply harm-ff-apply w-full rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-500">Apply</button>
-                </div>
-                <select id="harm-f-l3" class="f-select sr-only" tabindex="-1" aria-hidden="true"></select>
-              </div>
-            </div>
-            <div class="ff-group relative shrink-0" data-ff="harm-f-l4">
-              <p class="mb-0.5 pl-0.5 text-[0.65rem] font-medium uppercase tracking-wide idp-muted">L4</p>
-              <button type="button" class="ff-btn flex w-[10rem] max-w-[14vw] min-w-[8rem] items-stretch overflow-hidden rounded-lg border border-fuchsia-500/45 bg-slate-900/90 text-left shadow" aria-haspopup="listbox" aria-expanded="false">
-                <span class="ff-ic flex w-7 shrink-0 items-center justify-center border-r border-slate-700/80 text-fuchsia-300" aria-hidden="true"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 6h16M4 12h16M4 18h10"/></svg></span>
-                <span class="ff-val min-w-0 flex-1 truncate py-1.5 pl-1.5 pr-0.5 text-xs text-slate-200" data-ff-summ>All L4</span>
-                <span class="ff-caret flex w-4 shrink-0 items-center text-slate-500">▾</span>
-              </button>
-              <div class="ff-panel pointer-events-auto absolute left-0 top-full z-[9999] mt-1 flex hidden max-h-[20rem] w-64 min-w-0 flex-col overflow-hidden rounded-lg border border-slate-600 bg-slate-900 shadow-2xl" data-ff-for="harm-f-l4" role="listbox">
-                <div class="ff-search-wrap shrink-0 border-b border-slate-600/80 px-2 pt-2 pb-2">
-                  <input type="search" class="ff-search w-full px-2 py-1.5 text-sm" placeholder="Search…" autocomplete="off" aria-label="Search L4" />
-                </div>
-                <div class="ff-opts harm-ff-single min-h-0 max-h-48 min-w-0 flex-1 overflow-y-auto py-0.5"></div>
-                <div class="shrink-0 border-t border-slate-600/80 p-2">
-                  <button type="button" class="ff-apply harm-ff-apply w-full rounded-md bg-blue-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-blue-500">Apply</button>
-                </div>
-                <select id="harm-f-l4" class="f-select sr-only" tabindex="-1" aria-hidden="true"></select>
-              </div>
-            </div>
-            <div class="ml-auto flex min-w-0 shrink-0 flex-col justify-end self-end">
-              <span class="mb-1 block text-[0.65rem] font-medium uppercase tracking-wide idp-muted invisible pointer-events-none select-none" aria-hidden="true">Reset</span>
-              <button type="button" id="btn-reset-harmonization-filters" class="idp-reset-button">Reset filters</button>
-            </div>
-            <div class="flex shrink-0 items-center gap-2 self-end">
-              <label for="harm-view-toggle" class="text-xs" style="color: #64748b">View</label>
-              <button
-                type="button"
-                id="harm-view-toggle"
-                role="switch"
-                aria-checked="false"
-                class="harm-toggle"
-                style="position: relative; width: 44px; height: 24px; border-radius: 12px; border: 1px solid #d1d5db; background: #f1f5f9; cursor: pointer; transition: all 0.2s; flex-shrink: 0"
-              >
-                <span
-                  class="harm-toggle-slider"
-                  style="position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: white; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2); transition: all 0.2s"
-                ></span>
-              </button>
-              <span id="harm-view-label" class="text-xs" style="color: #64748b; white-space: nowrap">Full</span>
-            </div>
-          </div>
+        <!--
+          Harmonization-local filter row (year / spend-type / CMI site /
+          L1-L4 / Reset) was removed on 2026-05-22 — the global Spend
+          Review filter bar at the top of every page now covers BU,
+          L1-L4, Country, sites, suppliers, and time so a second copy
+          here was pure redundancy. The hidden state-holder selects
+          below remain so the ~120 JS callers that read from
+          $("harm-f-year") / $("harm-f-l1") / etc. still get sensible
+          defaults (all years, all sites, all categories) without
+          having to refactor every consumer at once. If you ever delete
+          these, audit every reference to harm-f-* in this file first.
+        -->
+        <div id="harm-uni-filters" aria-hidden="true" style="display:none;">
+          <select id="harm-f-year" tabindex="-1" aria-hidden="true"></select>
+          <select id="harm-f-spend-type" tabindex="-1" aria-hidden="true">
+            <option value="all" selected>All</option>
+            <option value="Direct">Direct</option>
+            <option value="Indirect">Indirect</option>
+          </select>
+          <select id="harm-f-site" multiple size="0" tabindex="-1" aria-hidden="true"></select>
+          <select id="harm-f-l1" tabindex="-1" aria-hidden="true"></select>
+          <select id="harm-f-l2" tabindex="-1" aria-hidden="true"></select>
+          <select id="harm-f-l3" tabindex="-1" aria-hidden="true"></select>
+          <select id="harm-f-l4" tabindex="-1" aria-hidden="true"></select>
         </div>
         <div id="harm-comparison-grid" class="idp-harm-grid-tight flex flex-col gap-4">
           <p class="text-sm idp-muted" id="harm-empty">Load data from refresh_data.py to see harmonization.</p>
@@ -4034,9 +4003,7 @@
         <div class="mb-3 border-b border-[#E6E6E6] pb-2 idp-harm-header-bar">
           <div class="idp-harm-header-bar-text">
             <h2 class="m-0 text-base font-semibold" style="color: #333">Index Opportunity</h2>
-            <p class="mt-0.5 text-xs leading-snug idp-muted">
-              Parts whose 2024→2025 weighted-avg unit-price growth outpaced both selected PPI indexes, grouped by Cummins Country archetype (US, China, Rest of World). See <a href="../../INDEX_METHODOLOGY.md" class="underline">INDEX_METHODOLOGY.md</a> §13 for the math.
-            </p>
+            <p class="mt-0.5 text-xs leading-snug idp-muted">Parts outpacing both selected PPI indexes (2024→2025), grouped by US / China / Rest of World.</p>
           </div>
           <button
             type="button"
@@ -4050,9 +4017,15 @@
         </div>
         <div class="mb-3 rounded-lg border border-[#E6E6E6] bg-white p-3 shadow-sm">
           <div class="flex flex-wrap items-baseline justify-between gap-2 mb-2">
-            <div>
-              <p class="text-xs font-semibold uppercase tracking-wide" style="color:#333">Select 2 PPI Indexes</p>
-              <p class="text-xs leading-snug idp-muted">Pick exactly 2. The one with the lower 2024→2025 growth becomes the LOW (aggressive) target.</p>
+            <div class="flex items-center gap-1.5">
+              <p class="m-0 text-xs font-semibold uppercase tracking-wide" style="color:#333">Select 2 PPI indexes</p>
+              <span
+                class="idp-info-tip"
+                tabindex="0"
+                role="img"
+                aria-label="Methodology"
+                title="Pick exactly 2 indexes. The one with the lower 2024→2025 growth becomes the LOW (aggressive) target; the higher becomes HIGH. Outliers excluded: 2024 spend &lt; $1 and YoY growth &gt; +500%. See INDEX_METHODOLOGY.md §13 for the math."
+              >&#9432;</span>
             </div>
             <p id="io-index-assignment" class="text-xs font-medium tabular-nums hidden" style="color:#1f3a8a"></p>
           </div>
@@ -7345,9 +7318,13 @@
     }
     if (cur.toLowerCase() === "all" || (!isNaN(curN) && ys.indexOf(curN) >= 0)) {
       dd.value = cur.toLowerCase() === "all" ? "all" : String(curN);
-    } else if (ys.length) {
-      dd.value = ys.indexOf(2025) >= 0 ? "2025" : String(ys[0]);
     } else {
+      /* The harm-local year picker was removed from the UI on
+       * 2026-05-22 — the hidden select still exists for state-reading
+       * compatibility, but its default is now "all" so the global
+       * Spend Review time filter is the only year filter in play.
+       * (Pre-2026-05-22 this auto-defaulted to 2025, which silently
+       * double-filtered the harm view.) */
       dd.value = "all";
     }
     if (dd.selectedIndex < 0 && dd.options && dd.options.length) dd.selectedIndex = 0;
@@ -8257,11 +8234,11 @@
       for (yi = 1; yi < hy.options.length; yi++) {
         if (hy.options[yi].value !== "all") ys.push(+hy.options[yi].value);
       }
-      if (ys.length) {
-        hy.value = ys.indexOf(2025) >= 0 ? "2025" : String(Math.max.apply(null, ys));
-      } else {
-        hy.value = "all";
-      }
+      /* Default the hidden harm-local Year select to "all" so the
+       * global Spend Review time filter is the only year gate. Removed
+       * the legacy 2025-preferring branch on 2026-05-22 alongside the
+       * secondary filter row. */
+      hy.value = "all";
     }
     if ($("harm-f-l1")) $("harm-f-l1").value = "";
     if ($("harm-f-l2")) $("harm-f-l2").value = "";
@@ -9273,6 +9250,27 @@
   var IDP_IO_YEAR_LOW = 2024;
   var IDP_IO_YEAR_HIGH = 2025;
 
+  /* Outlier exclusion thresholds (added 2026-05-22).
+   *
+   * IDP_IO_MIN_SPEND_LOW ($1) — drop parts whose 2024 spend is below
+   * this floor. With under a dollar of 2024 spend, the weighted-avg
+   * unit price is dominated by tiny rounding errors and the growth %
+   * explodes to absurd values (the user reported +845% / +344% rows).
+   *
+   * IDP_IO_MAX_GROWTH_PCT (500%) — drop parts whose YoY unit-price
+   * growth exceeds 5×. These are virtually always data-quality
+   * artifacts (zero-cost line, decimal-point error, unit mismatch),
+   * not legitimate inflation opportunities. Capping at +500% removes
+   * the long tail without nicking real high-growth parts (the real
+   * top-of-distribution opportunities sit comfortably under 200%).
+   *
+   * Exclusions are applied at the cache layer in idpIoBuildPartCache,
+   * so the KPI strip, archetype summaries, detail tables, AND Excel
+   * export all see the cleaned dataset automatically — there is no
+   * per-render filter to maintain. */
+  var IDP_IO_MIN_SPEND_LOW = 1;
+  var IDP_IO_MAX_GROWTH_PCT = 500;
+
   /* "Top N" rows shown in each archetype detail table before "Show all".
    * Reuses the same number as the Summary tab so the two tabs feel
    * consistent without dragging in coupling. */
@@ -9439,6 +9437,7 @@
     var wup = M && typeof M.weightedUnitPrice === "function" ? M.weightedUnitPrice : function (s, q) { var qq = +q; if (!isFinite(qq) || qq <= 0) return NaN; var ss = +s; return isFinite(ss) ? ss / qq : NaN; };
     var pg = M && typeof M.priceGrowthPct === "function" ? M.priceGrowthPct : function (a, b) { if (!(a > 0) || !(b > 0)) return NaN; return (b / a - 1) * 100; };
     var parts = [];
+    var dropCounts = { nan: 0, lowSpend: 0, extremeGrowth: 0 };
     for (var k in byKey) {
       if (!Object.prototype.hasOwnProperty.call(byKey, k)) continue;
       var b = byKey[k];
@@ -9447,10 +9446,23 @@
       b.growthPct = pg(b.priceLow, b.priceHigh);
       /* Drop parts where we can't compute growth — they would never
        * qualify anyway and they pollute the detail table. */
-      if (!isFinite(b.growthPct)) continue;
+      if (!isFinite(b.growthPct)) { dropCounts.nan++; continue; }
+      /* Hard outlier exclusions (added 2026-05-22). Delegated to
+       * isOutlierPart() in the math module so the unit-test suite and
+       * the live runtime share one definition of "outlier". Thresholds
+       * live in IO_OUTLIER_DEFAULTS (currently $1 / +500%). Dropping at
+       * the cache layer means the KPI strip, archetype summaries,
+       * detail tables, AND Excel export all see the cleaned dataset
+       * automatically — there is no per-render filter to maintain. */
+      if (M && typeof M.isOutlierPart === "function" && M.isOutlierPart(b)) {
+        /* Bucket the drop reason so the UI can surface it later. */
+        if (b.spendLow < IDP_IO_MIN_SPEND_LOW) dropCounts.lowSpend++;
+        else dropCounts.extremeGrowth++;
+        continue;
+      }
       parts.push(b);
     }
-    _idpIoPartCache = { builtAt: Date.now(), rowCount: n, parts: parts };
+    _idpIoPartCache = { builtAt: Date.now(), rowCount: n, parts: parts, dropCounts: dropCounts };
     return _idpIoPartCache;
   }
 
@@ -9741,6 +9753,11 @@
     var highT = assignment && assignment.high ? +assignment.high.growthPct : NaN;
     var lowCode = assignment && assignment.low ? assignment.low.code : "Low";
     var highCode = assignment && assignment.high ? assignment.high.code : "High";
+    /* Resolve human-readable names for the chart legend + table headers
+     * (PPI label cleanup, 2026-05-22). Raw BLS codes are kept on the
+     * `*Code` vars for tooltips and Excel export only. */
+    var lowName = (idpExcelIndexCatalog && idpExcelIndexCatalog[lowCode] && idpExcelIndexCatalog[lowCode].displayName) || lowCode;
+    var highName = (idpExcelIndexCatalog && idpExcelIndexCatalog[highCode] && idpExcelIndexCatalog[highCode].displayName) || highCode;
     var M = window.IDP_INDEX_MATH;
     var drillRows = M && typeof M.partDrilldownRows === "function"
       ? M.partDrilldownRows(p, lowT, highT)
@@ -9827,7 +9844,7 @@
     var trh2 = document.createElement("tr");
     var thLabels = [
       "Year", "Quantity", "Unit price", "Spend",
-      lowCode + " benchmark $/unit", highCode + " benchmark $/unit",
+      lowName + " benchmark $/unit", highName + " benchmark $/unit",
       "Savings vs low benchmark", "Savings vs high benchmark"
     ];
     for (var li = 0; li < thLabels.length; li++) {
@@ -9894,6 +9911,8 @@
     var r25 = drillRows[1];
     var lowCode = assignment && assignment.low ? assignment.low.code : "Low";
     var highCode = assignment && assignment.high ? assignment.high.code : "High";
+    var lowName = (idpExcelIndexCatalog && idpExcelIndexCatalog[lowCode] && idpExcelIndexCatalog[lowCode].displayName) || lowCode;
+    var highName = (idpExcelIndexCatalog && idpExcelIndexCatalog[highCode] && idpExcelIndexCatalog[highCode].displayName) || highCode;
     var lowG = assignment && assignment.low ? +assignment.low.growthPct : NaN;
     var highG = assignment && assignment.high ? +assignment.high.growthPct : NaN;
     var partGrowth = window.IDP_INDEX_MATH && typeof window.IDP_INDEX_MATH.priceGrowthPct === "function"
@@ -9917,7 +9936,7 @@
             fill: false
           },
           {
-            label: lowCode + " benchmark (" + idpIoFmtPct(lowG) + ")",
+            label: lowName + " benchmark (" + idpIoFmtPct(lowG) + ")",
             data: [r24.lowBenchmark, r25.lowBenchmark],
             borderColor: "#10B981",
             backgroundColor: "rgba(16,185,129,0.04)",
@@ -9929,7 +9948,7 @@
             fill: false
           },
           {
-            label: highCode + " benchmark (" + idpIoFmtPct(highG) + ")",
+            label: highName + " benchmark (" + idpIoFmtPct(highG) + ")",
             data: [r24.highBenchmark, r25.highBenchmark],
             borderColor: "#D97706",
             backgroundColor: "rgba(217,119,6,0.04)",
@@ -10044,11 +10063,17 @@
     if (!asg) {
       lab.classList.add("hidden");
       lab.textContent = "";
+      lab.removeAttribute("title");
       return;
     }
+    /* Show human-readable index names (Pump and Compressor Manufacturing, etc.)
+     * with the raw BLS codes surfaced via the tooltip for traceability. */
+    var lowName = (idpExcelIndexCatalog && idpExcelIndexCatalog[asg.low.code] && idpExcelIndexCatalog[asg.low.code].displayName) || asg.low.code;
+    var highName = (idpExcelIndexCatalog && idpExcelIndexCatalog[asg.high.code] && idpExcelIndexCatalog[asg.high.code].displayName) || asg.high.code;
     lab.classList.remove("hidden");
-    lab.textContent = "Low: " + asg.low.code + " (" + idpIoFmtPct(asg.low.growthPct)
-                    + ")  ·  High: " + asg.high.code + " (" + idpIoFmtPct(asg.high.growthPct) + ")";
+    lab.textContent = "Low: " + lowName + " (" + idpIoFmtPct(asg.low.growthPct)
+                    + ")  ·  High: " + highName + " (" + idpIoFmtPct(asg.high.growthPct) + ")";
+    lab.title = "Low BLS: " + asg.low.code + "  ·  High BLS: " + asg.high.code;
   }
 
   function idpIoSetStatus(text) {
@@ -10068,8 +10093,11 @@
     /* No picks yet (or one pick) → empty state. */
     if (!_idpIoSelectedCodes || _idpIoSelectedCodes.length < 2) {
       idpIoUpdateIndexAssignmentLabel(null);
+      var pickedName = _idpIoSelectedCodes.length === 1
+        ? ((idpExcelIndexCatalog && idpExcelIndexCatalog[_idpIoSelectedCodes[0]] && idpExcelIndexCatalog[_idpIoSelectedCodes[0]].displayName) || _idpIoSelectedCodes[0])
+        : "";
       idpIoSetStatus(_idpIoSelectedCodes.length === 1
-        ? "Pick one more index (currently selected: " + _idpIoSelectedCodes[0] + ")"
+        ? "Pick one more index (currently selected: " + pickedName + ")"
         : "Pick 2 PPI indexes to see opportunity.");
       emptyEl.classList.remove("hidden");
       contentEl.classList.add("hidden");
@@ -10158,12 +10186,16 @@
         var span = document.createElement("span");
         span.style.flex = "1";
         span.style.minWidth = "0";
+        span.style.fontWeight = "500";
         var dn = (rec && rec.displayName) || code;
-        var bold = document.createElement("span");
-        bold.style.fontWeight = "600";
-        bold.textContent = code;
-        span.appendChild(bold);
-        span.appendChild(document.createTextNode(" · " + dn));
+        span.textContent = dn;
+        /* Surface the underlying BLS code via tooltip + machine-readable
+         * data attribute — the picker label itself stays clean per the
+         * 2026-05-22 UX refactor. Internal IDs (idpExcelIndexCatalog,
+         * _idpIoSelectedCodes, exports) still use `code`, not the
+         * display name. */
+        lab.title = dn + " (BLS series: " + code + ")";
+        lab.setAttribute("data-io-bls-code", code);
         lab.appendChild(cb);
         lab.appendChild(span);
         host.appendChild(lab);

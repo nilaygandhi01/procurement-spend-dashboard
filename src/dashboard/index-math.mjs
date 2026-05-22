@@ -784,6 +784,73 @@ function partDrilldownRows(part, lowTargetPct, highTargetPct) {
  *   avgSavingsPct  = 100 × totalSavings / totalSpend   (spend-weighted; 0 if no spend)
  *   parts80        = partsFor80PctValue(qualifyingParts)
  */
+/**
+ * Hard outlier thresholds applied to the Index Opportunity dataset.
+ * Co-located here (rather than in the consumer) so the unit-test suite
+ * and the live runtime are guaranteed to use the same cutoffs.
+ *
+ *   minSpendLow  — Drop parts whose 2024 spend is below this floor.
+ *                  Below ~$1 the weighted-avg unit price is dominated
+ *                  by rounding error and growth % explodes (the user
+ *                  reported +845% / +344% rows that all traced back
+ *                  to sub-dollar 2024 spends).
+ *   maxGrowthPct — Drop parts whose YoY growth exceeds this many
+ *                  percent. Above 500% the math is virtually always a
+ *                  data-quality artifact (zero-cost line, decimal-
+ *                  point error, unit mismatch), not a real inflation
+ *                  opportunity. Trimming at 500% removes the long
+ *                  tail without nicking real high-growth parts —
+ *                  legitimate top-of-distribution opportunities sit
+ *                  comfortably under 200%.
+ *
+ * Used by isOutlierPart() and INDEX_METHODOLOGY.md §13c references
+ * these exact values.
+ */
+const IO_OUTLIER_DEFAULTS = Object.freeze({
+  minSpendLow: 1,
+  maxGrowthPct: 500
+});
+
+/**
+ * Return true if `part` should be excluded from Index Opportunity
+ * results because its data is suspect.
+ *
+ * Operates on an enriched IO part record (the kind produced by
+ * idpIoBuildPartCache in index.html), specifically:
+ *   - part.spendLow   — 2024 total spend in the part+site bucket
+ *   - part.growthPct  — 2024→2025 unit-price growth percent (NOT a
+ *                       ratio — 250% means 250, not 2.5)
+ *
+ * Returns false for null/non-finite inputs (callers should already
+ * have dropped those upstream, but defensiveness costs us nothing).
+ *
+ * `thresholds` defaults to IO_OUTLIER_DEFAULTS but can be overridden
+ * for tests or future tuning. Pass { minSpendLow: 0, maxGrowthPct:
+ * Infinity } to disable both rules.
+ */
+function isOutlierPart(part, thresholds) {
+  if (!part) return false;
+  const t = thresholds || IO_OUTLIER_DEFAULTS;
+  /* Accept finite numbers OR ±Infinity as legitimate threshold inputs.
+   * +Infinity = "no upper bound" (lets every growth value through);
+   * any other non-number / NaN falls back to the documented default. */
+  const minSpend = (typeof t.minSpendLow === "number" && !Number.isNaN(t.minSpendLow))
+    ? t.minSpendLow : IO_OUTLIER_DEFAULTS.minSpendLow;
+  const maxG = (typeof t.maxGrowthPct === "number" && !Number.isNaN(t.maxGrowthPct))
+    ? t.maxGrowthPct : IO_OUTLIER_DEFAULTS.maxGrowthPct;
+  const sp = +part.spendLow;
+  const g = +part.growthPct;
+  /* Spend rule: finite numbers below the floor are outliers. NaN
+   * inputs defer to the upstream "valid growth" filter. */
+  if (Number.isFinite(sp) && sp < minSpend) return true;
+  /* Growth rule: explicit +Infinity is always an outlier (caller can
+   * opt out by passing maxGrowthPct = +Infinity, which is handled in
+   * the comparison — Infinity > Infinity is false). */
+  if (g === Infinity) return true;
+  if (Number.isFinite(g) && g > maxG) return true;
+  return false;
+}
+
 function archetypeSummary(qualifyingParts) {
   let n = 0, totalSavings = 0, totalSavingsHigh = 0, totalSpend = 0;
   if (qualifyingParts && qualifyingParts.length) {
@@ -837,5 +904,7 @@ export {
   partCaptureSavings,
   partsFor80PctValue,
   partDrilldownRows,
+  IO_OUTLIER_DEFAULTS,
+  isOutlierPart,
   archetypeSummary
 };

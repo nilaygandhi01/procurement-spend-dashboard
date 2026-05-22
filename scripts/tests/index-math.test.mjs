@@ -46,6 +46,8 @@ import {
   partCaptureSavings,
   partsFor80PctValue,
   partDrilldownRows,
+  IO_OUTLIER_DEFAULTS,
+  isOutlierPart,
   archetypeSummary
 } from "../../src/dashboard/index-math.mjs";
 
@@ -846,6 +848,99 @@ test("partDrilldownRows: negative savings allowed in 2025 row (price beat benchm
   assert.ok(Math.abs(rows[1].savingsVsLow - -400) < 1e-6);
   // 2025 high benchmark = 108, benchmark spend = 10,800. Savings = −700.
   assert.ok(Math.abs(rows[1].savingsVsHigh - -700) < 1e-6);
+});
+
+// --------------------------------------------------------------------------
+// Outlier exclusion thresholds (IO_OUTLIER_DEFAULTS / isOutlierPart)
+// --------------------------------------------------------------------------
+
+test("IO_OUTLIER_DEFAULTS: hard thresholds match the spec", () => {
+  // The thresholds aren't tuning knobs — they're documented in
+  // INDEX_METHODOLOGY.md §13c and embedded in the UI tooltip text.
+  // If a future commit changes these, the docs and tooltip must move
+  // in lock-step. This test guards against silent drift.
+  assert.equal(IO_OUTLIER_DEFAULTS.minSpendLow, 1);
+  assert.equal(IO_OUTLIER_DEFAULTS.maxGrowthPct, 500);
+});
+
+test("isOutlierPart: drops parts with spendLow < $1", () => {
+  // $0.50 of 2024 spend → growth % is dominated by rounding noise.
+  // Even with a reasonable growth value, the part should be excluded.
+  assert.equal(isOutlierPart({ spendLow: 0.5, growthPct: 50 }), true);
+  assert.equal(isOutlierPart({ spendLow: 0, growthPct: 10 }), true);
+  assert.equal(isOutlierPart({ spendLow: 0.999999, growthPct: 5 }), true);
+  // Exactly at the floor stays — the threshold is "< $1", not "≤ $1".
+  assert.equal(isOutlierPart({ spendLow: 1, growthPct: 5 }), false);
+  assert.equal(isOutlierPart({ spendLow: 1.01, growthPct: 5 }), false);
+});
+
+test("isOutlierPart: drops parts with growthPct > 500%", () => {
+  // The user reported +845% / +344% rows. +345% should pass (under the
+  // ceiling), +501% should be dropped, +500% exactly should pass (the
+  // threshold is "> 500%", not "≥ 500%").
+  assert.equal(isOutlierPart({ spendLow: 100, growthPct: 345 }), false);
+  assert.equal(isOutlierPart({ spendLow: 100, growthPct: 500 }), false);
+  assert.equal(isOutlierPart({ spendLow: 100, growthPct: 500.0001 }), true);
+  assert.equal(isOutlierPart({ spendLow: 100, growthPct: 845 }), true);
+  // The +2,697,880% outlier reported in the sanity script must be cut.
+  assert.equal(isOutlierPart({ spendLow: 100, growthPct: 2697880 }), true);
+});
+
+test("isOutlierPart: negative growth (deflation) passes — only the upper tail is suspect", () => {
+  // A 50% drop in unit price is not a data-quality red flag; it's a
+  // legitimate outcome (commodity correction, new sourcing). The
+  // upper threshold catches data errors; the lower bound is gated by
+  // the qualification target inside partCaptureSavings.
+  assert.equal(isOutlierPart({ spendLow: 100, growthPct: -50 }), false);
+  assert.equal(isOutlierPart({ spendLow: 100, growthPct: -90 }), false);
+});
+
+test("isOutlierPart: handles null/missing/NaN inputs without crashing", () => {
+  assert.equal(isOutlierPart(null), false);
+  assert.equal(isOutlierPart(undefined), false);
+  assert.equal(isOutlierPart({}), false);
+  // Non-finite numbers are treated as "no opinion" by the helper —
+  // the upstream cache layer already drops NaN-growth parts at the
+  // isFinite(b.growthPct) check before isOutlierPart is even called.
+  assert.equal(isOutlierPart({ spendLow: NaN, growthPct: 100 }), false);
+  assert.equal(isOutlierPart({ spendLow: 100, growthPct: NaN }), false);
+  assert.equal(isOutlierPart({ spendLow: 100, growthPct: Infinity }), true);
+});
+
+test("isOutlierPart: thresholds parameter overrides defaults", () => {
+  // Tests / future tuning need to override the cutoffs without
+  // monkey-patching the global. Confirm both knobs work.
+  assert.equal(isOutlierPart({ spendLow: 50, growthPct: 100 }, { minSpendLow: 100, maxGrowthPct: 500 }), true);
+  assert.equal(isOutlierPart({ spendLow: 200, growthPct: 100 }, { minSpendLow: 100, maxGrowthPct: 500 }), false);
+  assert.equal(isOutlierPart({ spendLow: 200, growthPct: 600 }, { minSpendLow: 100, maxGrowthPct: 500 }), true);
+  // Disabling both rules (e.g. for raw-data debugging) → never an outlier.
+  assert.equal(isOutlierPart({ spendLow: 0, growthPct: 1e9 }, { minSpendLow: 0, maxGrowthPct: Infinity }), false);
+});
+
+test("KPI integration: archetype rollup ignores excluded outliers", () => {
+  // Simulate the cache layer behavior: enrich five parts, drop the
+  // outliers via isOutlierPart, then check that archetypeSummary +
+  // partCaptureSavings see only the clean three.
+  const lowTarget = 2.4;
+  const highTarget = 4.9;
+  const raw = [
+    { part: "A", spendHigh: 100_000, spendLow: 90_000,  growthPct: 12.0 },  // qualifies
+    { part: "B", spendHigh: 250_000, spendLow: 240_000, growthPct: 6.0 },   // qualifies
+    { part: "C", spendHigh: 500_000, spendLow: 480_000, growthPct: 8.0 },   // qualifies
+    { part: "D", spendHigh: 10_000,  spendLow: 0.5,     growthPct: 845 },   // OUTLIER (low spend + extreme growth)
+    { part: "E", spendHigh: 20_000,  spendLow: 50_000,  growthPct: 600 }    // OUTLIER (extreme growth)
+  ];
+  const cleaned = raw.filter((p) => !isOutlierPart(p));
+  assert.equal(cleaned.length, 3, "Expected 3 parts after outlier exclusion (got " + cleaned.length + ")");
+  const enriched = cleaned.map((p) => Object.assign({}, p, partCaptureSavings(p, lowTarget, highTarget)))
+                          .filter((p) => p.qualifies);
+  const summary = archetypeSummary(enriched);
+  assert.equal(summary.n, 3);
+  // Sanity: pre-cleaning, the +845% and +600% rows would have inflated
+  // totalSavings into the hundreds of thousands of percent. Confirm the
+  // headline avgSavingsPct is now a sane single-digit number.
+  assert.ok(summary.avgSavingsPct < 15,
+    `avgSavingsPct should be cleansed to under 15% (got ${summary.avgSavingsPct})`);
 });
 
 test("regression: any part whose growth exceeds the low target qualifies — would have caught the zero-opportunities bug", () => {

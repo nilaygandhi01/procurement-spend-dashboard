@@ -370,10 +370,31 @@ when `qualifies = true` (a part that beat the LOW target but stayed
 under the HIGH target). Both savings numbers are **floored at 0** — a
 part never contributes negative savings to a rollup.
 
-### 13c. Archetype rollup (per US / China / RoW and overall)
+### 13c. Outlier exclusion (data cleaning)
+
+Before any qualification logic runs, the IO cache layer drops parts
+whose data is suspect. Two hard thresholds, both defined in
+`IO_OUTLIER_DEFAULTS` (`src/dashboard/index-math.mjs`) and applied via
+`isOutlierPart()`:
+
+| Rule | Threshold | Why |
+|------|-----------|-----|
+| **Low-spend outliers** | `spend_2024 < $1` | Sub-dollar 2024 spend means the weighted-avg unit price is dominated by rounding noise; any growth % derived from it is meaningless. The user reported +845%, +344%, and even +2,697,880% rows all tracing back to sub-dollar baselines. |
+| **Extreme growth outliers** | `growthPct > +500%` | Above 5× the math is virtually always a data-quality artifact (zero-cost line, decimal-point error, unit mismatch). Real top-of-distribution inflation opportunities sit comfortably under 200%. |
+
+Exclusions happen in `idpIoBuildPartCache()` immediately after growth
+% is computed, so the KPI strip, archetype summaries, detail tables,
+**and** Excel export all see the cleaned dataset automatically — there
+is no per-render filter to maintain. The drop counts are kept on
+`_idpIoPartCache.dropCounts` for future surfacing in dev tools.
+
+Unit tests in `scripts/tests/index-math.test.mjs` lock the thresholds
+and the boundary semantics ("< $1" not "≤ $1"; "> 500%" not "≥ 500%").
+
+### 13d. Archetype rollup (per US / China / RoW and overall)
 
 ```
-Total Opportunities  = count of qualifying parts
+Total Opportunities  = count of qualifying parts (post-outlier-cut)
 Total Savings        = Σ lowSavings              ← headline (aggressive)
 Total Spend          = Σ spend_2025
 Avg Savings %        = 100 × Total Savings / Total Spend (spend-weighted; 0 if no spend)
