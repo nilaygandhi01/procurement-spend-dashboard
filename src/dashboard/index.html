@@ -6,10 +6,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta
       name="description"
-      content="Cummins IDP procurement spend (CCS). data.json from src/scripts/refresh_data.py. Yearly and total spend."
+      content="IDP procurement spend dashboard. data.json from src/scripts/refresh_data.py. Yearly and total spend."
     />
     <meta name="color-scheme" content="light" />
-    <title>Cummins IDP Dashboard — CCS Spend</title>
+    <title>IDP Dashboard</title>
     <!-- Inline icon avoids browsers requesting /favicon.ico (404 when no file is served). -->
     <link rel="icon" href="data:," />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -3099,7 +3099,7 @@
       <header class="site-header relative mb-1 min-h-0 text-left sm:min-h-0">
         <div class="dashboard-title flex items-center gap-3" style="padding: 4px 0">
           <h1 class="m-0 text-left text-lg font-semibold leading-snug tracking-tight sm:text-xl" style="color: #333">
-            Cummins IDP Dashboard — CCS Spend
+            IDP Dashboard
           </h1>
         </div>
       </header>
@@ -11848,7 +11848,7 @@
 
   function runCompleteDiagnostics() {
     var results = {};
-    idpDiagLog("======== Cummins IDP diagnostics ========");
+    idpDiagLog("======== IDP diagnostics ========");
     try {
       results.tabStructures = idpRunAllTabTests();
       results.navigation = idpTestNavMapping();
