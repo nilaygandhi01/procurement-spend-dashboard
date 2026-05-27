@@ -48,7 +48,11 @@ import {
   partDrilldownRows,
   IO_OUTLIER_DEFAULTS,
   isOutlierPart,
-  archetypeSummary
+  archetypeSummary,
+  FUZZY_NAME_DEFAULTS,
+  normalizeNameForFuzzy,
+  tokenJaccard,
+  fuzzyClusterNames
 } from "../../src/dashboard/index-math.mjs";
 
 // --------------------------------------------------------------------------
@@ -987,3 +991,195 @@ test("regression: any part whose growth exceeds the low target qualifies — wou
   assert.ok(enriched.find((p) => p.part === "MID"));
   assert.ok(!enriched.find((p) => p.part === "SLOW"));
 });
+
+// --------------------------------------------------------------------------
+// Fuzzy item-name clustering (Indirect Harmonization tab)
+// --------------------------------------------------------------------------
+
+test("FUZZY_NAME_DEFAULTS: documented threshold + minTokenLen", () => {
+  // Lock in the public defaults so the Indirect Harmonization tab and any
+  // future docs stay in sync. Changing these is a deliberate product
+  // decision — bump the test if you do.
+  assert.equal(FUZZY_NAME_DEFAULTS.threshold, 0.80);
+  assert.equal(FUZZY_NAME_DEFAULTS.minTokenLen, 2);
+  assert.ok(FUZZY_NAME_DEFAULTS.stopTokens instanceof Set);
+  assert.ok(FUZZY_NAME_DEFAULTS.stopTokens.has("the"));
+  assert.equal(FUZZY_NAME_DEFAULTS.maxItems, 25000);
+});
+
+test("normalizeNameForFuzzy: lowercase + punctuation + whitespace collapse", () => {
+  const a = normalizeNameForFuzzy("Office Paper A4 White");
+  const b = normalizeNameForFuzzy("  OFFICE  paper--A4__WHITE  ");
+  // Same tokens regardless of case / punct / repeated whitespace.
+  assert.equal(a.norm, b.norm);
+  assert.equal(a.norm, "a4 office paper white"); // alphabetical
+  assert.deepEqual([...a.tokens].sort(), ["a4","office","paper","white"]);
+});
+
+test("normalizeNameForFuzzy: drops stopwords and single-char tokens", () => {
+  const r = normalizeNameForFuzzy("the X paper of the office");
+  // "the" / "of" → stopwords; "x" → < minTokenLen (2)
+  assert.deepEqual([...r.tokens].sort(), ["office","paper"]);
+});
+
+test("normalizeNameForFuzzy: deterministic on token order", () => {
+  // Two reorderings must yield identical norm strings.
+  assert.equal(
+    normalizeNameForFuzzy("Steel Pipe 1in Black").norm,
+    normalizeNameForFuzzy("Black 1in Pipe Steel").norm
+  );
+});
+
+test("normalizeNameForFuzzy: empty / null / whitespace-only inputs", () => {
+  assert.deepEqual(normalizeNameForFuzzy(null),         { norm: "", tokens: new Set() });
+  assert.deepEqual(normalizeNameForFuzzy(undefined),    { norm: "", tokens: new Set() });
+  assert.deepEqual(normalizeNameForFuzzy(""),           { norm: "", tokens: new Set() });
+  assert.deepEqual(normalizeNameForFuzzy("   "),        { norm: "", tokens: new Set() });
+  assert.deepEqual(normalizeNameForFuzzy("...---"),     { norm: "", tokens: new Set() });
+});
+
+test("tokenJaccard: identical / disjoint / partial overlap", () => {
+  const A = new Set(["a","b","c"]);
+  const B = new Set(["a","b","c"]);
+  const C = new Set(["x","y","z"]);
+  const D = new Set(["a","b","d"]); // 2-of-4 union: |A∩D|=2, |A∪D|=4 → 0.5
+  assert.equal(tokenJaccard(A, B), 1);
+  assert.equal(tokenJaccard(A, C), 0);
+  assert.equal(tokenJaccard(A, D), 0.5);
+});
+
+test("tokenJaccard: empty / null inputs return 0 (no NaN propagation)", () => {
+  const A = new Set(["x"]);
+  assert.equal(tokenJaccard(null, A), 0);
+  assert.equal(tokenJaccard(A, null), 0);
+  assert.equal(tokenJaccard(new Set(), A), 0);
+  assert.equal(tokenJaccard(new Set(), new Set()), 0);
+});
+
+test("fuzzyClusterNames: merges case/punct/word-order variants of same name", () => {
+  // All three describe the same item — must collapse to one cluster.
+  const items = [
+    { id: 1, name: "Office Paper A4 White",   block: "L3-PAPER" },
+    { id: 2, name: "office paper - A4 white", block: "L3-PAPER" },
+    { id: 3, name: "WHITE A4 OFFICE PAPER",   block: "L3-PAPER" }
+  ];
+  const { clusterIdByItemIdx, clusters, diagnostics } = fuzzyClusterNames(items);
+  assert.equal(diagnostics.totalItems, 3);
+  assert.equal(diagnostics.totalClusters, 1);
+  // All three indexes must map to the same cluster.
+  assert.equal(clusterIdByItemIdx[0], clusterIdByItemIdx[1]);
+  assert.equal(clusterIdByItemIdx[0], clusterIdByItemIdx[2]);
+  assert.equal(clusters[0].members.length, 3);
+  assert.ok(clusters[0].displayName.length > 0);
+});
+
+test("fuzzyClusterNames: keeps materially different items in separate clusters", () => {
+  const items = [
+    { id: 1, name: "Steel Pipe 1in",  block: "L3-PIPE" },
+    { id: 2, name: "Plastic Pipe 2in", block: "L3-PIPE" }
+  ];
+  const { clusters } = fuzzyClusterNames(items);
+  // Token overlap is only "pipe" (1 of 5 union) → Jaccard 0.2 → no merge.
+  assert.equal(clusters.length, 2);
+});
+
+test("fuzzyClusterNames: token-set Jaccard >= 0.80 threshold (boundary)", () => {
+  // Synthesize a pair RIGHT AT the threshold to lock in the boundary.
+  //   A = { steel, pipe, schedule, 40 }   (4 tokens)
+  //   B = { steel, pipe, schedule, 40, black }  (5 tokens, A ⊂ B)
+  //   |A∩B|=4, |A∪B|=5 → Jaccard = 0.8 → must merge at the default threshold.
+  const items = [
+    { id: 1, name: "Steel Pipe Schedule 40",        block: "L3-PIPE" },
+    { id: 2, name: "Steel Pipe Schedule 40 Black",  block: "L3-PIPE" }
+  ];
+  const { clusters } = fuzzyClusterNames(items);
+  assert.equal(clusters.length, 1, "Jaccard 0.8 must merge at default threshold");
+});
+
+test("fuzzyClusterNames: tightening threshold prevents borderline merges", () => {
+  const items = [
+    { id: 1, name: "Steel Pipe Schedule 40",        block: "L3-PIPE" },
+    { id: 2, name: "Steel Pipe Schedule 40 Black",  block: "L3-PIPE" }
+  ];
+  // Bump threshold to 0.9 — the same pair is now 0.8 < 0.9, so no merge.
+  const { clusters } = fuzzyClusterNames(items, { threshold: 0.9 });
+  assert.equal(clusters.length, 2);
+});
+
+test("fuzzyClusterNames: block boundaries prevent cross-block merges", () => {
+  // Identical names but different blocks must NOT merge — blocking is the
+  // primary cost-control + correctness mechanism (e.g., the same description
+  // in two different L3 categories likely refers to different physical
+  // items in practice).
+  const items = [
+    { id: 1, name: "Office Paper A4 White", block: "L3-PAPER" },
+    { id: 2, name: "Office Paper A4 White", block: "L3-PRINTING" }
+  ];
+  const { clusters } = fuzzyClusterNames(items);
+  assert.equal(clusters.length, 2);
+});
+
+test("fuzzyClusterNames: transitive grouping via union-find (A~B, B~C ⇒ {A,B,C})", () => {
+  // A and C wouldn't merge directly (Jaccard < 0.8), but B sits in the
+  // middle. Union-find must produce a single 3-member cluster.
+  //   A = { red, steel, pipe }                (3)
+  //   B = { red, steel, pipe, schedule, 40 }  (5)   A∩B=3, A∪B=5  → 0.6 (no, this won't union)
+  //   Need a pair that DOES merge:
+  //   A = { red, steel, pipe }                          (3)
+  //   B = { red, steel, pipe, sched }                   (4)   A∩B=3, A∪B=4 → 0.75 (no)
+  //   Force: A ⊂ B with one extra token (Jaccard = 3/4 = 0.75 — under).
+  //   Use:
+  //   A = { steel, pipe, sched, 40 }                    (4)
+  //   B = { steel, pipe, sched, 40, black }             (5)   A∩B=4, A∪B=5 → 0.8 (merge)
+  //   C = { steel, pipe, sched, 40, black, painted }    (6)   B∩C=5, B∪C=6 → 0.83 (merge)
+  //   A∩C=4, A∪C=6 → 0.67 (would NOT merge directly).
+  const items = [
+    { id: 1, name: "Steel Pipe Sched 40",                 block: "L3-PIPE" },
+    { id: 2, name: "Steel Pipe Sched 40 Black",           block: "L3-PIPE" },
+    { id: 3, name: "Steel Pipe Sched 40 Black Painted",   block: "L3-PIPE" }
+  ];
+  const { clusterIdByItemIdx, clusters } = fuzzyClusterNames(items);
+  // Transitive union must produce ONE cluster of all 3, despite A↔C direct
+  // similarity being below threshold.
+  assert.equal(clusters.length, 1);
+  assert.equal(clusterIdByItemIdx[0], clusterIdByItemIdx[2]);
+});
+
+test("fuzzyClusterNames: items with empty token sets get cluster id -1", () => {
+  const items = [
+    { id: 1, name: "Steel Pipe", block: "X" },
+    { id: 2, name: "",           block: "X" },
+    { id: 3, name: "   ...---",  block: "X" }, // normalizes to empty
+    { id: 4, name: null,         block: "X" }
+  ];
+  const { clusterIdByItemIdx, diagnostics } = fuzzyClusterNames(items);
+  assert.equal(clusterIdByItemIdx[1], -1);
+  assert.equal(clusterIdByItemIdx[2], -1);
+  assert.equal(clusterIdByItemIdx[3], -1);
+  // Only the first item gets a real cluster id.
+  assert.ok(clusterIdByItemIdx[0] >= 0);
+  assert.equal(diagnostics.droppedEmpty, 3);
+});
+
+test("fuzzyClusterNames: empty / null input returns empty result without crashing", () => {
+  let res = fuzzyClusterNames([]);
+  assert.deepEqual(res.clusters, []);
+  assert.deepEqual(res.clusterIdByItemIdx, []);
+  assert.equal(res.diagnostics.totalItems, 0);
+  res = fuzzyClusterNames(null);
+  assert.equal(res.diagnostics.totalItems, 0);
+});
+
+test("fuzzyClusterNames: identical-norm pre-pass merges before pairwise scan", () => {
+  // Two strings whose normalized form is identical must merge even if the
+  // raw text differs in case / punctuation. This exercises Step 2 of the
+  // algorithm specifically (no Jaccard cost).
+  const items = [
+    { id: 1, name: "WIDGET-X",  block: "WIDGETS" },
+    { id: 2, name: "widget x",  block: "WIDGETS" },
+    { id: 3, name: " WIDGET x ",block: "WIDGETS" }
+  ];
+  const { clusters } = fuzzyClusterNames(items);
+  assert.equal(clusters.length, 1);
+});
+

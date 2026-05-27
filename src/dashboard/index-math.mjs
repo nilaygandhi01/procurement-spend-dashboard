@@ -875,6 +875,288 @@ function archetypeSummary(qualifyingParts) {
   };
 }
 
+/* ===========================================================================
+ * Fuzzy item-name clustering (used by the Indirect Harmonization tab).
+ *
+ * The standard Harmonization tab keys on Part Number first, then falls back
+ * to an exact-string match on Part Description / Material when Part Number is
+ * blank. For L1 Indirect rows that blank-part case is the majority — and
+ * "Office Paper A4 White" vs "office paper - A4 - white" being treated as two
+ * separate items is exactly the kind of false fragmentation we want to merge
+ * before the harmonization math runs.
+ *
+ * This module exposes three pure helpers that the Indirect Harmonization tab
+ * glues into the existing harmonization-client.js pipeline by pre-rewriting
+ * each blank-part row's `part` field to a stable synthetic cluster key.
+ *
+ * Threshold default is 0.80 token-set Jaccard, chosen on:
+ *   - 0.6-0.7: noisy; merges "Steel Pipe 1in" with "Plastic Pipe 2in".
+ *   - 0.8: sweet spot — catches case/punct/word-order/typo-of-one-token
+ *     variations but doesn't cross size/material/colour boundaries.
+ *   - 0.9: too tight — misses "office paper A4" vs "office paper a4 white".
+ *
+ * See INDIRECT_HARMONIZATION_METHODOLOGY.md for the rationale.
+ * =========================================================================== */
+
+const FUZZY_NAME_DEFAULTS = Object.freeze({
+  /* Drop these as pure noise/stopwords (no informational value for grouping). */
+  stopTokens: Object.freeze(new Set([
+    "of","the","and","for","with","to","in","on","by","or","a","an"
+  ])),
+  /* Tokens shorter than this are dropped (after stopword removal) so single
+   * letters like "x" / "a" / leftover punctuation slivers don't dominate the
+   * similarity score. Two-char alphanumeric tokens (e.g., "a4", "30") are
+   * kept — they often carry size / spec meaning. */
+  minTokenLen: 2,
+  /* Jaccard similarity threshold for merging two normalized item names. */
+  threshold: 0.80,
+  /* Hard cap on input size for fuzzy clustering. Above this we degrade to
+   * exact-normalized-match only (no pairwise comparisons), to avoid pinning
+   * the browser. Indirect slices typically sit well under this. */
+  maxItems: 25000
+});
+
+/* Convert a raw item name to a normalized token set.
+ *
+ * Returns { norm, tokens } where:
+ *   - norm   = a single lowercase whitespace-collapsed string (used for
+ *              exact-match grouping pre-pass and as a stable display form);
+ *   - tokens = a Set<string> of meaningful tokens (used for Jaccard).
+ *
+ * Pure & deterministic — same input always yields the same output. */
+function normalizeNameForFuzzy(raw, options) {
+  const opts = options || FUZZY_NAME_DEFAULTS;
+  if (raw == null) return { norm: "", tokens: new Set() };
+  let s = String(raw).toLowerCase();
+  s = s.replace(/[^a-z0-9]+/g, " ").trim();
+  const parts = s.split(/\s+/).filter(Boolean);
+  const stops = opts.stopTokens || FUZZY_NAME_DEFAULTS.stopTokens;
+  const minLen = opts.minTokenLen != null ? opts.minTokenLen : FUZZY_NAME_DEFAULTS.minTokenLen;
+  const kept = [];
+  const seen = new Set();
+  for (let i = 0; i < parts.length; i++) {
+    const t = parts[i];
+    if (!t) continue;
+    if (stops.has(t)) continue;
+    if (t.length < minLen) continue;
+    if (seen.has(t)) continue;
+    seen.add(t);
+    kept.push(t);
+  }
+  kept.sort();
+  return { norm: kept.join(" "), tokens: new Set(kept) };
+}
+
+/* Jaccard similarity between two token Sets: |A ∩ B| / |A ∪ B|.
+ * Returns 0 for empty inputs (avoid 0/0 NaN propagation). */
+function tokenJaccard(a, b) {
+  if (!a || !b) return 0;
+  const sa = a.size != null ? a.size : 0;
+  const sb = b.size != null ? b.size : 0;
+  if (sa === 0 || sb === 0) return 0;
+  let inter = 0;
+  const small = sa <= sb ? a : b;
+  const large = sa <= sb ? b : a;
+  for (const t of small) if (large.has(t)) inter++;
+  if (inter === 0) return 0;
+  const union = sa + sb - inter;
+  return union > 0 ? inter / union : 0;
+}
+
+/* Tiny Union-Find with path compression + union-by-rank.
+ * Internal helper for fuzzyClusterNames. */
+function _ufMake(n) {
+  const parent = new Array(n);
+  const rank = new Array(n);
+  for (let i = 0; i < n; i++) { parent[i] = i; rank[i] = 0; }
+  return { parent, rank };
+}
+function _ufFind(uf, x) {
+  while (uf.parent[x] !== x) {
+    uf.parent[x] = uf.parent[uf.parent[x]];
+    x = uf.parent[x];
+  }
+  return x;
+}
+function _ufUnion(uf, x, y) {
+  const rx = _ufFind(uf, x), ry = _ufFind(uf, y);
+  if (rx === ry) return;
+  if (uf.rank[rx] < uf.rank[ry]) uf.parent[rx] = ry;
+  else if (uf.rank[rx] > uf.rank[ry]) uf.parent[ry] = rx;
+  else { uf.parent[ry] = rx; uf.rank[rx]++; }
+}
+
+/* Cluster a list of item names by fuzzy token-set similarity.
+ *
+ * Inputs:
+ *   items   — Array<{ id: any, name: string, block?: string }>
+ *             `block` is an optional grouping key (typically L3 category)
+ *             used to prune pairwise comparisons — only items sharing the
+ *             same block are ever compared. Items with no block share the
+ *             "__nb__" pool. Blocking is what makes this scale to tens of
+ *             thousands of items without an O(N²) explosion.
+ *   options — { threshold, minTokenLen, stopTokens, maxItems } overrides.
+ *
+ * Output:
+ *   {
+ *     clusterIdByItemIdx: Array<number>  // cluster id per input index
+ *     clusters: Array<{ id, members: number[], rep: string, displayName: string }>
+ *     diagnostics: { totalItems, totalClusters, mergedItems, blocksProcessed,
+ *                    droppedEmpty, droppedOverCap }
+ *   }
+ *
+ * Algorithm:
+ *   1. Normalize every name to a token set + canonical "norm" string.
+ *   2. Pre-pass: items with identical `norm` AND same block are unioned
+ *      directly (no Jaccard needed — they're already proven equivalent).
+ *   3. Per-block, build an inverted index token -> [item indexes].
+ *      For each item, candidate set = union over all its tokens' postings.
+ *      For each unprocessed candidate pair, compute Jaccard and union if
+ *      >= threshold. Each pair is compared at most once.
+ *   4. Within each cluster, pick a representative: the most-frequent norm
+ *      (ties broken by shortest, then lexicographically smallest). The
+ *      displayName is the first raw `name` whose norm matches the rep.
+ *
+ * Pure & deterministic given a stable input order. */
+function fuzzyClusterNames(items, options) {
+  const opts = Object.assign({}, FUZZY_NAME_DEFAULTS, options || {});
+  const N = items && items.length ? items.length : 0;
+  const diagnostics = {
+    totalItems: N, totalClusters: 0, mergedItems: 0,
+    blocksProcessed: 0, droppedEmpty: 0, droppedOverCap: 0
+  };
+  if (N === 0) {
+    return { clusterIdByItemIdx: [], clusters: [], diagnostics };
+  }
+  /* Normalize every input. Items that normalize to an empty token set are
+   * dropped from clustering (assigned -1) — they have no signal to merge on. */
+  const norms = new Array(N);
+  const tokens = new Array(N);
+  const blockOf = new Array(N);
+  const blocks = Object.create(null);
+  for (let i = 0; i < N; i++) {
+    const it = items[i] || {};
+    const { norm, tokens: tk } = normalizeNameForFuzzy(it.name, opts);
+    norms[i] = norm;
+    tokens[i] = tk;
+    const blk = it.block != null && it.block !== "" ? String(it.block) : "__nb__";
+    blockOf[i] = blk;
+    if (tk.size === 0) { diagnostics.droppedEmpty++; continue; }
+    if (!blocks[blk]) blocks[blk] = [];
+    blocks[blk].push(i);
+  }
+  const overCap = N > opts.maxItems;
+  if (overCap) diagnostics.droppedOverCap = N;
+  const uf = _ufMake(N);
+  /* Step 2: identical-norm pre-pass within each block. */
+  for (const blk in blocks) {
+    const idxs = blocks[blk];
+    const seenNorm = Object.create(null);
+    for (let k = 0; k < idxs.length; k++) {
+      const i = idxs[k];
+      const key = norms[i];
+      if (!key) continue;
+      if (seenNorm[key] != null) {
+        _ufUnion(uf, seenNorm[key], i);
+        diagnostics.mergedItems++;
+      } else {
+        seenNorm[key] = i;
+      }
+    }
+  }
+  /* Step 3: per-block Jaccard via inverted-index candidate generation.
+   * Skip entirely if we're over the safety cap — degrade to exact-norm only. */
+  if (!overCap) {
+    for (const blk in blocks) {
+      diagnostics.blocksProcessed++;
+      const idxs = blocks[blk];
+      const m = idxs.length;
+      if (m < 2) continue;
+      const postings = Object.create(null);
+      for (let k = 0; k < m; k++) {
+        const i = idxs[k];
+        for (const t of tokens[i]) {
+          if (!postings[t]) postings[t] = [];
+          postings[t].push(i);
+        }
+      }
+      const compared = new Set();
+      for (let k = 0; k < m; k++) {
+        const i = idxs[k];
+        const cands = new Set();
+        for (const t of tokens[i]) {
+          const lst = postings[t];
+          if (!lst) continue;
+          for (let z = 0; z < lst.length; z++) {
+            const j = lst[z];
+            if (j !== i) cands.add(j);
+          }
+        }
+        for (const j of cands) {
+          if (j <= i) continue;
+          const pairKey = i * N + j;
+          if (compared.has(pairKey)) continue;
+          compared.add(pairKey);
+          if (_ufFind(uf, i) === _ufFind(uf, j)) continue;
+          const sim = tokenJaccard(tokens[i], tokens[j]);
+          if (sim >= opts.threshold) {
+            _ufUnion(uf, i, j);
+            diagnostics.mergedItems++;
+          }
+        }
+      }
+    }
+  }
+  /* Step 4: collect clusters by root and pick representatives. */
+  const clusterIdByItemIdx = new Array(N);
+  const rootToCluster = Object.create(null);
+  const clusters = [];
+  for (let i = 0; i < N; i++) {
+    if (tokens[i].size === 0) { clusterIdByItemIdx[i] = -1; continue; }
+    const r = _ufFind(uf, i);
+    let cid = rootToCluster[r];
+    if (cid == null) {
+      cid = clusters.length;
+      rootToCluster[r] = cid;
+      clusters.push({ id: cid, members: [], rep: "", displayName: "" });
+    }
+    clusterIdByItemIdx[i] = cid;
+    clusters[cid].members.push(i);
+  }
+  for (let c = 0; c < clusters.length; c++) {
+    const mem = clusters[c].members;
+    const counts = Object.create(null);
+    for (let k = 0; k < mem.length; k++) {
+      const nm = norms[mem[k]];
+      counts[nm] = (counts[nm] || 0) + 1;
+    }
+    let bestNorm = "";
+    let bestCount = -1;
+    for (const nm in counts) {
+      const cnt = counts[nm];
+      if (cnt > bestCount ||
+         (cnt === bestCount && (nm.length < bestNorm.length ||
+            (nm.length === bestNorm.length && nm < bestNorm)))) {
+        bestNorm = nm;
+        bestCount = cnt;
+      }
+    }
+    clusters[c].rep = bestNorm;
+    /* Pick the first raw name in the cluster whose norm matches the rep
+     * — preserves a human-readable display name (with capitalization etc.). */
+    for (let k = 0; k < mem.length; k++) {
+      if (norms[mem[k]] === bestNorm) {
+        const it = items[mem[k]];
+        clusters[c].displayName = it && it.name != null ? String(it.name) : bestNorm;
+        break;
+      }
+    }
+    if (!clusters[c].displayName) clusters[c].displayName = bestNorm;
+  }
+  diagnostics.totalClusters = clusters.length;
+  return { clusterIdByItemIdx, clusters, diagnostics };
+}
+
 export {
   GRANULARITY,
   WEIGHTING,
@@ -906,5 +1188,9 @@ export {
   partDrilldownRows,
   IO_OUTLIER_DEFAULTS,
   isOutlierPart,
-  archetypeSummary
+  archetypeSummary,
+  FUZZY_NAME_DEFAULTS,
+  normalizeNameForFuzzy,
+  tokenJaccard,
+  fuzzyClusterNames
 };

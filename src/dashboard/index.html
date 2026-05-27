@@ -2853,8 +2853,291 @@
           };
         }
 
+        /* ===========================================================================
+         * Fuzzy item-name clustering (used by the Indirect Harmonization tab).
+         *
+         * The standard Harmonization tab keys on Part Number first, then falls back
+         * to an exact-string match on Part Description / Material when Part Number is
+         * blank. For L1 Indirect rows that blank-part case is the majority — and
+         * "Office Paper A4 White" vs "office paper - A4 - white" being treated as two
+         * separate items is exactly the kind of false fragmentation we want to merge
+         * before the harmonization math runs.
+         *
+         * This module exposes three pure helpers that the Indirect Harmonization tab
+         * glues into the existing harmonization-client.js pipeline by pre-rewriting
+         * each blank-part row's `part` field to a stable synthetic cluster key.
+         *
+         * Threshold default is 0.80 token-set Jaccard, chosen on:
+         *   - 0.6-0.7: noisy; merges "Steel Pipe 1in" with "Plastic Pipe 2in".
+         *   - 0.8: sweet spot — catches case/punct/word-order/typo-of-one-token
+         *     variations but doesn't cross size/material/colour boundaries.
+         *   - 0.9: too tight — misses "office paper A4" vs "office paper a4 white".
+         *
+         * See INDIRECT_HARMONIZATION_METHODOLOGY.md for the rationale.
+         * =========================================================================== */
+
+        const FUZZY_NAME_DEFAULTS = Object.freeze({
+          /* Drop these as pure noise/stopwords (no informational value for grouping). */
+          stopTokens: Object.freeze(new Set([
+            "of","the","and","for","with","to","in","on","by","or","a","an"
+          ])),
+          /* Tokens shorter than this are dropped (after stopword removal) so single
+           * letters like "x" / "a" / leftover punctuation slivers don't dominate the
+           * similarity score. Two-char alphanumeric tokens (e.g., "a4", "30") are
+           * kept — they often carry size / spec meaning. */
+          minTokenLen: 2,
+          /* Jaccard similarity threshold for merging two normalized item names. */
+          threshold: 0.80,
+          /* Hard cap on input size for fuzzy clustering. Above this we degrade to
+           * exact-normalized-match only (no pairwise comparisons), to avoid pinning
+           * the browser. Indirect slices typically sit well under this. */
+          maxItems: 25000
+        });
+
+        /* Convert a raw item name to a normalized token set.
+         *
+         * Returns { norm, tokens } where:
+         *   - norm   = a single lowercase whitespace-collapsed string (used for
+         *              exact-match grouping pre-pass and as a stable display form);
+         *   - tokens = a Set<string> of meaningful tokens (used for Jaccard).
+         *
+         * Pure & deterministic — same input always yields the same output. */
+        function normalizeNameForFuzzy(raw, options) {
+          const opts = options || FUZZY_NAME_DEFAULTS;
+          if (raw == null) return { norm: "", tokens: new Set() };
+          let s = String(raw).toLowerCase();
+          s = s.replace(/[^a-z0-9]+/g, " ").trim();
+          const parts = s.split(/\s+/).filter(Boolean);
+          const stops = opts.stopTokens || FUZZY_NAME_DEFAULTS.stopTokens;
+          const minLen = opts.minTokenLen != null ? opts.minTokenLen : FUZZY_NAME_DEFAULTS.minTokenLen;
+          const kept = [];
+          const seen = new Set();
+          for (let i = 0; i < parts.length; i++) {
+            const t = parts[i];
+            if (!t) continue;
+            if (stops.has(t)) continue;
+            if (t.length < minLen) continue;
+            if (seen.has(t)) continue;
+            seen.add(t);
+            kept.push(t);
+          }
+          kept.sort();
+          return { norm: kept.join(" "), tokens: new Set(kept) };
+        }
+
+        /* Jaccard similarity between two token Sets: |A ∩ B| / |A ∪ B|.
+         * Returns 0 for empty inputs (avoid 0/0 NaN propagation). */
+        function tokenJaccard(a, b) {
+          if (!a || !b) return 0;
+          const sa = a.size != null ? a.size : 0;
+          const sb = b.size != null ? b.size : 0;
+          if (sa === 0 || sb === 0) return 0;
+          let inter = 0;
+          const small = sa <= sb ? a : b;
+          const large = sa <= sb ? b : a;
+          for (const t of small) if (large.has(t)) inter++;
+          if (inter === 0) return 0;
+          const union = sa + sb - inter;
+          return union > 0 ? inter / union : 0;
+        }
+
+        /* Tiny Union-Find with path compression + union-by-rank.
+         * Internal helper for fuzzyClusterNames. */
+        function _ufMake(n) {
+          const parent = new Array(n);
+          const rank = new Array(n);
+          for (let i = 0; i < n; i++) { parent[i] = i; rank[i] = 0; }
+          return { parent, rank };
+        }
+        function _ufFind(uf, x) {
+          while (uf.parent[x] !== x) {
+            uf.parent[x] = uf.parent[uf.parent[x]];
+            x = uf.parent[x];
+          }
+          return x;
+        }
+        function _ufUnion(uf, x, y) {
+          const rx = _ufFind(uf, x), ry = _ufFind(uf, y);
+          if (rx === ry) return;
+          if (uf.rank[rx] < uf.rank[ry]) uf.parent[rx] = ry;
+          else if (uf.rank[rx] > uf.rank[ry]) uf.parent[ry] = rx;
+          else { uf.parent[ry] = rx; uf.rank[rx]++; }
+        }
+
+        /* Cluster a list of item names by fuzzy token-set similarity.
+         *
+         * Inputs:
+         *   items   — Array<{ id: any, name: string, block?: string }>
+         *             `block` is an optional grouping key (typically L3 category)
+         *             used to prune pairwise comparisons — only items sharing the
+         *             same block are ever compared. Items with no block share the
+         *             "__nb__" pool. Blocking is what makes this scale to tens of
+         *             thousands of items without an O(N²) explosion.
+         *   options — { threshold, minTokenLen, stopTokens, maxItems } overrides.
+         *
+         * Output:
+         *   {
+         *     clusterIdByItemIdx: Array<number>  // cluster id per input index
+         *     clusters: Array<{ id, members: number[], rep: string, displayName: string }>
+         *     diagnostics: { totalItems, totalClusters, mergedItems, blocksProcessed,
+         *                    droppedEmpty, droppedOverCap }
+         *   }
+         *
+         * Algorithm:
+         *   1. Normalize every name to a token set + canonical "norm" string.
+         *   2. Pre-pass: items with identical `norm` AND same block are unioned
+         *      directly (no Jaccard needed — they're already proven equivalent).
+         *   3. Per-block, build an inverted index token -> [item indexes].
+         *      For each item, candidate set = union over all its tokens' postings.
+         *      For each unprocessed candidate pair, compute Jaccard and union if
+         *      >= threshold. Each pair is compared at most once.
+         *   4. Within each cluster, pick a representative: the most-frequent norm
+         *      (ties broken by shortest, then lexicographically smallest). The
+         *      displayName is the first raw `name` whose norm matches the rep.
+         *
+         * Pure & deterministic given a stable input order. */
+        function fuzzyClusterNames(items, options) {
+          const opts = Object.assign({}, FUZZY_NAME_DEFAULTS, options || {});
+          const N = items && items.length ? items.length : 0;
+          const diagnostics = {
+            totalItems: N, totalClusters: 0, mergedItems: 0,
+            blocksProcessed: 0, droppedEmpty: 0, droppedOverCap: 0
+          };
+          if (N === 0) {
+            return { clusterIdByItemIdx: [], clusters: [], diagnostics };
+          }
+          /* Normalize every input. Items that normalize to an empty token set are
+           * dropped from clustering (assigned -1) — they have no signal to merge on. */
+          const norms = new Array(N);
+          const tokens = new Array(N);
+          const blockOf = new Array(N);
+          const blocks = Object.create(null);
+          for (let i = 0; i < N; i++) {
+            const it = items[i] || {};
+            const { norm, tokens: tk } = normalizeNameForFuzzy(it.name, opts);
+            norms[i] = norm;
+            tokens[i] = tk;
+            const blk = it.block != null && it.block !== "" ? String(it.block) : "__nb__";
+            blockOf[i] = blk;
+            if (tk.size === 0) { diagnostics.droppedEmpty++; continue; }
+            if (!blocks[blk]) blocks[blk] = [];
+            blocks[blk].push(i);
+          }
+          const overCap = N > opts.maxItems;
+          if (overCap) diagnostics.droppedOverCap = N;
+          const uf = _ufMake(N);
+          /* Step 2: identical-norm pre-pass within each block. */
+          for (const blk in blocks) {
+            const idxs = blocks[blk];
+            const seenNorm = Object.create(null);
+            for (let k = 0; k < idxs.length; k++) {
+              const i = idxs[k];
+              const key = norms[i];
+              if (!key) continue;
+              if (seenNorm[key] != null) {
+                _ufUnion(uf, seenNorm[key], i);
+                diagnostics.mergedItems++;
+              } else {
+                seenNorm[key] = i;
+              }
+            }
+          }
+          /* Step 3: per-block Jaccard via inverted-index candidate generation.
+           * Skip entirely if we're over the safety cap — degrade to exact-norm only. */
+          if (!overCap) {
+            for (const blk in blocks) {
+              diagnostics.blocksProcessed++;
+              const idxs = blocks[blk];
+              const m = idxs.length;
+              if (m < 2) continue;
+              const postings = Object.create(null);
+              for (let k = 0; k < m; k++) {
+                const i = idxs[k];
+                for (const t of tokens[i]) {
+                  if (!postings[t]) postings[t] = [];
+                  postings[t].push(i);
+                }
+              }
+              const compared = new Set();
+              for (let k = 0; k < m; k++) {
+                const i = idxs[k];
+                const cands = new Set();
+                for (const t of tokens[i]) {
+                  const lst = postings[t];
+                  if (!lst) continue;
+                  for (let z = 0; z < lst.length; z++) {
+                    const j = lst[z];
+                    if (j !== i) cands.add(j);
+                  }
+                }
+                for (const j of cands) {
+                  if (j <= i) continue;
+                  const pairKey = i * N + j;
+                  if (compared.has(pairKey)) continue;
+                  compared.add(pairKey);
+                  if (_ufFind(uf, i) === _ufFind(uf, j)) continue;
+                  const sim = tokenJaccard(tokens[i], tokens[j]);
+                  if (sim >= opts.threshold) {
+                    _ufUnion(uf, i, j);
+                    diagnostics.mergedItems++;
+                  }
+                }
+              }
+            }
+          }
+          /* Step 4: collect clusters by root and pick representatives. */
+          const clusterIdByItemIdx = new Array(N);
+          const rootToCluster = Object.create(null);
+          const clusters = [];
+          for (let i = 0; i < N; i++) {
+            if (tokens[i].size === 0) { clusterIdByItemIdx[i] = -1; continue; }
+            const r = _ufFind(uf, i);
+            let cid = rootToCluster[r];
+            if (cid == null) {
+              cid = clusters.length;
+              rootToCluster[r] = cid;
+              clusters.push({ id: cid, members: [], rep: "", displayName: "" });
+            }
+            clusterIdByItemIdx[i] = cid;
+            clusters[cid].members.push(i);
+          }
+          for (let c = 0; c < clusters.length; c++) {
+            const mem = clusters[c].members;
+            const counts = Object.create(null);
+            for (let k = 0; k < mem.length; k++) {
+              const nm = norms[mem[k]];
+              counts[nm] = (counts[nm] || 0) + 1;
+            }
+            let bestNorm = "";
+            let bestCount = -1;
+            for (const nm in counts) {
+              const cnt = counts[nm];
+              if (cnt > bestCount ||
+                 (cnt === bestCount && (nm.length < bestNorm.length ||
+                    (nm.length === bestNorm.length && nm < bestNorm)))) {
+                bestNorm = nm;
+                bestCount = cnt;
+              }
+            }
+            clusters[c].rep = bestNorm;
+            /* Pick the first raw name in the cluster whose norm matches the rep
+             * — preserves a human-readable display name (with capitalization etc.). */
+            for (let k = 0; k < mem.length; k++) {
+              if (norms[mem[k]] === bestNorm) {
+                const it = items[mem[k]];
+                clusters[c].displayName = it && it.name != null ? String(it.name) : bestNorm;
+                break;
+              }
+            }
+            if (!clusters[c].displayName) clusters[c].displayName = bestNorm;
+          }
+          diagnostics.totalClusters = clusters.length;
+          return { clusterIdByItemIdx, clusters, diagnostics };
+        }
+
         root.IDP_INDEX_MATH = {
       AGGREGATION: AGGREGATION,
+      FUZZY_NAME_DEFAULTS: FUZZY_NAME_DEFAULTS,
       GRANULARITY: GRANULARITY,
       IO_OUTLIER_DEFAULTS: IO_OUTLIER_DEFAULTS,
       WEIGHTING: WEIGHTING,
@@ -2870,10 +3153,12 @@
       computePartIndex: computePartIndex,
       expandPeriodRange: expandPeriodRange,
       expandYearlyToQuarterly: expandYearlyToQuarterly,
+      fuzzyClusterNames: fuzzyClusterNames,
       indexYearGrowthPct: indexYearGrowthPct,
       isInDisplayWindow: isInDisplayWindow,
       isInHalfOpenRange: isInHalfOpenRange,
       isOutlierPart: isOutlierPart,
+      normalizeNameForFuzzy: normalizeNameForFuzzy,
       parsePeriodKey: parsePeriodKey,
       partCaptureSavings: partCaptureSavings,
       partDrilldownRows: partDrilldownRows,
@@ -2884,6 +3169,7 @@
       quarterOf: quarterOf,
       rebaseToBaseline: rebaseToBaseline,
       sumByPeriodAcrossParts: sumByPeriodAcrossParts,
+      tokenJaccard: tokenJaccard,
       weightedUnitPrice: weightedUnitPrice,
       weightedUnitPriceByPeriod: weightedUnitPriceByPeriod
         };
@@ -3086,6 +3372,10 @@
                 <button type="button" class="app-nav-btn" data-app-view="cleansheet" id="nav-cleansheet">
                   <svg class="idp-nav-icon" viewBox="0 0 16 16" aria-hidden="true" fill="none"><rect x="2" y="2" width="12" height="12" rx="1" stroke="currentColor" stroke-width="1.5" /><line x1="2" y1="6" x2="14" y2="6" stroke="currentColor" stroke-width="1.5" /><line x1="6" y1="6" x2="6" y2="14" stroke="currentColor" stroke-width="1.5" /></svg>
                   <span class="sidebar-when-expanded">Cleansheet Analysis</span>
+                </button>
+                <button type="button" class="app-nav-btn" data-app-view="indirect-harm" id="nav-indirect-harm">
+                  <svg class="idp-nav-icon" viewBox="0 0 16 16" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><path d="M3 6 L7 6" stroke-linecap="round"/><path d="M9 6 L13 6" stroke-linecap="round" stroke-dasharray="1.5 1.5"/><path d="M3 10 L7 10" stroke-linecap="round" stroke-dasharray="1.5 1.5"/><path d="M9 10 L13 10" stroke-linecap="round"/></svg>
+                  <span class="sidebar-when-expanded">Indirect Harmonization</span>
                 </button>
               </div>
             </div>
@@ -4036,6 +4326,42 @@
           Pick 2 PPI indexes to see opportunity.
         </div>
         <div id="io-content" class="hidden flex-col gap-4"></div>
+      </section>
+      <section
+        id="view-indirect-harm"
+        class="hidden w-full max-w-full min-w-0 pt-1 pb-3"
+        aria-hidden="true"
+        aria-label="Indirect harmonization analysis"
+      >
+        <div class="mb-3 border-b border-[#E6E6E6] pb-2 idp-harm-header-bar">
+          <div class="idp-harm-header-bar-text">
+            <h2 class="m-0 text-base font-semibold" style="color: #333">Indirect Harmonization</h2>
+            <p class="mt-0.5 text-xs leading-snug idp-muted">
+              Unit-price harmonization opportunities for L1 Indirect parts. Items without a Part Number are grouped by a fuzzy match on Part Name (token-set Jaccard &ge; 0.80).
+              <span class="idp-info-tip" tabindex="0" role="img" aria-label="Methodology"
+                title="Indirect-only. For rows with a numeric Part Number we key on the part. For rows with a blank/non-numeric Part Number we key on a fuzzy cluster of the Part Description: lowercase + strip punctuation + drop stopwords (the/of/and/for/...) + sort tokens, then merge clusters whose token-set Jaccard >= 0.80. Clustering is blocked by L3 category to avoid cross-category merges. See INDEX_METHODOLOGY.md for the full pipeline.">&#9432;</span>
+            </p>
+          </div>
+          <button
+            type="button"
+            id="ih-dl-btn"
+            class="download-all-btn hidden"
+            aria-label="Download all indirect harmonization opportunities as Excel"
+          >
+            Download All Opportunities (Excel)
+          </button>
+        </div>
+        <p id="ih-message" class="mb-3 hidden rounded-lg border border-[#E6E6E6] bg-[#FFF7ED] px-3 py-2 text-sm" style="color: #333; border-color: #f07f00"></p>
+        <div id="ih-status" class="mb-3 hidden flex-wrap items-center gap-2 text-xs idp-muted">
+          <span id="ih-status-chip" class="inline-flex items-center gap-1 rounded-full border border-[#E6E6E6] bg-white px-2 py-0.5"></span>
+          <span id="ih-fuzzy-chip" class="inline-flex items-center gap-1 rounded-full border border-[#E6E6E6] bg-white px-2 py-0.5"></span>
+          <span id="ih-merged-chip" class="inline-flex items-center gap-1 rounded-full border border-[#E6E6E6] bg-white px-2 py-0.5"></span>
+        </div>
+        <div id="ih-kpis" class="mb-3 grid grid-cols-2 sm:grid-cols-3 gap-3"></div>
+        <div id="ih-empty-state" class="rounded-lg border border-dashed border-[#E6E6E6] bg-white px-4 py-10 text-center text-sm idp-muted">
+          No indirect harmonization opportunities for the current filters.
+        </div>
+        <div id="ih-content" class="hidden flex-col gap-4"></div>
       </section>
       <section
         id="view-single-source"
@@ -6080,6 +6406,13 @@
           idpIoEnsurePartCache();
           idpIoRenderContent();
         } catch (eIoR) {}
+      }
+    } else if (currentAppView === "indirect-harm") {
+      /* Indirect Harmonization recomputes its fuzzy clustering + harm
+       * payload from scratch on every filter change because the
+       * cluster keys are derived from the indirect-only slice. */
+      if (typeof idpIhRender === "function") {
+        try { idpIhRender(); } catch (eIhR) {}
       }
     }
     updateHarmFilterButtonLabels();
@@ -8268,6 +8601,10 @@
           idpIoRenderContent();
         } catch (eIoR) {}
       }
+    } else if (currentAppView === "indirect-harm") {
+      if (typeof idpIhRender === "function") {
+        try { idpIhRender(); } catch (eIhR) {}
+      }
     }
     idpToastFiltersReset();
   }
@@ -10321,6 +10658,727 @@
   }
 
   /* ============================================
+  SECTION: INDIRECT HARMONIZATION TAB
+
+  Reuses the standard harmonization math (harmonization-client.js
+  exposes idpCalculateHarmonizationFromRows) but pre-processes its
+  input so that:
+    1. Only L1 = Indirect rows are considered.
+    2. Rows whose Part Number is blank/non-numeric are RE-KEYED to a
+       synthetic "fuzzy cluster" key derived from a Part Name
+       (description) token-set Jaccard match (default >= 0.80). This
+       merges near-duplicates ("Office Paper A4 White" vs "office
+       paper - a4 - white" vs "WHITE A4 OFFICE PAPER") into a single
+       harmonization "item" so the math doesn't fragment savings
+       across slight description variants.
+
+  Pure clustering math lives in src/dashboard/index-math.mjs (exposed
+  on window.IDP_INDEX_MATH as fuzzyClusterNames / normalizeNameForFuzzy
+  / tokenJaccard / FUZZY_NAME_DEFAULTS); the glue + UI lives here.
+  ============================================ */
+
+  /** Convert a raw row to the fuzzy-clustering input shape — pulls the
+   *  best available "part name" / description and the L3 blocking key.
+   *  Returns null if no usable signal at all (item is dropped). */
+  function idpIhRowToClusterItem(rowIdx, r) {
+    if (!r) return null;
+    var name = "";
+    if (r.material != null && String(r.material).trim() !== "") name = String(r.material).trim();
+    else if (r.noun != null && String(r.noun).trim() !== "") name = String(r.noun).trim();
+    else if (r.description != null && String(r.description).trim() !== "") name = String(r.description).trim();
+    if (!name) return null;
+    var l3 = "";
+    if (r.category_l3 != null) l3 = String(r.category_l3).trim();
+    else if (r.c3 != null) l3 = String(r.c3).trim();
+    if (!l3) {
+      /* Fall back to L2 / L1 as the blocking key when L3 is missing.
+       * Anything is better than no block (which would put all
+       * blank-L3 rows in a single huge candidate pool). */
+      if (r.category_l2 != null) l3 = "L2:" + String(r.category_l2).trim();
+      else if (r.c2 != null) l3 = "L2:" + String(r.c2).trim();
+      else if (r.category_l1 != null) l3 = "L1:" + String(r.category_l1).trim();
+      else if (r.c1 != null) l3 = "L1:" + String(r.c1).trim();
+      else l3 = "__nb__";
+    }
+    return { id: rowIdx, name: name, block: l3 };
+  }
+
+  /** Does this row have a usable, numeric-bearing Part Number? Mirrors
+   *  the rule used by the existing harmonizationItemKey() in
+   *  harmonization-client.js — a part is "real" only if it contains at
+   *  least one digit. Pure strings without digits ("MISC", "TBD") are
+   *  treated as blank and fall through to fuzzy clustering. */
+  function idpIhHasRealPartNumber(r) {
+    if (!r || r.part == null) return false;
+    var s = String(r.part).trim();
+    if (s === "") return false;
+    return /\d/.test(s);
+  }
+
+  /** Get the indirect-only row slice filtered by the current global
+   *  Spend Review filter bar. The user explicitly opted OUT of locking
+   *  the global filter to Indirect (they own that), so this just
+   *  additively filters whatever the user has selected upstream. */
+  function idpIhGetIndirectRows() {
+    var idx = (typeof getFiltered === "function") ? getFiltered() : null;
+    if (!idx || !idx.length) return [];
+    var rows = D && D.rows ? D.rows : [];
+    var out = [], i, r;
+    for (i = 0; i < idx.length; i++) {
+      r = rows[idx[i]];
+      if (!r) continue;
+      if (idpRowSpendTypeString(r) !== "Indirect") continue;
+      out.push(r);
+    }
+    return out;
+  }
+
+  /** Build the cluster lookup table for the indirect slice and return
+   *  the prepared rows + diagnostics. Each row gets a stable synthetic
+   *  `part` field:
+   *    - If the original had a numeric-bearing Part Number → kept as-is.
+   *    - Else → "IH#FUZZY#<clusterId>" (digit-bearing, so the existing
+   *      harmonizationItemKey() routes through the "use r.part" branch
+   *      and the math stays untouched).
+   *
+   *  The original Part Number is stashed on `_origPart` and the cluster
+   *  metadata (was-fuzzy, display name, merged-from list) on `_ihFuzzy`
+   *  so the renderer can surface the badge + tooltip without recomputing.
+   */
+  function idpIhPrepareRows(indirectRows) {
+    var M = (typeof window !== "undefined" && window.IDP_INDEX_MATH) || null;
+    var fuzzyFn = M && typeof M.fuzzyClusterNames === "function" ? M.fuzzyClusterNames : null;
+    var defaults = M && M.FUZZY_NAME_DEFAULTS ? M.FUZZY_NAME_DEFAULTS : { threshold: 0.80, minTokenLen: 2 };
+    var prepared = [];
+    var blankRows = [];          /* indexes into indirectRows that need clustering */
+    var blankClusterItems = [];  /* parallel list passed to fuzzyClusterNames */
+    var fromPartNumber = 0;
+    var fromFuzzy = 0;
+    var droppedNoSignal = 0;
+    var i, r, item;
+    /* Pass 1: classify each row. */
+    for (i = 0; i < indirectRows.length; i++) {
+      r = indirectRows[i];
+      if (!r) continue;
+      if (idpIhHasRealPartNumber(r)) {
+        prepared.push({ row: r, source: "part", fuzzyMembers: null, displayName: null });
+        fromPartNumber++;
+      } else {
+        item = idpIhRowToClusterItem(i, r);
+        if (!item) { droppedNoSignal++; continue; }
+        blankRows.push({ row: r, listIdx: blankClusterItems.length });
+        blankClusterItems.push(item);
+      }
+    }
+    /* Pass 2: cluster the blank-part rows. */
+    var clusterInfo = null;
+    if (fuzzyFn && blankClusterItems.length > 0) {
+      try {
+        clusterInfo = fuzzyFn(blankClusterItems, {});
+      } catch (eFc) {
+        clusterInfo = null;
+        if (typeof console !== "undefined" && console.warn) console.warn("[indirect-harm] fuzzy clustering failed:", eFc);
+      }
+    }
+    /* Pass 3: stitch cluster keys back onto the prepared rows.
+     * Build per-cluster member descriptions so the renderer can show
+     * "merged from: A, B, C" in the row tooltip. */
+    var clusterMembers = {};  /* clusterId -> Set<string> of raw names */
+    if (clusterInfo && clusterInfo.clusters) {
+      var c, cl, kk, memIdx, origItem;
+      for (c = 0; c < clusterInfo.clusters.length; c++) {
+        cl = clusterInfo.clusters[c];
+        clusterMembers[cl.id] = [];
+        var seenMembers = {};
+        for (kk = 0; kk < cl.members.length; kk++) {
+          memIdx = cl.members[kk];
+          origItem = blankClusterItems[memIdx];
+          if (origItem && origItem.name && !seenMembers[origItem.name]) {
+            seenMembers[origItem.name] = 1;
+            clusterMembers[cl.id].push(origItem.name);
+          }
+        }
+      }
+    }
+    for (i = 0; i < blankRows.length; i++) {
+      var brec = blankRows[i];
+      var cid = clusterInfo && clusterInfo.clusterIdByItemIdx
+        ? clusterInfo.clusterIdByItemIdx[brec.listIdx] : -1;
+      if (cid == null || cid < 0) {
+        /* Row had no usable token signal after normalization — skip.
+         * (Already counted in droppedNoSignal above for the rows that
+         * failed idpIhRowToClusterItem; clustering-empty rows are
+         * extremely rare in practice but we drop them too.) */
+        continue;
+      }
+      var displayName = clusterInfo.clusters[cid].displayName;
+      var members = clusterMembers[cid] || [];
+      prepared.push({
+        row: brec.row,
+        source: "fuzzy",
+        fuzzyMembers: members,
+        displayName: displayName,
+        clusterId: cid
+      });
+      fromFuzzy++;
+    }
+    /* Pass 4: emit clones with the synthetic part key stamped on.
+     * We CLONE here so we don't mutate D.rows — that would corrupt
+     * every other tab's view of the underlying data. */
+    var clones = [];
+    var j;
+    for (j = 0; j < prepared.length; j++) {
+      var rec = prepared[j];
+      var src = rec.row;
+      /* Shallow clone every consumed field. harmonization-client.js
+       * reads: part, supplier (or su), spend, quantity (or qty),
+       * material/noun, site, year/ym, category_l*. */
+      var clone = {};
+      var key;
+      for (key in src) {
+        if (Object.prototype.hasOwnProperty.call(src, key)) clone[key] = src[key];
+      }
+      clone._origPart = src.part;
+      if (rec.source === "fuzzy") {
+        var synthKey = "IH#FUZZY#" + rec.clusterId;
+        clone.part = synthKey;
+        clone._ihFuzzy = true;
+        clone._ihDisplayName = rec.displayName || "";
+        clone._ihMembers = rec.fuzzyMembers || [];
+        /* Replace noun/material with the cluster's representative so
+         * any downstream description lookup is consistent across all
+         * rows in the cluster. */
+        clone.noun = rec.displayName || clone.noun;
+        clone.material = rec.displayName || clone.material;
+      } else {
+        clone._ihFuzzy = false;
+      }
+      clones.push(clone);
+    }
+    return {
+      rows: clones,
+      diagnostics: {
+        indirectRowsIn: indirectRows.length,
+        rowsPrepared: clones.length,
+        keyedByPartNumber: fromPartNumber,
+        keyedByFuzzy: fromFuzzy,
+        droppedNoSignal: droppedNoSignal,
+        clusters: clusterInfo && clusterInfo.diagnostics ? clusterInfo.diagnostics : null
+      }
+    };
+  }
+
+  /* Cache the last computed payload so the download button can reuse
+   * it instead of recomputing. Invalidated on every render. */
+  var _idpIhLastPayload = null;
+  var _idpIhWired = false;
+
+  function idpIhWireOnce() {
+    if (_idpIhWired) return;
+    _idpIhWired = true;
+    var btn = $("ih-dl-btn");
+    if (btn && typeof btn.addEventListener === "function") {
+      btn.addEventListener("click", function () { idpIhExport(); });
+    }
+  }
+
+  function idpIhFmtUsd(v) {
+    var n = +v;
+    if (!isFinite(n)) return "—";
+    if (Math.abs(n) >= 1e6) return "$" + (Math.round(n / 1e5) / 10) + "M";
+    if (Math.abs(n) >= 1e3) return "$" + (Math.round(n / 1e2) / 10) + "K";
+    return "$" + Math.round(n).toLocaleString();
+  }
+  function idpIhFmtInt(v) {
+    var n = +v;
+    if (!isFinite(n)) return "—";
+    return Math.round(n).toLocaleString();
+  }
+  function idpIhFmtPct(v) {
+    if (v == null || !isFinite(+v)) return "—";
+    return (Math.round(+v * 10) / 10) + "%";
+  }
+  function idpIhEsc(s) {
+    if (s == null) return "";
+    return String(s).replace(/[&<>"']/g, function (c) {
+      return c === "&" ? "&amp;" : c === "<" ? "&lt;" : c === ">" ? "&gt;" : c === "\"" ? "&quot;" : "&#39;";
+    });
+  }
+
+  /** Build the KPI card markup. Mirrors the visual idiom used elsewhere
+   *  in the dashboard (rounded panel, small uppercase label, big number). */
+  function idpIhBuildKpiCards(payload) {
+    var totalOpp = payload && payload.total_opportunity_usd != null ? payload.total_opportunity_usd : 0;
+    var p80 = payload && payload.parts_for_80_pct_value != null ? payload.parts_for_80_pct_value : 0;
+    var pct = payload && payload.pct_savings_vs_spend != null ? payload.pct_savings_vs_spend : null;
+    var spend = payload && payload.current_year_spend_usd != null ? payload.current_year_spend_usd : 0;
+    var partsAn = payload && payload.parts_analyzed != null ? payload.parts_analyzed : 0;
+    var fragParts = payload && payload.price_fragmented_parts_count != null ? payload.price_fragmented_parts_count : 0;
+    function card(label, value, sub) {
+      return '<div class="rounded-lg border border-[#E6E6E6] bg-white p-3 shadow-sm">'
+        + '<div class="text-[10px] font-semibold uppercase tracking-wide" style="color:#64748b">' + idpIhEsc(label) + '</div>'
+        + '<div class="mt-1 text-lg font-semibold" style="color:#333">' + idpIhEsc(value) + '</div>'
+        + (sub ? '<div class="mt-0.5 text-[11px] idp-muted">' + idpIhEsc(sub) + '</div>' : '')
+        + '</div>';
+    }
+    return [
+      card("Total Opportunity",        idpIhFmtUsd(totalOpp),  pct != null ? idpIhFmtPct(pct) + " of indirect spend" : ""),
+      card("Parts for 80% of Value",   idpIhFmtInt(p80),       partsAn ? "out of " + idpIhFmtInt(partsAn) + " items" : ""),
+      card("Price-Fragmented Items",   idpIhFmtInt(fragParts), spend ? "Current spend " + idpIhFmtUsd(spend) : "")
+    ].join("");
+  }
+
+  function idpIhCategoryLabel(p) {
+    var hm = +(p && p.harm_mece);
+    if (hm === 1) return "Same site, different suppliers";
+    if (hm === 2) return "Same supplier, different sites";
+    if (hm === 3) return "Same supplier, different sites";
+    return "Other";
+  }
+
+  /** True if this opportunity object came from a fuzzy-clustered item
+   *  (i.e., its key starts with our synthetic "IH#FUZZY#" prefix or it
+   *  was tagged during the prep pass). Used to decide badge rendering. */
+  function idpIhIsFuzzyOpp(p) {
+    if (!p) return false;
+    if (p._ihFuzzy === true) return true;
+    var k = "";
+    if (p.item != null) k = String(p.item);
+    else if (p.part != null) k = String(p.part);
+    return k.indexOf("IH#FUZZY#") === 0;
+  }
+
+  /** Pull a human-readable display name out of an opportunity object.
+   *  Prefers the fuzzy-cluster display name if present, otherwise the
+   *  underlying description, otherwise the raw item key. */
+  function idpIhOppDisplayName(p) {
+    if (!p) return "";
+    if (p._ihDisplayName) return String(p._ihDisplayName);
+    /* For non-fuzzy items, the existing harmonization payload usually
+     * carries the description on a "Description"-shaped key OR inside
+     * export_rows. The easiest source is the row's own description. */
+    if (p.description) return String(p.description);
+    if (p.noun) return String(p.noun);
+    if (p.material) return String(p.material);
+    if (p.item != null) return String(p.item);
+    if (p.part != null) return String(p.part);
+    return "";
+  }
+
+  /** Sum the savings across an opportunity's export_rows. Mirrors
+   *  harmSumExportRowsSavings logic but defensively typed. */
+  function idpIhOppSavings(p) {
+    if (!p) return 0;
+    if (p.savings != null && isFinite(+p.savings)) return +p.savings;
+    var er = p.export_rows;
+    if (!er || !er.length) return 0;
+    var s = 0, i, v;
+    for (i = 0; i < er.length; i++) {
+      v = er[i] && er[i].Savings != null ? +er[i].Savings : 0;
+      if (isFinite(v)) s += v;
+    }
+    return s;
+  }
+  function idpIhOppSpend(p) {
+    if (!p) return 0;
+    if (p.total_spend != null && isFinite(+p.total_spend)) return +p.total_spend;
+    var er = p.export_rows;
+    if (!er || !er.length) return 0;
+    var s = 0, i, v;
+    for (i = 0; i < er.length; i++) {
+      v = er[i] && er[i].Spend != null ? +er[i].Spend : 0;
+      if (isFinite(v)) s += v;
+    }
+    return s;
+  }
+  /** Distinct count helper for transparency stats. */
+  function idpIhOppDistinct(p, field) {
+    var er = p && p.export_rows;
+    if (!er || !er.length) return 0;
+    var seen = {}, n = 0, i, v;
+    for (i = 0; i < er.length; i++) {
+      v = er[i] && er[i][field] != null ? String(er[i][field]) : "";
+      if (v && !seen[v]) { seen[v] = 1; n++; }
+    }
+    return n;
+  }
+
+  /** Render the opportunity table (Top-by-savings, with fuzzy badge,
+   *  category, site/supplier counts, savings, and expand affordance). */
+  function idpIhBuildOpportunityTable(opps) {
+    if (!opps || !opps.length) {
+      return '<div class="rounded-lg border border-dashed border-[#E6E6E6] bg-white px-4 py-8 text-center text-sm idp-muted">No harmonization opportunities to display.</div>';
+    }
+    var rowsHtml = [];
+    var i, p, isFuzzy, dn, sav, sp, cat, sites, sups, badge, tip, rowId;
+    for (i = 0; i < opps.length; i++) {
+      p = opps[i];
+      if (!p) continue;
+      isFuzzy = idpIhIsFuzzyOpp(p);
+      dn = idpIhOppDisplayName(p);
+      sav = idpIhOppSavings(p);
+      sp = idpIhOppSpend(p);
+      cat = idpIhCategoryLabel(p);
+      sites = idpIhOppDistinct(p, "Site");
+      sups = idpIhOppDistinct(p, "Supplier");
+      rowId = "ih-row-" + i;
+      if (isFuzzy) {
+        var memberList = (p._ihMembers && p._ihMembers.length)
+          ? p._ihMembers.slice(0, 12).join(" · ") + (p._ihMembers.length > 12 ? " · …(+" + (p._ihMembers.length - 12) + ")" : "")
+          : "";
+        tip = memberList
+          ? "Grouped via fuzzy Part Name match. Merged descriptions: " + memberList
+          : "Grouped via fuzzy Part Name match (no Part Number on source rows).";
+        badge = '<span class="idp-info-tip" tabindex="0" role="img" aria-label="Fuzzy match" title="' + idpIhEsc(tip) + '" style="margin-left:6px;font-size:10px;font-style:italic;color:#7c3aed;border:1px solid #ddd6fe;border-radius:9999px;padding:1px 6px;background:#faf5ff;cursor:help">fuzzy</span>';
+      } else {
+        badge = '';
+      }
+      rowsHtml.push(
+        '<tr class="ih-opp-row" data-ih-row="' + rowId + '">' +
+          '<td class="px-2 py-1.5 align-top">' +
+            '<button type="button" class="ih-toggle-drill text-xs" aria-expanded="false" style="border:1px solid #E6E6E6;border-radius:4px;background:#f8fafc;padding:1px 6px;cursor:pointer;color:#64748b">+</button>' +
+          '</td>' +
+          '<td class="px-2 py-1.5 align-top">' +
+            '<div style="font-weight:500;color:#333">' + idpIhEsc(dn) + badge + '</div>' +
+            '<div class="text-[11px] idp-muted">' + idpIhEsc(cat) + '</div>' +
+          '</td>' +
+          '<td class="px-2 py-1.5 align-top text-right tabular-nums">' + idpIhFmtUsd(sav) + '</td>' +
+          '<td class="px-2 py-1.5 align-top text-right tabular-nums">' + idpIhFmtUsd(sp) + '</td>' +
+          '<td class="px-2 py-1.5 align-top text-right tabular-nums">' + idpIhFmtInt(sites) + '</td>' +
+          '<td class="px-2 py-1.5 align-top text-right tabular-nums">' + idpIhFmtInt(sups) + '</td>' +
+        '</tr>' +
+        '<tr class="ih-drill-row hidden" data-ih-drill="' + rowId + '">' +
+          '<td colspan="6" class="px-2 py-2" style="background:#f9fafb"></td>' +
+        '</tr>'
+      );
+    }
+    return '<div class="overflow-x-auto rounded-lg border border-[#E6E6E6] bg-white shadow-sm">' +
+      '<table class="w-full text-xs" style="border-collapse:collapse">' +
+        '<thead><tr style="background:#f1f5f9;color:#334155">' +
+          '<th class="px-2 py-2 text-left" style="font-weight:600;width:28px"></th>' +
+          '<th class="px-2 py-2 text-left" style="font-weight:600">Item</th>' +
+          '<th class="px-2 py-2 text-right" style="font-weight:600">Potential Savings</th>' +
+          '<th class="px-2 py-2 text-right" style="font-weight:600">Annual Spend</th>' +
+          '<th class="px-2 py-2 text-right" style="font-weight:600"># Sites</th>' +
+          '<th class="px-2 py-2 text-right" style="font-weight:600"># Suppliers</th>' +
+        '</tr></thead>' +
+        '<tbody>' + rowsHtml.join("") + '</tbody>' +
+      '</table>' +
+    '</div>';
+  }
+
+  /** Build the drill-down panel HTML for one opportunity row.
+   *  Shows the export_rows transaction-level detail plus, for fuzzy
+   *  rows, the list of merged descriptions. */
+  function idpIhBuildDrilldown(p) {
+    if (!p) return '<div class="text-xs idp-muted">No detail rows.</div>';
+    var er = p.export_rows && p.export_rows.length ? p.export_rows : [];
+    var headerParts = [];
+    if (idpIhIsFuzzyOpp(p) && p._ihMembers && p._ihMembers.length) {
+      headerParts.push(
+        '<div class="mb-2 rounded border border-[#E6E6E6] bg-white p-2 text-xs">' +
+          '<div class="font-semibold" style="color:#7c3aed">Merged descriptions (' + p._ihMembers.length + '):</div>' +
+          '<div class="mt-1 idp-muted" style="line-height:1.4">' + idpIhEsc(p._ihMembers.join(" · ")) + '</div>' +
+        '</div>'
+      );
+    }
+    if (!er.length) {
+      return headerParts.join("") + '<div class="text-xs idp-muted">No transaction-level rows available for this opportunity.</div>';
+    }
+    var rowsHtml = [];
+    var i, row, up, sp, qty, sav;
+    for (i = 0; i < er.length; i++) {
+      row = er[i];
+      if (!row) continue;
+      up = row["Unit Price"] != null ? +row["Unit Price"] : NaN;
+      sp = row["Spend"] != null ? +row["Spend"] : NaN;
+      qty = row["Quantity"] != null ? +row["Quantity"] : NaN;
+      sav = row["Savings"] != null ? +row["Savings"] : NaN;
+      rowsHtml.push(
+        '<tr>' +
+          '<td class="px-2 py-1">' + idpIhEsc(row["Site"] || "") + '</td>' +
+          '<td class="px-2 py-1">' + idpIhEsc(row["Supplier"] || "") + '</td>' +
+          '<td class="px-2 py-1 text-right tabular-nums">' + (isFinite(up) ? "$" + (Math.round(up * 100) / 100).toLocaleString() : "—") + '</td>' +
+          '<td class="px-2 py-1 text-right tabular-nums">' + (isFinite(qty) ? Math.round(qty).toLocaleString() : "—") + '</td>' +
+          '<td class="px-2 py-1 text-right tabular-nums">' + (isFinite(sp) ? idpIhFmtUsd(sp) : "—") + '</td>' +
+          '<td class="px-2 py-1 text-right tabular-nums">' + (isFinite(sav) ? idpIhFmtUsd(sav) : "—") + '</td>' +
+        '</tr>'
+      );
+    }
+    return headerParts.join("") +
+      '<div class="overflow-x-auto rounded border border-[#E6E6E6] bg-white">' +
+        '<table class="w-full text-xs" style="border-collapse:collapse">' +
+          '<thead><tr style="background:#f8fafc;color:#475569">' +
+            '<th class="px-2 py-1 text-left">Site</th>' +
+            '<th class="px-2 py-1 text-left">Supplier</th>' +
+            '<th class="px-2 py-1 text-right">Unit Price</th>' +
+            '<th class="px-2 py-1 text-right">Quantity</th>' +
+            '<th class="px-2 py-1 text-right">Spend</th>' +
+            '<th class="px-2 py-1 text-right">Savings</th>' +
+          '</tr></thead>' +
+          '<tbody>' + rowsHtml.join("") + '</tbody>' +
+        '</table>' +
+      '</div>';
+  }
+
+  /** Wire click handlers on the per-row "+" toggle buttons after the
+   *  table has been painted. Lazy-fills the drill-down panel on first
+   *  expand so we don't pay the render cost for collapsed rows. */
+  function idpIhWireDrilldownToggles(opps) {
+    var btns = document.querySelectorAll(".ih-toggle-drill");
+    var i, btn;
+    for (i = 0; i < btns.length; i++) {
+      btn = btns[i];
+      if (btn._ihBound) continue;
+      btn._ihBound = true;
+      (function (b, idx) {
+        b.addEventListener("click", function () {
+          var tr = b.closest("tr");
+          if (!tr) return;
+          var rowKey = tr.getAttribute("data-ih-row");
+          var drill = document.querySelector('tr[data-ih-drill="' + rowKey + '"]');
+          if (!drill) return;
+          var open = !drill.classList.contains("hidden");
+          if (open) {
+            drill.classList.add("hidden");
+            b.textContent = "+";
+            b.setAttribute("aria-expanded", "false");
+          } else {
+            var cell = drill.querySelector("td");
+            if (cell && !cell._ihFilled) {
+              cell.innerHTML = idpIhBuildDrilldown(opps[idx]);
+              cell._ihFilled = true;
+            }
+            drill.classList.remove("hidden");
+            b.textContent = "−";
+            b.setAttribute("aria-expanded", "true");
+          }
+        });
+      })(btn, i);
+    }
+  }
+
+  /** Main entrypoint. Pulls the indirect slice from the current global
+   *  filter state, prepares it (fuzzy clustering for blank-part rows),
+   *  hands it to the standard harmonization math, and paints the UI. */
+  function idpIhRender() {
+    var view = $("view-indirect-harm");
+    if (!view || view.classList.contains("hidden")) return;
+    var statusEl = $("ih-status");
+    var statusChip = $("ih-status-chip");
+    var fuzzyChip = $("ih-fuzzy-chip");
+    var mergedChip = $("ih-merged-chip");
+    var kpiEl = $("ih-kpis");
+    var emptyEl = $("ih-empty-state");
+    var contentEl = $("ih-content");
+    var msgEl = $("ih-message");
+    var dlBtn = $("ih-dl-btn");
+    if (msgEl) { msgEl.classList.add("hidden"); msgEl.textContent = ""; }
+    if (kpiEl) kpiEl.innerHTML = "";
+    if (contentEl) { contentEl.innerHTML = ""; contentEl.classList.add("hidden"); contentEl.classList.remove("flex"); }
+    if (emptyEl) emptyEl.classList.add("hidden");
+    if (dlBtn) dlBtn.classList.add("hidden");
+    _idpIhLastPayload = null;
+    /* Step 1: indirect-only slice. */
+    var indirectRows;
+    try {
+      indirectRows = idpIhGetIndirectRows();
+    } catch (eGetR) {
+      if (msgEl) {
+        msgEl.classList.remove("hidden");
+        msgEl.textContent = "Failed to read indirect rows: " + (eGetR && eGetR.message ? eGetR.message : "unknown error");
+      }
+      if (emptyEl) emptyEl.classList.remove("hidden");
+      return;
+    }
+    if (!indirectRows.length) {
+      if (statusEl) statusEl.classList.add("hidden");
+      if (emptyEl) {
+        emptyEl.classList.remove("hidden");
+        emptyEl.textContent = "No L1 Indirect rows in the current filter slice. Adjust the global Spend Review filters above.";
+      }
+      return;
+    }
+    /* Step 2: prep + fuzzy clustering. */
+    var prep;
+    try {
+      prep = idpIhPrepareRows(indirectRows);
+    } catch (ePrep) {
+      if (msgEl) {
+        msgEl.classList.remove("hidden");
+        msgEl.textContent = "Failed to prepare rows: " + (ePrep && ePrep.message ? ePrep.message : "unknown error");
+      }
+      return;
+    }
+    /* Step 3: harmonization math. */
+    var calc = (typeof window !== "undefined" && typeof window.idpCalculateHarmonizationFromRows === "function")
+      ? window.idpCalculateHarmonizationFromRows : null;
+    if (!calc) {
+      if (msgEl) {
+        msgEl.classList.remove("hidden");
+        msgEl.textContent = "Harmonization client library is not loaded. Reload the page.";
+      }
+      return;
+    }
+    var payload;
+    try {
+      payload = calc(prep.rows, {});
+    } catch (eCalc) {
+      if (msgEl) {
+        msgEl.classList.remove("hidden");
+        msgEl.textContent = "Harmonization math failed: " + (eCalc && eCalc.message ? eCalc.message : "unknown error");
+      }
+      return;
+    }
+    /* Step 4: stitch fuzzy metadata back onto each opportunity (the
+     * math threw away our _ihFuzzy / _ihDisplayName / _ihMembers
+     * markers when it built export_rows from scratch). We look the
+     * synthetic key back up in our prep cache. */
+    var oppList = payload && payload.all_opportunities ? payload.all_opportunities : [];
+    var fuzzyMetaByKey = {};
+    var ri, rec;
+    for (ri = 0; ri < prep.rows.length; ri++) {
+      rec = prep.rows[ri];
+      if (!rec || !rec._ihFuzzy) continue;
+      if (!fuzzyMetaByKey[rec.part]) {
+        fuzzyMetaByKey[rec.part] = {
+          displayName: rec._ihDisplayName,
+          members: rec._ihMembers
+        };
+      }
+    }
+    var oi, op, keyMaybe;
+    for (oi = 0; oi < oppList.length; oi++) {
+      op = oppList[oi];
+      if (!op) continue;
+      keyMaybe = "";
+      if (op.item != null) keyMaybe = String(op.item);
+      else if (op.part != null) keyMaybe = String(op.part);
+      if (keyMaybe && fuzzyMetaByKey[keyMaybe]) {
+        op._ihFuzzy = true;
+        op._ihDisplayName = fuzzyMetaByKey[keyMaybe].displayName;
+        op._ihMembers = fuzzyMetaByKey[keyMaybe].members;
+      }
+    }
+    /* Step 5: paint. */
+    _idpIhLastPayload = { payload: payload, opps: oppList, diagnostics: prep.diagnostics };
+    if (statusEl && statusChip && fuzzyChip && mergedChip) {
+      statusEl.classList.remove("hidden");
+      statusEl.classList.add("flex");
+      statusChip.textContent = idpIhFmtInt(prep.diagnostics.indirectRowsIn) + " indirect rows · " + idpIhFmtInt(prep.diagnostics.rowsPrepared) + " items considered";
+      fuzzyChip.textContent = idpIhFmtInt(prep.diagnostics.keyedByPartNumber) + " by Part #  ·  " + idpIhFmtInt(prep.diagnostics.keyedByFuzzy) + " by fuzzy Part Name";
+      var clusterDiag = prep.diagnostics.clusters;
+      mergedChip.textContent = clusterDiag
+        ? (idpIhFmtInt(clusterDiag.mergedItems) + " merges across " + idpIhFmtInt(clusterDiag.blocksProcessed) + " L3 blocks (threshold 0.80)")
+        : "fuzzy clustering unavailable";
+    }
+    if (kpiEl) kpiEl.innerHTML = idpIhBuildKpiCards(payload);
+    if (!oppList.length) {
+      if (emptyEl) {
+        emptyEl.classList.remove("hidden");
+        emptyEl.textContent = payload && payload.message && payload.message !== "ok"
+          ? "Harmonization math returned: " + payload.message
+          : "No harmonization opportunities for the current indirect slice.";
+      }
+      return;
+    }
+    if (contentEl) {
+      contentEl.classList.remove("hidden");
+      contentEl.classList.add("flex");
+      contentEl.innerHTML = idpIhBuildOpportunityTable(oppList);
+      idpIhWireDrilldownToggles(oppList);
+    }
+    if (dlBtn) dlBtn.classList.remove("hidden");
+  }
+
+  /** Excel download — mirrors exportAllHarmonizationOpportunities()
+   *  but uses the indirect-fuzzy payload + adds two extra columns
+   *  (Keyed By, Merged Descriptions) for transparency on fuzzy rows. */
+  function idpIhExport() {
+    if (typeof XLSX === "undefined") {
+      alert("Excel export library (SheetJS) is not loaded. Reload the page.");
+      return;
+    }
+    var cached = _idpIhLastPayload;
+    if (!cached || !cached.opps || !cached.opps.length) {
+      alert("No opportunities to export. Open the Indirect Harmonization tab and let it render first.");
+      return;
+    }
+    var opps = cached.opps;
+    var diag = cached.diagnostics;
+    var yYear = cached.payload && (cached.payload.analysis_year != null ? cached.payload.analysis_year : cached.payload.year);
+    var rowsCombined = [];
+    var i, j, p, er, row, up, qty, sp, sav, isFuzzy, dispName, mergedDescs, keyedBy;
+    for (i = 0; i < opps.length; i++) {
+      p = opps[i];
+      if (!p) continue;
+      er = p.export_rows;
+      if (!er || !er.length) continue;
+      isFuzzy = idpIhIsFuzzyOpp(p);
+      dispName = idpIhOppDisplayName(p);
+      mergedDescs = isFuzzy && p._ihMembers ? p._ihMembers.join(" · ") : "";
+      keyedBy = isFuzzy ? "Fuzzy Part Name" : "Part Number";
+      for (j = 0; j < er.length; j++) {
+        row = er[j];
+        if (!row) continue;
+        sav = row["Savings"] != null ? +row["Savings"] : 0;
+        up = row["Unit Price"] != null ? +row["Unit Price"] : NaN;
+        qty = row["Quantity"] != null ? +row["Quantity"] : NaN;
+        sp = row["Spend"] != null ? +row["Spend"] : NaN;
+        rowsCombined.push({
+          "Item Key": (row["Item Number"] != null ? String(row["Item Number"]) : (p.item != null ? String(p.item) : "")),
+          "Display Name": dispName,
+          "Keyed By": keyedBy,
+          "Merged Descriptions (fuzzy)": mergedDescs,
+          "Site": row["Site"] != null ? String(row["Site"]) : "",
+          "Supplier": row["Supplier"] != null ? String(row["Supplier"]) : "",
+          "Unit Price": isFinite(up) ? Math.round(up * 100) / 100 : "",
+          "Annual Quantity": isFinite(qty) ? Math.round(qty) : "",
+          "Annual Spend": isFinite(sp) ? Math.round(sp * 100) / 100 : "",
+          "Potential Savings": isFinite(sav) ? Math.round(sav * 100) / 100 : "",
+          "MECE Category": row["Category"] != null ? String(row["Category"]) : (idpIhCategoryLabel(p)),
+          "Analysis Year": yYear != null && yYear !== "" ? yYear : ""
+        });
+      }
+    }
+    rowsCombined.sort(function (a, b) { return (+b["Potential Savings"] || 0) - (+a["Potential Savings"] || 0); });
+    var diagRows = [
+      { Metric: "Indirect rows in (after global filters)", Value: diag.indirectRowsIn },
+      { Metric: "Items considered after prep",             Value: diag.rowsPrepared },
+      { Metric: "Items keyed by Part Number",              Value: diag.keyedByPartNumber },
+      { Metric: "Items keyed by fuzzy Part Name",          Value: diag.keyedByFuzzy },
+      { Metric: "Rows dropped (no usable name signal)",    Value: diag.droppedNoSignal },
+      { Metric: "Fuzzy threshold (token-set Jaccard)",     Value: 0.80 }
+    ];
+    if (diag.clusters) {
+      diagRows.push({ Metric: "Fuzzy merges performed",      Value: diag.clusters.mergedItems });
+      diagRows.push({ Metric: "L3 blocks processed",          Value: diag.clusters.blocksProcessed });
+      diagRows.push({ Metric: "Total fuzzy clusters formed",  Value: diag.clusters.totalClusters });
+    }
+    var wb = XLSX.utils.book_new();
+    var wsAll = XLSX.utils.json_to_sheet(rowsCombined.length ? rowsCombined : [{ Information: "No opportunities to export." }]);
+    wsAll["!cols"] = rowsCombined.length ? [
+      { wch: 18 }, { wch: 32 }, { wch: 16 }, { wch: 40 }, { wch: 20 }, { wch: 22 },
+      { wch: 12 }, { wch: 14 }, { wch: 14 }, { wch: 16 }, { wch: 28 }, { wch: 14 }
+    ] : [{ wch: 80 }];
+    XLSX.utils.book_append_sheet(wb, wsAll, "Indirect Opportunities");
+    var wsDiag = XLSX.utils.json_to_sheet(diagRows);
+    wsDiag["!cols"] = [{ wch: 42 }, { wch: 16 }];
+    XLSX.utils.book_append_sheet(wb, wsDiag, "Methodology");
+    var ts = new Date().toISOString().slice(0, 10);
+    var filename = "Indirect_Harmonization_Opportunities_" + ts + ".xlsx";
+    XLSX.writeFile(wb, filename);
+  }
+
+  if (typeof window !== "undefined") {
+    window.idpIhRender = idpIhRender;
+    window.idpIhWireOnce = idpIhWireOnce;
+    window.idpIhExport = idpIhExport;
+    window.idpIhPrepareRows = idpIhPrepareRows;
+    window.idpIhGetIndirectRows = idpIhGetIndirectRows;
+  }
+
+  /* ============================================
   SECTION: PART SEARCH TAB
   Purpose: Debounced search on filtered rows with facet dropdowns.
   ============================================ */
@@ -11778,6 +12836,10 @@
         if (v === "index-opportunity" && !$("view-index-opportunity")) {
           ok = false;
           idpDiagLog("nav maps to missing view-index-opportunity");
+        }
+        if (v === "indirect-harm" && !$("view-indirect-harm")) {
+          ok = false;
+          idpDiagLog("nav maps to missing view-indirect-harm");
         }
         if (v === "price-explanation" && !$("view-price-explanation")) {
           ok = false;
@@ -16248,15 +17310,20 @@
       case "cleansheet":
         csWireCleansheetExcelOnce();
         break;
+      case "indirect-harm":
+        try { idpIhWireOnce(); } catch (eIhInit) {
+          try { if (typeof console !== "undefined" && console.error) console.error("[indirect-harm] init", eIhInit); } catch (eLi3) {}
+        }
+        break;
       default:
         break;
     }
   }
 
   function setAppView(name) {
-    var o, h, c, p, r, ss, idx, io, pe, bulk, bO, bPS, bH, bC, bR, bSS, bIdx, bIO, bPE, fw, prevView, appMainWrap;
+    var o, h, c, p, r, ss, idx, io, pe, iharm, bulk, bO, bPS, bH, bC, bR, bSS, bIdx, bIO, bPE, bIharm, fw, prevView, appMainWrap;
     appMainWrap = $("app-main-wrap");
-    if (name !== "overview" && name !== "part-search" && name !== "rap" && name !== "harmonization" && name !== "single-source" && name !== "index-analysis" && name !== "index-opportunity" && name !== "price-explanation" && name !== "cleansheet") name = "overview";
+    if (name !== "overview" && name !== "part-search" && name !== "rap" && name !== "harmonization" && name !== "single-source" && name !== "index-analysis" && name !== "index-opportunity" && name !== "indirect-harm" && name !== "price-explanation" && name !== "cleansheet") name = "overview";
     prevView = document.body ? String(document.body.getAttribute("data-idp-app-view") || "") : "";
     if (prevView && prevView !== name) idpScrollStoreForView(prevView);
     currentAppView = name;
@@ -16302,6 +17369,7 @@
     ss = $("view-single-source");
     idx = $("view-index-analysis");
     io = $("view-index-opportunity");
+    iharm = $("view-indirect-harm");
     pe = $("view-price-explanation");
     bO = $("nav-overview");
     bPS = $("nav-part-search");
@@ -16311,6 +17379,7 @@
     bSS = $("nav-single-source");
     bIdx = $("nav-index-analysis");
     bIO = $("nav-index-opportunity");
+    bIharm = $("nav-indirect-harm");
     bPE = $("nav-price-explanation");
     fw = $("filter-wrap");
     if (fw) {
@@ -16330,6 +17399,7 @@
       if (ss) { ss.classList.add("hidden"); ss.setAttribute("aria-hidden", "true"); }
       if (idx) { idx.classList.add("hidden"); idx.setAttribute("aria-hidden", "true"); }
       if (io) { io.classList.add("hidden"); io.setAttribute("aria-hidden", "true"); }
+      if (iharm) { iharm.classList.add("hidden"); iharm.setAttribute("aria-hidden", "true"); }
     }
     function hideAllMain() {
       idpPeDestroyCharts();
@@ -16360,6 +17430,7 @@
       if (bSS) bSS.classList.remove("is-active");
       if (bIdx) bIdx.classList.remove("is-active");
       if (bIO) bIO.classList.remove("is-active");
+      if (bIharm) bIharm.classList.remove("is-active");
       if (bPE) bPE.classList.remove("is-active");
       setTimeout(function () {
         var k2;
@@ -16387,6 +17458,7 @@
       if (bSS) bSS.classList.remove("is-active");
       if (bIdx) bIdx.classList.remove("is-active");
       if (bIO) bIO.classList.remove("is-active");
+      if (bIharm) bIharm.classList.remove("is-active");
       if (bPE) bPE.classList.remove("is-active");
       try {
         syncPartSearchAfterFilter();
@@ -16409,6 +17481,7 @@
       if (bSS) bSS.classList.remove("is-active");
       if (bIdx) bIdx.classList.remove("is-active");
       if (bIO) bIO.classList.remove("is-active");
+      if (bIharm) bIharm.classList.remove("is-active");
       if (bPE) bPE.classList.remove("is-active");
       try {
         readFiltersFromForm();
@@ -16427,6 +17500,7 @@
       if (bSS) bSS.classList.remove("is-active");
       if (bIdx) bIdx.classList.remove("is-active");
       if (bIO) bIO.classList.remove("is-active");
+      if (bIharm) bIharm.classList.remove("is-active");
       if (bPE) bPE.classList.remove("is-active");
       if (bH) bH.classList.add("is-active");
       if (bC) bC.classList.remove("is-active");
@@ -16467,12 +17541,40 @@
       if (bIdx) bIdx.classList.remove("is-active");
       if (bPE) bPE.classList.remove("is-active");
       if (bIO) bIO.classList.add("is-active");
+      if (bIharm) bIharm.classList.remove("is-active");
       try {
         idpIoWireIndexPickerOnce();
         idpIoEnsurePartCache();
         idpIoRenderContent();
       } catch (eIoTab) {
         if (typeof console !== "undefined" && console.error) console.error("[index-opp tab]", eIoTab);
+      }
+      idpNavFinishScroll(name);
+      return;
+    }
+    if (name === "indirect-harm") {
+      /* Indirect Harmonization is a top-level page that reuses the
+       * standard harmonization math (harmonization-client.js) but on a
+       * slice that's (a) Indirect-only and (b) re-keyed via fuzzy
+       * Part Name clustering for rows whose Part Number is blank or
+       * non-numeric. See idpIhRender() for the orchestration. */
+      idpTeardownHarmonizationView();
+      destroyCleansheetChart();
+      hideAllMain();
+      if (iharm) { iharm.classList.remove("hidden"); iharm.removeAttribute("aria-hidden"); }
+      deactivateSpendReview();
+      if (bH) bH.classList.remove("is-active");
+      if (bC) bC.classList.remove("is-active");
+      if (bSS) bSS.classList.remove("is-active");
+      if (bIdx) bIdx.classList.remove("is-active");
+      if (bIO) bIO.classList.remove("is-active");
+      if (bIharm) bIharm.classList.remove("is-active");
+      if (bPE) bPE.classList.remove("is-active");
+      if (bIharm) bIharm.classList.add("is-active");
+      try {
+        idpIhRender();
+      } catch (eIhTab) {
+        if (typeof console !== "undefined" && console.error) console.error("[indirect-harm tab]", eIhTab);
       }
       idpNavFinishScroll(name);
       return;
@@ -16490,6 +17592,7 @@
       if (bC) bC.classList.remove("is-active");
       if (bIdx) bIdx.classList.remove("is-active");
       if (bIO) bIO.classList.remove("is-active");
+      if (bIharm) bIharm.classList.remove("is-active");
       if (bPE) bPE.classList.remove("is-active");
       if (bSS) bSS.classList.add("is-active");
       try {
@@ -16518,6 +17621,7 @@
         if (bC) bC.classList.remove("is-active");
         if (bSS) bSS.classList.remove("is-active");
         if (bIO) bIO.classList.remove("is-active");
+        if (bIharm) bIharm.classList.remove("is-active");
         if (bPE) bPE.classList.remove("is-active");
         if (bIdx) bIdx.classList.add("is-active");
         if (prevView && prevView !== "index-analysis") {
@@ -16579,6 +17683,7 @@
       if (bSS) bSS.classList.remove("is-active");
       if (bIdx) bIdx.classList.remove("is-active");
       if (bIO) bIO.classList.remove("is-active");
+      if (bIharm) bIharm.classList.remove("is-active");
       if (bPE) bPE.classList.add("is-active");
       try {
         readFiltersFromForm();
@@ -16605,6 +17710,7 @@
     if (bSS) bSS.classList.remove("is-active");
     if (bIdx) bIdx.classList.remove("is-active");
     if (bIO) bIO.classList.remove("is-active");
+    if (bIharm) bIharm.classList.remove("is-active");
     if (bPE) bPE.classList.remove("is-active");
     if (bH) bH.classList.remove("is-active");
     if (bC) bC.classList.add("is-active");
@@ -17446,6 +18552,13 @@
           idpIoEnsurePartCache();
           idpIoRenderContent();
         } catch (eIoR) {}
+      }
+    } else if (currentAppView === "indirect-harm") {
+      /* Indirect Harmonization recomputes its fuzzy clustering + harm
+       * payload from scratch on every filter change because the
+       * cluster keys are derived from the indirect-only slice. */
+      if (typeof idpIhRender === "function") {
+        try { idpIhRender(); } catch (eIhR) {}
       }
     }
     if (currentAppView === "rap") {
