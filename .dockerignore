@@ -28,6 +28,12 @@ scratch/
 tmp/
 terminals/
 
+# Local-only HTML copy with Tailwind Play CDN injected for `python -m http.server`.
+# Production must NOT bake this into the image (the Dockerfile sanity check
+# enforces no cdn.tailwindcss.com in index.html, but this file is a separate
+# artifact that should never leave the developer's machine).
+src/dashboard/Cummins_IDP_Dashboard.html
+
 # Tests / docs that don't need to ship
 tests/
 docs/

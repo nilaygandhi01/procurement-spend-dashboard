@@ -204,6 +204,11 @@ cython_debug/
 !/data/inputs/index-data/*.json
 
 # --- Repo layout (procurement-spend-dashboard) ---
+# Local-only renamed copy of the dashboard with the Tailwind Play CDN
+# script added so styles work when serving src/dashboard/ via
+# `python -m http.server`. Never commit; never bake into the image.
+src/dashboard/Cummins_IDP_Dashboard.html
+
 logs/*.log
 !logs/.gitkeep
 src/**/__pycache__/

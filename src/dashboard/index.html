@@ -487,7 +487,11 @@
         flex-direction: column;
         gap: 0.125rem;
         overflow: hidden;
-        max-height: 12rem;
+        /* Sized to fit ~10 nav buttons. The previous 12rem cap clipped the 6th button
+           (Indirect Harmonization) in the Spend Analysis section because overflow:hidden
+           masked everything past 192px. Keep a fixed max-height so the collapse/expand
+           transition still animates. */
+        max-height: 24rem;
         transition: max-height 0.28s ease;
         padding-left: 0.15rem;
       }
