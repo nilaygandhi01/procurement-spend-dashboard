@@ -18,17 +18,19 @@
 image:
   repository: mckinsey-cummins-idp-dashboard-docker-local.jfrog.io/procurement-spend-dashboard
   # Pinned to the SHA-suffixed tag emitted by the docker build that ran
-  # for commit e328317 (fix(sidebar): raise idp-nav-section-body max-height
-  # so the Indirect Harmonization button stops being clipped by the 12rem
-  # overflow:hidden cap on the section dropdown). Pinning to a SHA-suffixed
-  # tag forces a digest-different image reference, which together with
-  # `pullPolicy: Always` below guarantees a fresh registry pull on the
-  # next rollout (history of why: pre-build-#24 used the mutable
-  # floating "0.1.0" tag and ArgoCD's pod-replacement event reused a
-  # node-cached layer due to IfNotPresent, shipping stale bits). Keep
-  # this value in lockstep with the same field in procurement-spend-
-  # dashboard.yaml (the rendered manifest).
-  tag: "0.1.0-e328317f"
+  # for commit 369f6e6 (refactor(indirect-harm): mirror Harmonization
+  # tab layout exactly — IH tab now renders the same Overall Summary
+  # panel, 5-tile blue KPI strips per MECE category, View toggle, and
+  # row-click chart + line-detail drill-down as the Harmonization tab,
+  # all driven by the same shared render core). Pinning to a SHA-
+  # suffixed tag forces a digest-different image reference, which
+  # together with `pullPolicy: Always` below guarantees a fresh
+  # registry pull on the next rollout (history of why: pre-build-#24
+  # used the mutable floating "0.1.0" tag and ArgoCD's pod-replacement
+  # event reused a node-cached layer due to IfNotPresent, shipping
+  # stale bits). Keep this value in lockstep with the same field in
+  # procurement-spend-dashboard.yaml (the rendered manifest).
+  tag: "0.1.0-369f6e68"
   # Bumped from IfNotPresent → Always so future tag floats can't
   # silently degrade to a cached node image.
   pullPolicy: Always
