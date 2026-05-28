@@ -1076,7 +1076,8 @@
         gap: 0.35rem 0.45rem;
         align-items: flex-end;
       }
-      #idp-app #view-harmonization.harm-clean-view .harm-opportunity {
+      #idp-app #view-harmonization.harm-clean-view .harm-opportunity,
+      #idp-app #view-indirect-harm.harm-clean-view .harm-opportunity {
         display: none !important;
       }
       #idp-app .harm-toggle[aria-checked="false"] {
@@ -4337,35 +4338,82 @@
         aria-hidden="true"
         aria-label="Indirect harmonization analysis"
       >
+        <!--
+          Header bar is a structural twin of #view-harmonization so the page
+          chrome is identical. Only the title text, info-tip copy, and IDs
+          differ. The View toggle below is wired to the same
+          harmCleanViewEnabled state as the Harmonization toggle so the
+          Simple/Full preference carries across both tabs.
+        -->
         <div class="mb-3 border-b border-[#E6E6E6] pb-2 idp-harm-header-bar">
           <div class="idp-harm-header-bar-text">
-            <h2 class="m-0 text-base font-semibold" style="color: #333">Indirect Harmonization</h2>
-            <p class="mt-0.5 text-xs leading-snug idp-muted">
-              Unit-price harmonization opportunities for L1 Indirect parts. Items without a Part Number are grouped by a fuzzy match on Part Name (token-set Jaccard &ge; 0.80).
+            <!--
+              Info-tip is a SIBLING of (not nested inside) #ih-page-title
+              and #ih-strap because the shared render core overwrites
+              both elements via textContent on every render — anything
+              nested inside them would be wiped out. Wrapping the title
+              + info-tip in a flex container keeps them on the same row.
+            -->
+            <div class="flex items-center gap-1.5">
+              <h2 class="m-0 text-base font-semibold" style="color: #333" id="ih-page-title">Indirect Harmonization</h2>
               <span class="idp-info-tip" tabindex="0" role="img" aria-label="Methodology"
                 title="Indirect-only. For rows with a numeric Part Number we key on the part. For rows with a blank/non-numeric Part Number we key on a fuzzy cluster of the Part Description: lowercase + strip punctuation + drop stopwords (the/of/and/for/...) + sort tokens, then merge clusters whose token-set Jaccard >= 0.80. Clustering is blocked by L3 category to avoid cross-category merges. See INDEX_METHODOLOGY.md for the full pipeline.">&#9432;</span>
-            </p>
+            </div>
+            <p class="mt-0.5 text-xs leading-snug idp-muted" id="ih-strap">Unit-price harmonization opportunities for L1 Indirect parts. Items without a Part Number are grouped by a fuzzy match on Part Name (token-set Jaccard &ge; 0.80).</p>
+          </div>
+          <div class="flex shrink-0 items-center gap-2" id="ih-view-toggle-wrap">
+            <label for="ih-view-toggle" class="text-xs" style="color: #64748b">View</label>
+            <button
+              type="button"
+              id="ih-view-toggle"
+              role="switch"
+              aria-checked="false"
+              class="harm-toggle"
+              style="position: relative; width: 44px; height: 24px; border-radius: 12px; border: 1px solid #d1d5db; background: #f1f5f9; cursor: pointer; transition: all 0.2s; flex-shrink: 0"
+            >
+              <span
+                class="harm-toggle-slider"
+                style="position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: white; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2); transition: all 0.2s"
+              ></span>
+            </button>
+            <span id="ih-view-label" class="text-xs" style="color: #64748b; white-space: nowrap">Full</span>
           </div>
           <button
             type="button"
             id="ih-dl-btn"
-            class="download-all-btn hidden"
+            class="download-all-btn"
             aria-label="Download all indirect harmonization opportunities as Excel"
           >
             Download All Opportunities (Excel)
           </button>
         </div>
         <p id="ih-message" class="mb-3 hidden rounded-lg border border-[#E6E6E6] bg-[#FFF7ED] px-3 py-2 text-sm" style="color: #333; border-color: #f07f00"></p>
+        <!--
+          IH-specific diagnostic chips (rows considered, key split,
+          fuzzy-cluster merges). These do NOT exist on the Harmonization
+          tab because Harm uses server-pre-computed opportunities so the
+          per-row classification is trivial; the IH tab synthesizes part
+          keys client-side via fuzzy clustering, so we surface the
+          counts for transparency.
+        -->
         <div id="ih-status" class="mb-3 hidden flex-wrap items-center gap-2 text-xs idp-muted">
           <span id="ih-status-chip" class="inline-flex items-center gap-1 rounded-full border border-[#E6E6E6] bg-white px-2 py-0.5"></span>
           <span id="ih-fuzzy-chip" class="inline-flex items-center gap-1 rounded-full border border-[#E6E6E6] bg-white px-2 py-0.5"></span>
           <span id="ih-merged-chip" class="inline-flex items-center gap-1 rounded-full border border-[#E6E6E6] bg-white px-2 py-0.5"></span>
         </div>
-        <div id="ih-kpis" class="mb-3 grid grid-cols-2 sm:grid-cols-3 gap-3"></div>
-        <div id="ih-empty-state" class="rounded-lg border border-dashed border-[#E6E6E6] bg-white px-4 py-10 text-center text-sm idp-muted">
-          No indirect harmonization opportunities for the current filters.
+        <!--
+          Mount point for the SHARED harmonization render core. The core
+          (renderHarmonizationCore) appends the Overall Harmonization
+          Summary panel + Rollup table + 3 MECE category sections here,
+          same as it does into #harm-comparison-grid for the regular
+          Harmonization tab. Section/table IDs are prefixed with "ih-"
+          when rendering into this grid to avoid duplicate-ID collisions
+          with the other tab's DOM (both views live in the DOM at all
+          times; only one is unhidden).
+        -->
+        <div id="ih-comparison-grid" class="idp-harm-grid-tight flex flex-col gap-4">
+          <p class="text-sm idp-muted" id="ih-empty">Loading indirect harmonization data…</p>
         </div>
-        <div id="ih-content" class="hidden flex-col gap-4"></div>
       </section>
       <section
         id="view-single-source"
@@ -4866,7 +4914,7 @@
   var harmCleanViewEnabled = false;
   currentAppView = document.body && document.body.getAttribute("data-idp-app-view") ? String(document.body.getAttribute("data-idp-app-view")) : "overview";
   if (currentAppView === "harmonization-direct" || currentAppView === "harmonization-indirect") { currentAppView = "harmonization"; }
-  if (currentAppView !== "overview" && currentAppView !== "part-search" && currentAppView !== "rap" && currentAppView !== "harmonization" && currentAppView !== "single-source" && currentAppView !== "index-analysis" && currentAppView !== "index-opportunity" && currentAppView !== "price-explanation" && currentAppView !== "cleansheet") { currentAppView = "overview"; }
+  if (currentAppView !== "overview" && currentAppView !== "part-search" && currentAppView !== "rap" && currentAppView !== "harmonization" && currentAppView !== "single-source" && currentAppView !== "index-analysis" && currentAppView !== "index-opportunity" && currentAppView !== "indirect-harm" && currentAppView !== "price-explanation" && currentAppView !== "cleansheet") { currentAppView = "overview"; }
   if (document.body) { document.body.setAttribute("data-idp-app-view", currentAppView); }
   /** DOM helper — defined early so tab handlers never reference it before initialization. */
   function $(id) {
@@ -6479,14 +6527,26 @@
     }
   }
   function applyHarmonizationViewMode() {
-    var container = $("view-harmonization");
-    if (!container) return;
-    if (harmCleanViewEnabled) container.classList.add("harm-clean-view");
-    else container.classList.remove("harm-clean-view");
+    /* The clean-view class drives the CSS that hides non-essential
+       chrome. Apply / clear it on BOTH the Harmonization view and the
+       Indirect Harmonization view so the Simple/Full preference carries
+       across tabs without needing two separate state variables. */
+    var containers = [$("view-harmonization"), $("view-indirect-harm")];
+    var i, c;
+    for (i = 0; i < containers.length; i++) {
+      c = containers[i];
+      if (!c) continue;
+      if (harmCleanViewEnabled) c.classList.add("harm-clean-view");
+      else c.classList.remove("harm-clean-view");
+    }
   }
-  function wireHarmonizationViewToggle() {
-    var toggle = $("harm-view-toggle");
-    var label = $("harm-view-label");
+  /* Generic wirer used by both the Harm tab and the IH tab. Each tab
+     has its own #harm-view-toggle / #ih-view-toggle DOM but both
+     update the shared harmCleanViewEnabled state and call
+     applyHarmonizationViewMode() so the change is reflected everywhere. */
+  function _idpWireHarmonizationStyleToggle(toggleId, labelId) {
+    var toggle = $(toggleId);
+    var label = $(labelId);
     if (!toggle) return;
     if (toggle.getAttribute("data-wired") === "1") return;
     toggle.setAttribute("data-wired", "1");
@@ -6497,14 +6557,31 @@
     }
     toggle.addEventListener("click", function () {
       harmCleanViewEnabled = !harmCleanViewEnabled;
-      toggle.setAttribute("aria-checked", harmCleanViewEnabled ? "true" : "false");
-      if (label) {
-        label.textContent = harmCleanViewEnabled ? "Clean" : "Full";
-        label.style.color = harmCleanViewEnabled ? "#1F3A8A" : "#64748b";
-      }
+      /* Sync both toggles so their on/off state matches the new
+         shared value, regardless of which one the user clicked. */
+      _idpSyncHarmonizationToggleVisuals();
       applyHarmonizationViewMode();
     });
     applyHarmonizationViewMode();
+  }
+  function _idpSyncHarmonizationToggleVisuals() {
+    var pairs = [["harm-view-toggle", "harm-view-label"], ["ih-view-toggle", "ih-view-label"]];
+    var i, tgl, lbl;
+    for (i = 0; i < pairs.length; i++) {
+      tgl = $(pairs[i][0]);
+      lbl = $(pairs[i][1]);
+      if (tgl) tgl.setAttribute("aria-checked", harmCleanViewEnabled ? "true" : "false");
+      if (lbl) {
+        lbl.textContent = harmCleanViewEnabled ? "Clean" : "Full";
+        lbl.style.color = harmCleanViewEnabled ? "#1F3A8A" : "#64748b";
+      }
+    }
+  }
+  function wireHarmonizationViewToggle() {
+    _idpWireHarmonizationStyleToggle("harm-view-toggle", "harm-view-label");
+  }
+  function wireIndirectHarmonizationViewToggle() {
+    _idpWireHarmonizationStyleToggle("ih-view-toggle", "ih-view-label");
   }
   function initHarmFfDropdowns() {
     var bar;
@@ -6959,10 +7036,30 @@
     return it;
   }
   function harmRawRowsForPart(partKey) {
-    var rows, pk, fn;
+    var rows, pk, fn, members, set, i, idxNum, baseRow, fuzzyRows;
     rows = D.rows;
     if (!rows || !rows.length || !partKey) return [];
     pk = String(partKey).trim();
+    /* IH#FUZZY#<n> is the synthetic key the Indirect Harmonization tab
+       assigns to a cluster of rows whose Part Number was blank but
+       whose Part Name fuzzy-matched into the same group. The cluster
+       membership (list of original D.rows indices) is stashed on the
+       global window._idpIhFuzzyMembersByKey map at IH render time.
+       For these keys we cannot match by r.part because every member
+       row has either no part number or a non-numeric one — so we
+       fall back to looking up the captured row indices. */
+    if (pk.indexOf("IH#FUZZY#") === 0) {
+      members = (typeof window !== "undefined" && window._idpIhFuzzyMembersByKey) ? window._idpIhFuzzyMembersByKey[pk] : null;
+      if (!members || !members.length) return [];
+      fuzzyRows = [];
+      for (i = 0; i < members.length; i++) {
+        idxNum = +members[i];
+        if (isNaN(idxNum) || idxNum < 0 || idxNum >= rows.length) continue;
+        baseRow = rows[idxNum];
+        if (baseRow) fuzzyRows.push(baseRow);
+      }
+      return fuzzyRows;
+    }
     fn = typeof idpHarmonizationItemKey === "function" ? idpHarmonizationItemKey : null;
     return rows.filter(function (r) {
       if (!r) return false;
@@ -7577,11 +7674,12 @@
     return outer;
   }
   /** Top-level aggregate KPI strip + collapsible (overall-summary). */
-  function harmAppendOverallSummarySection(fGrid, filteredOpp) {
+  function harmAppendOverallSummarySection(fGrid, filteredOpp, idPrefix) {
+    var prefix = idPrefix ? String(idPrefix) : "";
     var inner = document.createElement("div");
     inner.className = "harmonization-section-inner";
     harmAppendCategoryKpiStrip(inner, filteredOpp);
-    var wrapped = harmBuildCollapsibleSection("overall-summary", {
+    var wrapped = harmBuildCollapsibleSection(prefix + "overall-summary", {
       title: "Overall Harmonization Summary",
       subtitle: "All opportunities across categories",
       subtitleClass: "harm-opportunity",
@@ -9000,7 +9098,7 @@
     }
   }
   /** Rollup table: one row per MECE category + total (display-only aggregation of payload fields). */
-  function harmAppendCategoryRollupTable(fGrid, cat1, cat2, cat3) {
+  function harmAppendCategoryRollupTable(fGrid, cat1, cat2, cat3, idPrefix) {
     var inner, tbl, thead, tr, th, tb, rows, ri, a1, a2, a3, tSp, tQ, tSv, tN, tdCell, meta;
     if (!fGrid) return;
     a1 = harmAggregateOppsList(cat1);
@@ -9062,8 +9160,9 @@
     tbl.appendChild(tb);
     inner.appendChild(tbl);
     (function () {
+      var rollupPrefix = idPrefix ? String(idPrefix) : "";
       var rollupOuter = harmBuildCollapsibleSection(
-        "metrics-by-category",
+        rollupPrefix + "metrics-by-category",
         {
           title: "Harmonization metrics by opportunity category",
           subtitle:
@@ -9098,7 +9197,13 @@
     colSpan = harmKind === 2 ? 7 : 5;
     secInner = document.createElement("div");
     secInner.className = "harmonization-section-inner";
-    cardsSectionId = "category-" + harmKind + "-cards";
+    /* Section ID for the per-MECE KPI strip collapse toggle. Defaults
+       to the original "category-{kind}-cards" form so the Harmonization
+       tab keeps its long-standing collapse-state persistence key. The
+       IH tab passes opts.sectionIdPrefix = "ih-" so its sections live
+       in a separate ID namespace and never collide with the Harm tab
+       when both views are present in the DOM. */
+    cardsSectionId = (opts && opts.sectionIdPrefix ? String(opts.sectionIdPrefix) : "") + "category-" + harmKind + "-cards";
     kpiShell = document.createElement("div");
     kpiShell.className = "idp-harm-kpi-shell relative";
     kpiToggle = document.createElement("button");
@@ -9358,7 +9463,8 @@
     secInner.appendChild(wrapScroll);
     if (harmMoreBtnWrap) secInner.appendChild(harmMoreBtnWrap);
     (function () {
-      var collapseSectionId = harmKind === 1 ? "category-1" : harmKind === 2 ? "category-2" : "category-3";
+      var outerPrefix = opts && opts.sectionIdPrefix ? String(opts.sectionIdPrefix) : "";
+      var collapseSectionId = outerPrefix + (harmKind === 1 ? "category-1" : harmKind === 2 ? "category-2" : "category-3");
       var wrapped = harmBuildCollapsibleSection(collapseSectionId, {
         title: title,
         subtitle: "",
@@ -9369,25 +9475,67 @@
       fGrid.appendChild(wrapped);
     })();
   }
-  function renderHarmonizationUnified() {
+  /* ============================================
+   * Default render context for the Harmonization tab. The Indirect
+   * Harmonization tab (renderIndirectHarmonizationUnified) supplies a
+   * twin ctx with overrides so it can render the same layout against
+   * a different mount and a different data source without duplicating
+   * any of the layout code.
+   * ============================================ */
+  function _harmDefaultRenderCtx() {
+    return {
+      viewName: "harmonization",
+      fGridId: "harm-comparison-grid",
+      messageId: "harm-message",
+      titleId: "harm-page-title",
+      strapId: "harm-strap",
+      titleText: "Harmonization",
+      logTag: "harm",
+      sectionIdPrefix: "",
+      tableKeyPrefix: "",
+      payloadGlobalKey: "_idpLastHarmPayload",
+      opsGlobalKey: "_idpHarmUnifiedOps",
+      rowsGlobalKey: "_idpHarmUnifiedRows",
+      yearGlobalKey: "_idpHarmUnifiedYear",
+      beforeRender: function () {
+        harmUnifiedPopulateCategoryFilters();
+        harmLogHarmPredicateDebug();
+      },
+      getPayload: function () { return D.harmonization_results; },
+      getRowsSlice: function () { return harmUnifiedSliceRows(); },
+      getKeySet: function (rowsSlice) { return harmUnifiedSliceKeySetCached(rowsSlice); },
+      buildStrap: function (capPrefix, spreadV) {
+        return capPrefix + " · Pre-computed MECE (data.json) · tab filters · max unit-price spread cap $" + spreadV + " · Click a row for chart + line detail.";
+      },
+      emptyPayloadMsg: "Harmonization data not found. Run refresh_data.py and reload data.json.",
+      emptyAllOppsMsg: "No harmonization opportunities in data.json. Run refresh_data.py to populate harmonization_results.",
+      emptyFilteredMsgFn: function (rowsSlice) {
+        return rowsSlice.length === 0 ? "No rows match harmonization filters." : "No harmonization opportunities match this filter combination (server MECE keys vs. current slice).";
+      },
+      onAfterFilter: null,
+      onAfterRender: null
+    };
+  }
+
+  function renderHarmonizationUnified(ctx) {
+    ctx = ctx || _harmDefaultRenderCtx();
     var rowsSlice, ySel, hr, allFlat, keySet, filteredOpp, filteredCat1, filteredCat2, filteredCat3, fGrid, mEl, cTitle, cStrap, tRow, i, p, yYear, cap, spreadV, totalSav, totalSpendCard, pctSpend, p80n, hbarDisplay, j, hsj, pk, hm;
-    if (currentAppView !== "harmonization") return;
+    if (currentAppView !== ctx.viewName) return;
     if (_idpHarmRendering) {
-      if (typeof console !== "undefined" && console.warn) console.warn("[harm] renderHarmonizationUnified re-entry blocked");
+      if (typeof console !== "undefined" && console.warn) console.warn("[" + ctx.logTag + "] renderHarmonizationUnified re-entry blocked");
       return;
     }
     _idpHarmRendering = true;
-    if (typeof console !== "undefined" && console.log) console.log("=== HARMONIZATION TAB START ===");
+    if (typeof console !== "undefined" && console.log) console.log("=== " + ctx.logTag.toUpperCase() + " TAB START ===");
     try {
-      harmUnifiedPopulateCategoryFilters();
-      rowsSlice = harmUnifiedSliceRows();
-      harmLogHarmPredicateDebug();
+      if (typeof ctx.beforeRender === "function") ctx.beforeRender();
+      rowsSlice = ctx.getRowsSlice();
       ySel = harmNormalizedYearSel();
-      hr = D.harmonization_results;
-      fGrid = $("harm-comparison-grid");
-      mEl = $("harm-message");
-      cTitle = $("harm-page-title");
-      cStrap = $("harm-strap");
+      hr = ctx.getPayload();
+      fGrid = $(ctx.fGridId);
+      mEl = $(ctx.messageId);
+      cTitle = $(ctx.titleId);
+      cStrap = $(ctx.strapId);
       yYear = hr && (hr.analysis_year != null ? hr.analysis_year : hr.year);
       spreadV =
         hr && hr.harmonization_meta && hr.harmonization_meta.max_unit_price_spread_usd != null
@@ -9397,34 +9545,38 @@
             : 25000;
 
       if (!hr) {
-        if (typeof console !== "undefined" && console.error) console.error("[harm] No harmonization_results on D");
+        if (typeof console !== "undefined" && console.error) console.error("[" + ctx.logTag + "] No harmonization payload from getPayload()");
         harmSetHarmonizationKpiNodes(null);
         if (mEl) {
           mEl.classList.remove("hidden");
-          mEl.textContent = "Harmonization data not found. Run refresh_data.py and reload data.json.";
+          mEl.textContent = ctx.emptyPayloadMsg;
         }
         destroyHarmonizationCharts();
         if (fGrid) fGrid.innerHTML = "";
-        try { window._idpLastHarmPayload = null; } catch (eNull) {}
+        try { window[ctx.payloadGlobalKey] = null; } catch (eNull) {}
         return;
       }
 
       if (typeof console !== "undefined" && console.log) {
         try {
-          console.log("[harm] Server payload message:", hr.message, "analysis_year:", yYear);
-          console.log("[harm] Tab slice row count:", rowsSlice.length);
-          console.log("[harm] Category blocks:", hr.categories ? hr.categories.length : 0);
+          console.log("[" + ctx.logTag + "] Payload message:", hr.message, "analysis_year:", yYear);
+          console.log("[" + ctx.logTag + "] Tab slice row count:", rowsSlice.length);
+          console.log("[" + ctx.logTag + "] Category blocks:", hr.categories ? hr.categories.length : 0);
         } catch (eLog1) {}
       }
 
       allFlat = idpHarmFlattenServerOpportunities(hr);
-      keySet = harmUnifiedSliceKeySetCached(rowsSlice);
+      keySet = ctx.getKeySet(rowsSlice);
       filteredOpp = [];
       for (i = 0; i < allFlat.length; i++) {
         p = allFlat[i];
         if (!p) continue;
         pk = harmHarmonizationPartKey(p);
         if (pk && keySet[pk]) filteredOpp.push(p);
+      }
+
+      if (typeof ctx.onAfterFilter === "function") {
+        try { ctx.onAfterFilter(filteredOpp, allFlat, rowsSlice); } catch (eAf) {}
       }
 
       filteredCat1 = [];
@@ -9441,10 +9593,10 @@
 
       if (typeof console !== "undefined" && console.log) {
         try {
-          console.log("[harm] Server opportunities (flat):", allFlat.length);
-          console.log("[harm] After tab filters (key match):", filteredOpp.length);
+          console.log("[" + ctx.logTag + "] Opportunities (flat):", allFlat.length);
+          console.log("[" + ctx.logTag + "] After tab filters (key match):", filteredOpp.length);
           console.log(
-            "[harm] Cat1:",
+            "[" + ctx.logTag + "] Cat1:",
             filteredCat1.length,
             "· Cat2:",
             filteredCat2.length,
@@ -9477,13 +9629,13 @@
         categories: hr.categories,
         all_opportunities: filteredOpp
       };
-      try { window._idpLastHarmPayload = hbarDisplay; } catch (eLast) {}
+      try { window[ctx.payloadGlobalKey] = hbarDisplay; } catch (eLast) {}
 
       harmSetHarmonizationKpiNodes(hbarDisplay);
 
       cap = ySel === "all" ? ("Auto analysis year " + (yYear || "—")) : ("Calendar " + ySel);
-      if (cTitle) cTitle.textContent = "Harmonization";
-      if (cStrap) cStrap.textContent = cap + " · Pre-computed MECE (data.json) · tab filters · max unit-price spread cap $" + spreadV + " · Click a row for chart + line detail.";
+      if (cTitle) cTitle.textContent = ctx.titleText;
+      if (cStrap) cStrap.textContent = ctx.buildStrap(cap, spreadV);
       if (mEl) {
         if (String(hr.message || "") !== "ok" && hr.message != null && hr.message !== "") {
           mEl.classList.remove("hidden");
@@ -9500,27 +9652,38 @@
 
       if (!allFlat.length) {
         tRow = document.createElement("p");
-        tRow.id = "harm-empty";
+        tRow.id = ctx.sectionIdPrefix + "harm-empty";
         tRow.className = "text-sm idp-muted mb-4";
-        tRow.textContent = "No harmonization opportunities in data.json. Run refresh_data.py to populate harmonization_results.";
+        tRow.textContent = ctx.emptyAllOppsMsg;
         fGrid.appendChild(tRow);
         return;
       }
 
       if (!filteredOpp.length) {
         tRow = document.createElement("p");
-        tRow.id = "harm-empty";
+        tRow.id = ctx.sectionIdPrefix + "harm-empty";
         tRow.className = "text-sm idp-muted mb-4";
-        tRow.textContent = rowsSlice.length === 0 ? "No rows match harmonization filters." : "No harmonization opportunities match this filter combination (server MECE keys vs. current slice).";
+        tRow.textContent = ctx.emptyFilteredMsgFn(rowsSlice);
         fGrid.appendChild(tRow);
         return;
       }
 
+      /* Globals consumed by row-click chart + line-detail and by the
+         Excel export. Both tabs share these globals because only one
+         view is active at a time; the most recently rendered tab's
+         data wins, which is what we want for the active tab's row
+         clicks. */
+      window[ctx.opsGlobalKey] = filteredOpp;
+      window[ctx.rowsGlobalKey] = rowsSlice;
+      window[ctx.yearGlobalKey] = yYear;
+      /* Always update the legacy Harm globals too, so anywhere that
+         reads window._idpHarmUnifiedRows / Ops / Year directly (chart
+         handlers, raw-row lookups, etc.) keeps working for IH. */
       window._idpHarmUnifiedOps = filteredOpp;
       window._idpHarmUnifiedRows = rowsSlice;
       window._idpHarmUnifiedYear = yYear;
-      harmAppendOverallSummarySection(fGrid, filteredOpp);
-      harmAppendCategoryRollupTable(fGrid, filteredCat1, filteredCat2, filteredCat3);
+      harmAppendOverallSummarySection(fGrid, filteredOpp, ctx.sectionIdPrefix);
+      harmAppendCategoryRollupTable(fGrid, filteredCat1, filteredCat2, filteredCat3, ctx.sectionIdPrefix);
       filteredCat1 = harmSortOppsBySavingsDesc(filteredCat1);
       filteredCat2 = harmSortOppsBySavingsDesc(filteredCat2);
       filteredCat3 = harmSortOppsBySavingsDesc(filteredCat3);
@@ -9534,7 +9697,8 @@
         rowsSlice: rowsSlice,
         yYear: yYear,
         harmKind: 1,
-        tableKey: "cat1"
+        tableKey: ctx.tableKeyPrefix + "cat1",
+        sectionIdPrefix: ctx.sectionIdPrefix
       });
       harmRenderCategoryOpportunitySection(fGrid, {
         title: "CATEGORY 2: DIFFERENT SUPPLIER, DIFFERENT PLANT (" + (yYear || "") + ")",
@@ -9546,7 +9710,8 @@
         rowsSlice: rowsSlice,
         yYear: yYear,
         harmKind: 2,
-        tableKey: "cat2"
+        tableKey: ctx.tableKeyPrefix + "cat2",
+        sectionIdPrefix: ctx.sectionIdPrefix
       });
       harmRenderCategoryOpportunitySection(fGrid, {
         title: "CATEGORY 3: SAME SUPPLIER, DIFFERENT SITE (" + (yYear || "") + ")",
@@ -9558,26 +9723,30 @@
         rowsSlice: rowsSlice,
         yYear: yYear,
         harmKind: 3,
-        tableKey: "cat3"
+        tableKey: ctx.tableKeyPrefix + "cat3",
+        sectionIdPrefix: ctx.sectionIdPrefix
       });
       loadCollapseStates();
+      if (typeof ctx.onAfterRender === "function") {
+        try { ctx.onAfterRender(filteredOpp, hbarDisplay, rowsSlice); } catch (eAr) {}
+      }
     } catch (errHarm) {
       if (typeof console !== "undefined" && console.error) {
-        try { console.error("[harm] Harmonization rendering failed:", errHarm); } catch (eEr) {}
-        try { console.error("[harm] Stack:", errHarm && errHarm.stack); } catch (eSt) {}
+        try { console.error("[" + ctx.logTag + "] Harmonization rendering failed:", errHarm); } catch (eEr) {}
+        try { console.error("[" + ctx.logTag + "] Stack:", errHarm && errHarm.stack); } catch (eSt) {}
       }
-      if ($("harm-message")) {
-        $("harm-message").classList.remove("hidden");
-        $("harm-message").textContent = "Harmonization error: " + (errHarm && errHarm.message ? String(errHarm.message) : String(errHarm));
+      if ($(ctx.messageId)) {
+        $(ctx.messageId).classList.remove("hidden");
+        $(ctx.messageId).textContent = "Harmonization error: " + (errHarm && errHarm.message ? String(errHarm.message) : String(errHarm));
       }
       destroyHarmonizationCharts();
-      if ($("harm-comparison-grid")) $("harm-comparison-grid").innerHTML = "";
+      if ($(ctx.fGridId)) $(ctx.fGridId).innerHTML = "";
     } finally {
       _idpHarmRendering = false;
       try {
         applyHarmonizationViewMode();
       } catch (eHarmView) { }
-      if (typeof console !== "undefined" && console.log) console.log("=== HARMONIZATION TAB COMPLETE ===");
+      if (typeof console !== "undefined" && console.log) console.log("=== " + ctx.logTag.toUpperCase() + " TAB COMPLETE ===");
     }
   }
 
@@ -10725,16 +10894,18 @@
    *  additively filters whatever the user has selected upstream. */
   function idpIhGetIndirectRows() {
     var idx = (typeof getFiltered === "function") ? getFiltered() : null;
-    if (!idx || !idx.length) return [];
+    if (!idx || !idx.length) return { rows: [], dIdx: [] };
     var rows = D && D.rows ? D.rows : [];
-    var out = [], i, r;
+    var outRows = [], outIdx = [], i, di, r;
     for (i = 0; i < idx.length; i++) {
-      r = rows[idx[i]];
+      di = idx[i];
+      r = rows[di];
       if (!r) continue;
       if (idpRowSpendTypeString(r) !== "Indirect") continue;
-      out.push(r);
+      outRows.push(r);
+      outIdx.push(di);
     }
-    return out;
+    return { rows: outRows, dIdx: outIdx };
   }
 
   /** Build the cluster lookup table for the indirect slice and return
@@ -10749,7 +10920,15 @@
    *  metadata (was-fuzzy, display name, merged-from list) on `_ihFuzzy`
    *  so the renderer can surface the badge + tooltip without recomputing.
    */
-  function idpIhPrepareRows(indirectRows) {
+  function idpIhPrepareRows(indirectSlice) {
+    /* indirectSlice = { rows: [...], dIdx: [...] } from
+       idpIhGetIndirectRows. The parallel dIdx array records each
+       row's original index into D.rows so the fuzzy cluster member
+       list can be expressed in D.rows terms — that's what
+       harmRawRowsForPart needs to look up raw rows for the
+       row-click chart + line-detail drilldown. */
+    var indirectRows = indirectSlice && indirectSlice.rows ? indirectSlice.rows : (indirectSlice || []);
+    var dRowIdxBySlot = indirectSlice && indirectSlice.dIdx ? indirectSlice.dIdx : null;
     var M = (typeof window !== "undefined" && window.IDP_INDEX_MATH) || null;
     var fuzzyFn = M && typeof M.fuzzyClusterNames === "function" ? M.fuzzyClusterNames : null;
     var defaults = M && M.FUZZY_NAME_DEFAULTS ? M.FUZZY_NAME_DEFAULTS : { threshold: 0.80, minTokenLen: 2 };
@@ -10759,18 +10938,19 @@
     var fromPartNumber = 0;
     var fromFuzzy = 0;
     var droppedNoSignal = 0;
-    var i, r, item;
+    var i, r, item, dRowIdx;
     /* Pass 1: classify each row. */
     for (i = 0; i < indirectRows.length; i++) {
       r = indirectRows[i];
       if (!r) continue;
+      dRowIdx = dRowIdxBySlot ? dRowIdxBySlot[i] : -1;
       if (idpIhHasRealPartNumber(r)) {
-        prepared.push({ row: r, source: "part", fuzzyMembers: null, displayName: null });
+        prepared.push({ row: r, dRowIdx: dRowIdx, source: "part", fuzzyMembers: null, displayName: null });
         fromPartNumber++;
       } else {
         item = idpIhRowToClusterItem(i, r);
         if (!item) { droppedNoSignal++; continue; }
-        blankRows.push({ row: r, listIdx: blankClusterItems.length });
+        blankRows.push({ row: r, dRowIdx: dRowIdx, listIdx: blankClusterItems.length });
         blankClusterItems.push(item);
       }
     }
@@ -10804,6 +10984,13 @@
         }
       }
     }
+    /* Parallel map: synthetic "IH#FUZZY#<cid>" -> array of D.rows
+       indices that belong to that cluster. Consumed by the
+       fuzzy-aware branch in harmRawRowsForPart so the row-click
+       chart + line-detail drilldown can find the underlying raw
+       rows even though the cluster's synthetic part number was
+       generated client-side. */
+    var fuzzyDRowsByClusterId = {};
     for (i = 0; i < blankRows.length; i++) {
       var brec = blankRows[i];
       var cid = clusterInfo && clusterInfo.clusterIdByItemIdx
@@ -10819,11 +11006,16 @@
       var members = clusterMembers[cid] || [];
       prepared.push({
         row: brec.row,
+        dRowIdx: brec.dRowIdx,
         source: "fuzzy",
         fuzzyMembers: members,
         displayName: displayName,
         clusterId: cid
       });
+      if (brec.dRowIdx != null && brec.dRowIdx >= 0) {
+        if (!fuzzyDRowsByClusterId[cid]) fuzzyDRowsByClusterId[cid] = [];
+        fuzzyDRowsByClusterId[cid].push(brec.dRowIdx);
+      }
       fromFuzzy++;
     }
     /* Pass 4: emit clones with the synthetic part key stamped on.
@@ -10859,8 +11051,28 @@
       }
       clones.push(clone);
     }
+    /* Build the synthKey -> [D.rows indices] map keyed by the same
+       "IH#FUZZY#<cid>" string we stamp on the clones above. */
+    var fuzzyMembersByKey = {};
+    var fuzzyMetaByKey = {};
+    var cidStr;
+    for (cidStr in fuzzyDRowsByClusterId) {
+      if (!Object.prototype.hasOwnProperty.call(fuzzyDRowsByClusterId, cidStr)) continue;
+      fuzzyMembersByKey["IH#FUZZY#" + cidStr] = fuzzyDRowsByClusterId[cidStr];
+    }
+    for (j = 0; j < prepared.length; j++) {
+      var prec = prepared[j];
+      if (prec && prec.source === "fuzzy" && prec.clusterId != null) {
+        fuzzyMetaByKey["IH#FUZZY#" + prec.clusterId] = {
+          displayName: prec.displayName || "",
+          members: prec.fuzzyMembers || []
+        };
+      }
+    }
     return {
       rows: clones,
+      fuzzyMembersByKey: fuzzyMembersByKey,
+      fuzzyMetaByKey: fuzzyMetaByKey,
       diagnostics: {
         indirectRowsIn: indirectRows.length,
         rowsPrepared: clones.length,
@@ -10884,6 +11096,10 @@
     if (btn && typeof btn.addEventListener === "function") {
       btn.addEventListener("click", function () { idpIhExport(); });
     }
+    /* The IH View toggle (Simple/Full) is wired the same way as the
+       Harm toggle and shares the harmCleanViewEnabled state so the
+       preference applies to both tabs simultaneously. */
+    try { wireIndirectHarmonizationViewToggle(); } catch (eToggle) {}
   }
 
   function idpIhFmtUsd(v) {
@@ -10909,28 +11125,12 @@
     });
   }
 
-  /** Build the KPI card markup. Mirrors the visual idiom used elsewhere
-   *  in the dashboard (rounded panel, small uppercase label, big number). */
-  function idpIhBuildKpiCards(payload) {
-    var totalOpp = payload && payload.total_opportunity_usd != null ? payload.total_opportunity_usd : 0;
-    var p80 = payload && payload.parts_for_80_pct_value != null ? payload.parts_for_80_pct_value : 0;
-    var pct = payload && payload.pct_savings_vs_spend != null ? payload.pct_savings_vs_spend : null;
-    var spend = payload && payload.current_year_spend_usd != null ? payload.current_year_spend_usd : 0;
-    var partsAn = payload && payload.parts_analyzed != null ? payload.parts_analyzed : 0;
-    var fragParts = payload && payload.price_fragmented_parts_count != null ? payload.price_fragmented_parts_count : 0;
-    function card(label, value, sub) {
-      return '<div class="rounded-lg border border-[#E6E6E6] bg-white p-3 shadow-sm">'
-        + '<div class="text-[10px] font-semibold uppercase tracking-wide" style="color:#64748b">' + idpIhEsc(label) + '</div>'
-        + '<div class="mt-1 text-lg font-semibold" style="color:#333">' + idpIhEsc(value) + '</div>'
-        + (sub ? '<div class="mt-0.5 text-[11px] idp-muted">' + idpIhEsc(sub) + '</div>' : '')
-        + '</div>';
-    }
-    return [
-      card("Total Opportunity",        idpIhFmtUsd(totalOpp),  pct != null ? idpIhFmtPct(pct) + " of indirect spend" : ""),
-      card("Parts for 80% of Value",   idpIhFmtInt(p80),       partsAn ? "out of " + idpIhFmtInt(partsAn) + " items" : ""),
-      card("Price-Fragmented Items",   idpIhFmtInt(fragParts), spend ? "Current spend " + idpIhFmtUsd(spend) : "")
-    ].join("");
-  }
+  /* The old IH-only KPI card builder (idpIhBuildKpiCards) was retired
+   * when the tab was refactored to share the Harmonization tab's full
+   * render pipeline. The shared layout produces the same 5-tile blue
+   * KPI strip per MECE category section via harmAppendCategoryKpiStrip,
+   * driven by the standard payload shape, so a separate KPI scaffold
+   * here would just diverge over time. */
 
   function idpIhCategoryLabel(p) {
     var hm = +(p && p.harm_mece);
@@ -11007,213 +11207,148 @@
     return n;
   }
 
-  /** Render the opportunity table (Top-by-savings, with fuzzy badge,
-   *  category, site/supplier counts, savings, and expand affordance). */
-  function idpIhBuildOpportunityTable(opps) {
-    if (!opps || !opps.length) {
-      return '<div class="rounded-lg border border-dashed border-[#E6E6E6] bg-white px-4 py-8 text-center text-sm idp-muted">No harmonization opportunities to display.</div>';
-    }
-    var rowsHtml = [];
-    var i, p, isFuzzy, dn, sav, sp, cat, sites, sups, badge, tip, rowId;
-    for (i = 0; i < opps.length; i++) {
-      p = opps[i];
-      if (!p) continue;
-      isFuzzy = idpIhIsFuzzyOpp(p);
-      dn = idpIhOppDisplayName(p);
-      sav = idpIhOppSavings(p);
-      sp = idpIhOppSpend(p);
-      cat = idpIhCategoryLabel(p);
-      sites = idpIhOppDistinct(p, "Site");
-      sups = idpIhOppDistinct(p, "Supplier");
-      rowId = "ih-row-" + i;
-      if (isFuzzy) {
-        var memberList = (p._ihMembers && p._ihMembers.length)
-          ? p._ihMembers.slice(0, 12).join(" · ") + (p._ihMembers.length > 12 ? " · …(+" + (p._ihMembers.length - 12) + ")" : "")
-          : "";
-        tip = memberList
-          ? "Grouped via fuzzy Part Name match. Merged descriptions: " + memberList
-          : "Grouped via fuzzy Part Name match (no Part Number on source rows).";
-        badge = '<span class="idp-info-tip" tabindex="0" role="img" aria-label="Fuzzy match" title="' + idpIhEsc(tip) + '" style="margin-left:6px;font-size:10px;font-style:italic;color:#7c3aed;border:1px solid #ddd6fe;border-radius:9999px;padding:1px 6px;background:#faf5ff;cursor:help">fuzzy</span>';
-      } else {
-        badge = '';
-      }
-      rowsHtml.push(
-        '<tr class="ih-opp-row" data-ih-row="' + rowId + '">' +
-          '<td class="px-2 py-1.5 align-top">' +
-            '<button type="button" class="ih-toggle-drill text-xs" aria-expanded="false" style="border:1px solid #E6E6E6;border-radius:4px;background:#f8fafc;padding:1px 6px;cursor:pointer;color:#64748b">+</button>' +
-          '</td>' +
-          '<td class="px-2 py-1.5 align-top">' +
-            '<div style="font-weight:500;color:#333">' + idpIhEsc(dn) + badge + '</div>' +
-            '<div class="text-[11px] idp-muted">' + idpIhEsc(cat) + '</div>' +
-          '</td>' +
-          '<td class="px-2 py-1.5 align-top text-right tabular-nums">' + idpIhFmtUsd(sav) + '</td>' +
-          '<td class="px-2 py-1.5 align-top text-right tabular-nums">' + idpIhFmtUsd(sp) + '</td>' +
-          '<td class="px-2 py-1.5 align-top text-right tabular-nums">' + idpIhFmtInt(sites) + '</td>' +
-          '<td class="px-2 py-1.5 align-top text-right tabular-nums">' + idpIhFmtInt(sups) + '</td>' +
-        '</tr>' +
-        '<tr class="ih-drill-row hidden" data-ih-drill="' + rowId + '">' +
-          '<td colspan="6" class="px-2 py-2" style="background:#f9fafb"></td>' +
-        '</tr>'
-      );
-    }
-    return '<div class="overflow-x-auto rounded-lg border border-[#E6E6E6] bg-white shadow-sm">' +
-      '<table class="w-full text-xs" style="border-collapse:collapse">' +
-        '<thead><tr style="background:#f1f5f9;color:#334155">' +
-          '<th class="px-2 py-2 text-left" style="font-weight:600;width:28px"></th>' +
-          '<th class="px-2 py-2 text-left" style="font-weight:600">Item</th>' +
-          '<th class="px-2 py-2 text-right" style="font-weight:600">Potential Savings</th>' +
-          '<th class="px-2 py-2 text-right" style="font-weight:600">Annual Spend</th>' +
-          '<th class="px-2 py-2 text-right" style="font-weight:600"># Sites</th>' +
-          '<th class="px-2 py-2 text-right" style="font-weight:600"># Suppliers</th>' +
-        '</tr></thead>' +
-        '<tbody>' + rowsHtml.join("") + '</tbody>' +
-      '</table>' +
-    '</div>';
-  }
+  /* The pre-refactor IH tab carried its own private table builder
+   * (idpIhBuildOpportunityTable) + drill-down panel (idpIhBuildDrilldown
+   * + idpIhWireDrilldownToggles) so the tab could ship before the
+   * larger Harmonization layout was ready to share. As of this
+   * refactor the IH tab pumps its computed payload through the SAME
+   * render core as the regular Harmonization tab (renderHarmonization
+   * Unified with an IH context), so the bespoke builders here would
+   * just be dead code paths going stale. Anything specific to IH —
+   * status chips, fuzzy badges, fuzzy-aware row-click lookups — is
+   * grafted on via ctx.onAfterRender + the global fuzzy-members map. */
 
-  /** Build the drill-down panel HTML for one opportunity row.
-   *  Shows the export_rows transaction-level detail plus, for fuzzy
-   *  rows, the list of merged descriptions. */
-  function idpIhBuildDrilldown(p) {
-    if (!p) return '<div class="text-xs idp-muted">No detail rows.</div>';
-    var er = p.export_rows && p.export_rows.length ? p.export_rows : [];
-    var headerParts = [];
-    if (idpIhIsFuzzyOpp(p) && p._ihMembers && p._ihMembers.length) {
-      headerParts.push(
-        '<div class="mb-2 rounded border border-[#E6E6E6] bg-white p-2 text-xs">' +
-          '<div class="font-semibold" style="color:#7c3aed">Merged descriptions (' + p._ihMembers.length + '):</div>' +
-          '<div class="mt-1 idp-muted" style="line-height:1.4">' + idpIhEsc(p._ihMembers.join(" · ")) + '</div>' +
-        '</div>'
-      );
-    }
-    if (!er.length) {
-      return headerParts.join("") + '<div class="text-xs idp-muted">No transaction-level rows available for this opportunity.</div>';
-    }
-    var rowsHtml = [];
-    var i, row, up, sp, qty, sav;
-    for (i = 0; i < er.length; i++) {
-      row = er[i];
-      if (!row) continue;
-      up = row["Unit Price"] != null ? +row["Unit Price"] : NaN;
-      sp = row["Spend"] != null ? +row["Spend"] : NaN;
-      qty = row["Quantity"] != null ? +row["Quantity"] : NaN;
-      sav = row["Savings"] != null ? +row["Savings"] : NaN;
-      rowsHtml.push(
-        '<tr>' +
-          '<td class="px-2 py-1">' + idpIhEsc(row["Site"] || "") + '</td>' +
-          '<td class="px-2 py-1">' + idpIhEsc(row["Supplier"] || "") + '</td>' +
-          '<td class="px-2 py-1 text-right tabular-nums">' + (isFinite(up) ? "$" + (Math.round(up * 100) / 100).toLocaleString() : "—") + '</td>' +
-          '<td class="px-2 py-1 text-right tabular-nums">' + (isFinite(qty) ? Math.round(qty).toLocaleString() : "—") + '</td>' +
-          '<td class="px-2 py-1 text-right tabular-nums">' + (isFinite(sp) ? idpIhFmtUsd(sp) : "—") + '</td>' +
-          '<td class="px-2 py-1 text-right tabular-nums">' + (isFinite(sav) ? idpIhFmtUsd(sav) : "—") + '</td>' +
-        '</tr>'
-      );
-    }
-    return headerParts.join("") +
-      '<div class="overflow-x-auto rounded border border-[#E6E6E6] bg-white">' +
-        '<table class="w-full text-xs" style="border-collapse:collapse">' +
-          '<thead><tr style="background:#f8fafc;color:#475569">' +
-            '<th class="px-2 py-1 text-left">Site</th>' +
-            '<th class="px-2 py-1 text-left">Supplier</th>' +
-            '<th class="px-2 py-1 text-right">Unit Price</th>' +
-            '<th class="px-2 py-1 text-right">Quantity</th>' +
-            '<th class="px-2 py-1 text-right">Spend</th>' +
-            '<th class="px-2 py-1 text-right">Savings</th>' +
-          '</tr></thead>' +
-          '<tbody>' + rowsHtml.join("") + '</tbody>' +
-        '</table>' +
-      '</div>';
-  }
-
-  /** Wire click handlers on the per-row "+" toggle buttons after the
-   *  table has been painted. Lazy-fills the drill-down panel on first
-   *  expand so we don't pay the render cost for collapsed rows. */
-  function idpIhWireDrilldownToggles(opps) {
-    var btns = document.querySelectorAll(".ih-toggle-drill");
-    var i, btn;
-    for (i = 0; i < btns.length; i++) {
-      btn = btns[i];
-      if (btn._ihBound) continue;
-      btn._ihBound = true;
-      (function (b, idx) {
-        b.addEventListener("click", function () {
-          var tr = b.closest("tr");
-          if (!tr) return;
-          var rowKey = tr.getAttribute("data-ih-row");
-          var drill = document.querySelector('tr[data-ih-drill="' + rowKey + '"]');
-          if (!drill) return;
-          var open = !drill.classList.contains("hidden");
-          if (open) {
-            drill.classList.add("hidden");
-            b.textContent = "+";
-            b.setAttribute("aria-expanded", "false");
-          } else {
-            var cell = drill.querySelector("td");
-            if (cell && !cell._ihFilled) {
-              cell.innerHTML = idpIhBuildDrilldown(opps[idx]);
-              cell._ihFilled = true;
-            }
-            drill.classList.remove("hidden");
-            b.textContent = "−";
-            b.setAttribute("aria-expanded", "true");
-          }
-        });
-      })(btn, i);
-    }
-  }
-
-  /** Main entrypoint. Pulls the indirect slice from the current global
-   *  filter state, prepares it (fuzzy clustering for blank-part rows),
-   *  hands it to the standard harmonization math, and paints the UI. */
-  function idpIhRender() {
-    var view = $("view-indirect-harm");
-    if (!view || view.classList.contains("hidden")) return;
+  /** Update the IH-only diagnostic chips above the comparison grid.
+   *  Pure DOM write, no data dependencies beyond what's in prep.diagnostics. */
+  function _idpIhUpdateStatusChips(diagnostics) {
     var statusEl = $("ih-status");
     var statusChip = $("ih-status-chip");
     var fuzzyChip = $("ih-fuzzy-chip");
     var mergedChip = $("ih-merged-chip");
-    var kpiEl = $("ih-kpis");
-    var emptyEl = $("ih-empty-state");
-    var contentEl = $("ih-content");
+    if (!statusEl || !statusChip || !fuzzyChip || !mergedChip) return;
+    if (!diagnostics) {
+      statusEl.classList.add("hidden");
+      statusEl.classList.remove("flex");
+      return;
+    }
+    statusEl.classList.remove("hidden");
+    statusEl.classList.add("flex");
+    statusChip.textContent = idpIhFmtInt(diagnostics.indirectRowsIn) + " indirect rows · " + idpIhFmtInt(diagnostics.rowsPrepared) + " items considered";
+    fuzzyChip.textContent = idpIhFmtInt(diagnostics.keyedByPartNumber) + " by Part #  ·  " + idpIhFmtInt(diagnostics.keyedByFuzzy) + " by fuzzy Part Name";
+    var clusterDiag = diagnostics.clusters;
+    mergedChip.textContent = clusterDiag
+      ? (idpIhFmtInt(clusterDiag.mergedItems) + " merges across " + idpIhFmtInt(clusterDiag.blocksProcessed) + " L3 blocks (threshold 0.80)")
+      : "fuzzy clustering unavailable";
+  }
+
+  /** DOM post-process: walk the rows that the shared render core just
+   *  painted into #ih-comparison-grid and, for any row whose Part
+   *  Number cell holds a synthetic "IH#FUZZY#<n>" key, swap the cell
+   *  text with the cluster's human-readable display name and append a
+   *  small "fuzzy" badge with the merged-descriptions list in the
+   *  tooltip. We DO NOT touch the row's data-* attributes or its
+   *  bound row object — the click handler reads the cluster key from
+   *  the closure over the original opportunity, so the chart +
+   *  line-detail drill-down still hits the right rows. */
+  function _idpIhDecorateFuzzyRows(fuzzyMetaByKey) {
+    var grid = $("ih-comparison-grid");
+    if (!grid || !fuzzyMetaByKey) return;
+    var rows = grid.querySelectorAll("tr[data-harm-table]");
+    var i, tr, partCell, raw, meta, members, tip, displayText, badge, span;
+    for (i = 0; i < rows.length; i++) {
+      tr = rows[i];
+      partCell = tr.querySelector("td");
+      if (!partCell) continue;
+      raw = (partCell.textContent || "").trim();
+      if (raw.indexOf("IH#FUZZY#") !== 0) continue;
+      meta = fuzzyMetaByKey[raw];
+      if (!meta) continue;
+      displayText = meta.displayName || raw;
+      members = meta.members && meta.members.length
+        ? (meta.members.slice(0, 12).join(" · ") + (meta.members.length > 12 ? " · …(+" + (meta.members.length - 12) + ")" : ""))
+        : "";
+      tip = members
+        ? "Grouped via fuzzy Part Name match. Merged descriptions: " + members
+        : "Grouped via fuzzy Part Name match (no Part Number on source rows).";
+      partCell.textContent = "";
+      partCell.appendChild(document.createTextNode(displayText));
+      badge = document.createElement("span");
+      badge.className = "idp-info-tip";
+      badge.setAttribute("tabindex", "0");
+      badge.setAttribute("role", "img");
+      badge.setAttribute("aria-label", "Fuzzy match");
+      badge.setAttribute("title", tip);
+      badge.style.cssText = "margin-left:6px;font-size:10px;font-style:italic;color:#7c3aed;border:1px solid #ddd6fe;border-radius:9999px;padding:1px 6px;background:#faf5ff;cursor:help";
+      badge.textContent = "fuzzy";
+      partCell.appendChild(badge);
+      /* Stash the synth key on the cell so the Excel export can still
+         find the cluster mapping if anyone ever reads from the DOM. */
+      partCell.setAttribute("data-ih-cluster-key", raw);
+    }
+  }
+
+  /** Main entrypoint for the Indirect Harmonization tab. Pulls the
+   *  indirect slice from the current global filter state, runs fuzzy
+   *  clustering on rows whose Part Number is blank/non-numeric, hands
+   *  the resulting rows to the standard harmonization math, then
+   *  feeds the math output into the SAME render pipeline the
+   *  Harmonization tab uses (renderHarmonizationUnified). The visible
+   *  layout — Overall Summary panel, MECE category sections with
+   *  5-tile blue KPI strips, drill-down rows, View toggle — is
+   *  therefore byte-identical to the Harmonization tab; the only
+   *  visible additions are the IH-specific diagnostic chips above
+   *  the grid and the small "fuzzy" badge on rows whose part key
+   *  was generated client-side. */
+  function idpIhRender() {
+    var view = $("view-indirect-harm");
+    if (!view || view.classList.contains("hidden")) return;
     var msgEl = $("ih-message");
     var dlBtn = $("ih-dl-btn");
+    var grid = $("ih-comparison-grid");
     if (msgEl) { msgEl.classList.add("hidden"); msgEl.textContent = ""; }
-    if (kpiEl) kpiEl.innerHTML = "";
-    if (contentEl) { contentEl.innerHTML = ""; contentEl.classList.add("hidden"); contentEl.classList.remove("flex"); }
-    if (emptyEl) emptyEl.classList.add("hidden");
     if (dlBtn) dlBtn.classList.add("hidden");
     _idpIhLastPayload = null;
+    /* Reset the fuzzy-members map exposed to harmRawRowsForPart so a
+       stale prior render can't leak row-click drilldowns into the
+       wrong cluster. */
+    if (typeof window !== "undefined") {
+      window._idpIhFuzzyMembersByKey = null;
+      window._idpIhFuzzyMetaByKey = null;
+    }
+
     /* Step 1: indirect-only slice. */
-    var indirectRows;
+    var slice;
     try {
-      indirectRows = idpIhGetIndirectRows();
+      slice = idpIhGetIndirectRows();
     } catch (eGetR) {
       if (msgEl) {
         msgEl.classList.remove("hidden");
         msgEl.textContent = "Failed to read indirect rows: " + (eGetR && eGetR.message ? eGetR.message : "unknown error");
       }
-      if (emptyEl) emptyEl.classList.remove("hidden");
+      _idpIhUpdateStatusChips(null);
+      if (grid) grid.innerHTML = '<p class="text-sm idp-muted" id="ih-empty">No data.</p>';
       return;
     }
-    if (!indirectRows.length) {
-      if (statusEl) statusEl.classList.add("hidden");
-      if (emptyEl) {
-        emptyEl.classList.remove("hidden");
-        emptyEl.textContent = "No L1 Indirect rows in the current filter slice. Adjust the global Spend Review filters above.";
-      }
+    if (!slice.rows.length) {
+      _idpIhUpdateStatusChips(null);
+      if (grid) grid.innerHTML = '<p class="text-sm idp-muted" id="ih-empty">No L1 Indirect rows in the current filter slice. Adjust the global Spend Review filters above.</p>';
       return;
     }
+
     /* Step 2: prep + fuzzy clustering. */
     var prep;
     try {
-      prep = idpIhPrepareRows(indirectRows);
+      prep = idpIhPrepareRows(slice);
     } catch (ePrep) {
       if (msgEl) {
         msgEl.classList.remove("hidden");
         msgEl.textContent = "Failed to prepare rows: " + (ePrep && ePrep.message ? ePrep.message : "unknown error");
       }
+      _idpIhUpdateStatusChips(null);
+      if (grid) grid.innerHTML = "";
       return;
     }
+
     /* Step 3: harmonization math. */
     var calc = (typeof window !== "undefined" && typeof window.idpCalculateHarmonizationFromRows === "function")
       ? window.idpCalculateHarmonizationFromRows : null;
@@ -11222,35 +11357,27 @@
         msgEl.classList.remove("hidden");
         msgEl.textContent = "Harmonization client library is not loaded. Reload the page.";
       }
+      _idpIhUpdateStatusChips(null);
+      if (grid) grid.innerHTML = "";
       return;
     }
-    var payload;
+    var ihPayload;
     try {
-      payload = calc(prep.rows, {});
+      ihPayload = calc(prep.rows, {});
     } catch (eCalc) {
       if (msgEl) {
         msgEl.classList.remove("hidden");
         msgEl.textContent = "Harmonization math failed: " + (eCalc && eCalc.message ? eCalc.message : "unknown error");
       }
+      _idpIhUpdateStatusChips(prep.diagnostics);
+      if (grid) grid.innerHTML = "";
       return;
     }
-    /* Step 4: stitch fuzzy metadata back onto each opportunity (the
-     * math threw away our _ihFuzzy / _ihDisplayName / _ihMembers
-     * markers when it built export_rows from scratch). We look the
-     * synthetic key back up in our prep cache. */
-    var oppList = payload && payload.all_opportunities ? payload.all_opportunities : [];
-    var fuzzyMetaByKey = {};
-    var ri, rec;
-    for (ri = 0; ri < prep.rows.length; ri++) {
-      rec = prep.rows[ri];
-      if (!rec || !rec._ihFuzzy) continue;
-      if (!fuzzyMetaByKey[rec.part]) {
-        fuzzyMetaByKey[rec.part] = {
-          displayName: rec._ihDisplayName,
-          members: rec._ihMembers
-        };
-      }
-    }
+
+    /* Step 4: stitch fuzzy metadata back onto each opportunity so
+       downstream code (Excel export, post-render badge pass) can find
+       _ihDisplayName / _ihMembers without re-clustering. */
+    var oppList = ihPayload && ihPayload.all_opportunities ? ihPayload.all_opportunities : [];
     var oi, op, keyMaybe;
     for (oi = 0; oi < oppList.length; oi++) {
       op = oppList[oi];
@@ -11258,40 +11385,78 @@
       keyMaybe = "";
       if (op.item != null) keyMaybe = String(op.item);
       else if (op.part != null) keyMaybe = String(op.part);
-      if (keyMaybe && fuzzyMetaByKey[keyMaybe]) {
+      if (keyMaybe && prep.fuzzyMetaByKey[keyMaybe]) {
         op._ihFuzzy = true;
-        op._ihDisplayName = fuzzyMetaByKey[keyMaybe].displayName;
-        op._ihMembers = fuzzyMetaByKey[keyMaybe].members;
+        op._ihDisplayName = prep.fuzzyMetaByKey[keyMaybe].displayName;
+        op._ihMembers = prep.fuzzyMetaByKey[keyMaybe].members;
       }
     }
-    /* Step 5: paint. */
-    _idpIhLastPayload = { payload: payload, opps: oppList, diagnostics: prep.diagnostics };
-    if (statusEl && statusChip && fuzzyChip && mergedChip) {
-      statusEl.classList.remove("hidden");
-      statusEl.classList.add("flex");
-      statusChip.textContent = idpIhFmtInt(prep.diagnostics.indirectRowsIn) + " indirect rows · " + idpIhFmtInt(prep.diagnostics.rowsPrepared) + " items considered";
-      fuzzyChip.textContent = idpIhFmtInt(prep.diagnostics.keyedByPartNumber) + " by Part #  ·  " + idpIhFmtInt(prep.diagnostics.keyedByFuzzy) + " by fuzzy Part Name";
-      var clusterDiag = prep.diagnostics.clusters;
-      mergedChip.textContent = clusterDiag
-        ? (idpIhFmtInt(clusterDiag.mergedItems) + " merges across " + idpIhFmtInt(clusterDiag.blocksProcessed) + " L3 blocks (threshold 0.80)")
-        : "fuzzy clustering unavailable";
+
+    /* Step 5: expose the fuzzy-members map so the row-click chart +
+       line-detail drilldown (which goes through harmRawRowsForPart)
+       can resolve a synthetic IH#FUZZY# key back to its underlying
+       D.rows. */
+    if (typeof window !== "undefined") {
+      window._idpIhFuzzyMembersByKey = prep.fuzzyMembersByKey;
+      window._idpIhFuzzyMetaByKey = prep.fuzzyMetaByKey;
     }
-    if (kpiEl) kpiEl.innerHTML = idpIhBuildKpiCards(payload);
-    if (!oppList.length) {
-      if (emptyEl) {
-        emptyEl.classList.remove("hidden");
-        emptyEl.textContent = payload && payload.message && payload.message !== "ok"
-          ? "Harmonization math returned: " + payload.message
-          : "No harmonization opportunities for the current indirect slice.";
+    _idpIhLastPayload = { payload: ihPayload, opps: oppList, diagnostics: prep.diagnostics };
+    _idpIhUpdateStatusChips(prep.diagnostics);
+
+    /* Step 6: hand off to the shared render pipeline. The ctx tells
+       renderHarmonizationUnified to mount into the IH grid, use the
+       IH-specific source data, prefix internal section/table IDs
+       with "ih-" to avoid DOM collisions with the Harm tab, and run
+       our post-process pass to decorate fuzzy rows. */
+    var ctx = _harmDefaultRenderCtx();
+    ctx.viewName = "indirect-harm";
+    ctx.fGridId = "ih-comparison-grid";
+    ctx.messageId = "ih-message";
+    ctx.titleId = "ih-page-title";
+    ctx.strapId = "ih-strap";
+    ctx.titleText = "Indirect Harmonization";
+    ctx.logTag = "indirect-harm";
+    ctx.sectionIdPrefix = "ih-";
+    ctx.tableKeyPrefix = "ih-";
+    ctx.payloadGlobalKey = "_idpLastIhPayload";
+    ctx.opsGlobalKey = "_idpIhUnifiedOps";
+    ctx.rowsGlobalKey = "_idpIhUnifiedRows";
+    ctx.yearGlobalKey = "_idpIhUnifiedYear";
+    ctx.beforeRender = function () { /* no category-filter dropdown setup for IH */ };
+    ctx.getPayload = function () { return ihPayload; };
+    ctx.getRowsSlice = function () { return prep.rows; };
+    ctx.getKeySet = function (rowsSlice) {
+      /* The prep.rows clones already carry the synthetic part keys
+         on r.part, so the standard idpHarmonizationItemKey() routes
+         through r.part and the key set lines up exactly with what
+         the math produced. We bypass harmUnifiedSliceKeySetCached
+         because its snapshot key is global-filter-shaped and would
+         either over-cache (return the Harm key set) or thrash. */
+      return harmSpendKindKeySetFromRows(rowsSlice);
+    };
+    ctx.buildStrap = function (capPrefix, spreadV) {
+      return capPrefix + " · L1 Indirects only · client-computed MECE · fuzzy Part Name fallback for blank Part Numbers · max unit-price spread cap $" + spreadV + " · Click a row for chart + line detail.";
+    };
+    ctx.emptyPayloadMsg = "Indirect harmonization could not be computed (harmonization client library missing).";
+    ctx.emptyAllOppsMsg = "No harmonization opportunities for the current indirect slice.";
+    ctx.emptyFilteredMsgFn = function () { return "No harmonization opportunities for the current indirect slice."; };
+    ctx.onAfterRender = function () {
+      try { _idpIhDecorateFuzzyRows(prep.fuzzyMetaByKey); } catch (eDeco) {
+        if (typeof console !== "undefined" && console.warn) console.warn("[indirect-harm] fuzzy decoration failed:", eDeco);
       }
+    };
+
+    try {
+      renderHarmonizationUnified(ctx);
+    } catch (eRender) {
+      if (msgEl) {
+        msgEl.classList.remove("hidden");
+        msgEl.textContent = "Indirect harmonization render failed: " + (eRender && eRender.message ? eRender.message : "unknown error");
+      }
+      if (typeof console !== "undefined" && console.error) console.error("[indirect-harm] render failed:", eRender);
       return;
     }
-    if (contentEl) {
-      contentEl.classList.remove("hidden");
-      contentEl.classList.add("flex");
-      contentEl.innerHTML = idpIhBuildOpportunityTable(oppList);
-      idpIhWireDrilldownToggles(oppList);
-    }
+
     if (dlBtn) dlBtn.classList.remove("hidden");
   }
 
