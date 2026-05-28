@@ -18,17 +18,17 @@
 image:
   repository: mckinsey-cummins-idp-dashboard-docker-local.jfrog.io/procurement-spend-dashboard
   # Pinned to the SHA-suffixed tag emitted by the docker build that ran
-  # for commit 00b5c5f (fix(harmonization): repair invalid dynamic-string
-  # object keys in IO Excel export and stop caching index.html).
-  # Pinning to a SHA-suffixed tag
-  # forces a digest-different image reference, which together with
+  # for commit e328317 (fix(sidebar): raise idp-nav-section-body max-height
+  # so the Indirect Harmonization button stops being clipped by the 12rem
+  # overflow:hidden cap on the section dropdown). Pinning to a SHA-suffixed
+  # tag forces a digest-different image reference, which together with
   # `pullPolicy: Always` below guarantees a fresh registry pull on the
   # next rollout (history of why: pre-build-#24 used the mutable
   # floating "0.1.0" tag and ArgoCD's pod-replacement event reused a
   # node-cached layer due to IfNotPresent, shipping stale bits). Keep
   # this value in lockstep with the same field in procurement-spend-
   # dashboard.yaml (the rendered manifest).
-  tag: "0.1.0-84e773fd"
+  tag: "0.1.0-e328317f"
   # Bumped from IfNotPresent → Always so future tag floats can't
   # silently degrade to a cached node image.
   pullPolicy: Always
