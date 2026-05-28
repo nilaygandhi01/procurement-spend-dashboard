@@ -4400,6 +4400,11 @@
           <span id="ih-status-chip" class="inline-flex items-center gap-1 rounded-full border border-[#E6E6E6] bg-white px-2 py-0.5"></span>
           <span id="ih-fuzzy-chip" class="inline-flex items-center gap-1 rounded-full border border-[#E6E6E6] bg-white px-2 py-0.5"></span>
           <span id="ih-merged-chip" class="inline-flex items-center gap-1 rounded-full border border-[#E6E6E6] bg-white px-2 py-0.5"></span>
+          <!-- 4th chip surfaces the noise-filter exclusion count so the
+               filter is transparent. Threshold defaults (min benchmark
+               $1.00/unit, max ratio 100x) come from INDIRECT_HARM_*
+               constants in the IH module and can be tuned there. -->
+          <span id="ih-noise-chip" class="inline-flex items-center gap-1 rounded-full border border-[#E6E6E6] bg-white px-2 py-0.5"></span>
         </div>
         <!--
           Mount point for the SHARED harmonization render core. The core
@@ -10850,6 +10855,86 @@
   / tokenJaccard / FUZZY_NAME_DEFAULTS); the glue + UI lives here.
   ============================================ */
 
+  /* --------------------------------------------------------------
+   * Noise-filter thresholds for the INDIRECT Harmonization tab only.
+   *
+   * Indirect spend mixes real consumables with services priced per
+   * line item, lab/testing tranches, and small-cent placeholders.
+   * When those land in the same harmonization cluster they generate
+   * cluster benchmarks that look like opportunities ($0.01 vs $19.94)
+   * but actually reflect mismatched UoMs or different items grouped
+   * by description alone. We drop any cluster whose:
+   *   (a) cheapest supplier $/unit (the benchmark) is below
+   *       INDIRECT_HARM_MIN_BENCHMARK_USD, OR
+   *   (b) MAX($/unit) / MIN($/unit) ratio exceeds
+   *       INDIRECT_HARM_MAX_PRICE_RATIO (default 100x, well above
+   *       any real bulk-discount range).
+   *
+   * Tune via these two constants. Do NOT apply to the regular
+   * Harmonization tab; the noise pattern is concentrated in
+   * indirect spend (services / lab line items / small consumables).
+   * -------------------------------------------------------------- */
+  var INDIRECT_HARM_MIN_BENCHMARK_USD = 1.00;
+  var INDIRECT_HARM_MAX_PRICE_RATIO = 100;
+
+  /** Compute min/max/ratio of $/unit across an opportunity's supplier
+   *  rows. Returns null if there are no positive finite unit prices,
+   *  which means the caller can't meaningfully classify (leave intact). */
+  function _idpIhComputePriceStats(p) {
+    if (!p || !p.suppliers || !p.suppliers.length) return null;
+    var min = Infinity, max = -Infinity, anyOk = false, i, up;
+    for (i = 0; i < p.suppliers.length; i++) {
+      up = p.suppliers[i] != null ? +p.suppliers[i].unit_price : NaN;
+      if (!isFinite(up) || up <= 0) continue;
+      anyOk = true;
+      if (up < min) min = up;
+      if (up > max) max = up;
+    }
+    if (!anyOk) return null;
+    return { min: min, max: max, ratio: max / min };
+  }
+
+  /** True if this IH opportunity should be filtered out as noise.
+   *  Returns false if we can't classify (no usable price data) so the
+   *  default is to keep the opportunity. */
+  function _idpIhIsNoiseOpportunity(p) {
+    var s = _idpIhComputePriceStats(p);
+    if (!s) return false;
+    if (s.min < INDIRECT_HARM_MIN_BENCHMARK_USD) return true;
+    if (isFinite(s.ratio) && s.ratio > INDIRECT_HARM_MAX_PRICE_RATIO) return true;
+    return false;
+  }
+
+  /** Apply the noise filter across the IH payload's three opportunity
+   *  arrays (category_1, category_3, all_opportunities). Mutates the
+   *  payload in place. Returns the count of UNIQUE clusters excluded
+   *  (we count against all_opportunities because each opp also appears
+   *  in either category_1 or category_3 — counting per-array would
+   *  double-count). */
+  function _idpIhApplyNoiseFilter(payload) {
+    if (!payload) return 0;
+    var excluded = 0;
+    if (payload.all_opportunities && payload.all_opportunities.length) {
+      for (var i = 0; i < payload.all_opportunities.length; i++) {
+        if (_idpIhIsNoiseOpportunity(payload.all_opportunities[i])) excluded++;
+      }
+      payload.all_opportunities = payload.all_opportunities.filter(function (p) {
+        return !_idpIhIsNoiseOpportunity(p);
+      });
+    }
+    if (payload.category_1 && payload.category_1.length) {
+      payload.category_1 = payload.category_1.filter(function (p) {
+        return !_idpIhIsNoiseOpportunity(p);
+      });
+    }
+    if (payload.category_3 && payload.category_3.length) {
+      payload.category_3 = payload.category_3.filter(function (p) {
+        return !_idpIhIsNoiseOpportunity(p);
+      });
+    }
+    return excluded;
+  }
+
   /** Convert a raw row to the fuzzy-clustering input shape — pulls the
    *  best available "part name" / description and the L3 blocking key.
    *  Returns null if no usable signal at all (item is dropped). */
@@ -11225,6 +11310,7 @@
     var statusChip = $("ih-status-chip");
     var fuzzyChip = $("ih-fuzzy-chip");
     var mergedChip = $("ih-merged-chip");
+    var noiseChip = $("ih-noise-chip");
     if (!statusEl || !statusChip || !fuzzyChip || !mergedChip) return;
     if (!diagnostics) {
       statusEl.classList.add("hidden");
@@ -11239,6 +11325,26 @@
     mergedChip.textContent = clusterDiag
       ? (idpIhFmtInt(clusterDiag.mergedItems) + " merges across " + idpIhFmtInt(clusterDiag.blocksProcessed) + " L3 blocks (threshold 0.80)")
       : "fuzzy clustering unavailable";
+    /* Noise chip: hidden when no exclusions ran (e.g. error in
+       calc before the filter could apply) OR when zero clusters were
+       caught. Showing "0 noise clusters" on every render is noisy. */
+    if (noiseChip) {
+      if (diagnostics.excludedNoise != null && +diagnostics.excludedNoise > 0) {
+        var minB = diagnostics.noiseMinBenchmark != null ? diagnostics.noiseMinBenchmark : INDIRECT_HARM_MIN_BENCHMARK_USD;
+        var maxR = diagnostics.noiseMaxRatio != null ? diagnostics.noiseMaxRatio : INDIRECT_HARM_MAX_PRICE_RATIO;
+        noiseChip.textContent =
+          idpIhFmtInt(diagnostics.excludedNoise) +
+          " noise clusters excluded (benchmark < $" +
+          (Math.round(minB * 100) / 100).toFixed(2) +
+          "/unit or > " +
+          idpIhFmtInt(maxR) +
+          "x price spread)";
+        noiseChip.classList.remove("hidden");
+      } else {
+        noiseChip.textContent = "";
+        noiseChip.classList.add("hidden");
+      }
+    }
   }
 
   /** DOM post-process: walk the rows that the shared render core just
@@ -11374,6 +11480,25 @@
       return;
     }
 
+    /* Step 3.5: noise filter (IH-only). Drop clusters whose benchmark
+       is below $1.00/unit or whose max/min unit-price spread exceeds
+       100x — these are cent-priced services / placeholder lines /
+       mismatched-UoM groupings, not real harmonization opportunities.
+       Mutates ihPayload's three opportunity arrays so every downstream
+       consumer (renderer, KPI strip, Excel export) sees the cleaned set. */
+    var excludedNoise = 0;
+    try {
+      excludedNoise = _idpIhApplyNoiseFilter(ihPayload);
+    } catch (eNoise) {
+      if (typeof console !== "undefined" && console.warn) console.warn("[indirect-harm] noise filter failed:", eNoise);
+      excludedNoise = 0;
+    }
+    if (prep.diagnostics) {
+      prep.diagnostics.excludedNoise = excludedNoise;
+      prep.diagnostics.noiseMinBenchmark = INDIRECT_HARM_MIN_BENCHMARK_USD;
+      prep.diagnostics.noiseMaxRatio = INDIRECT_HARM_MAX_PRICE_RATIO;
+    }
+
     /* Step 4: stitch fuzzy metadata back onto each opportunity so
        downstream code (Excel export, post-render badge pass) can find
        _ihDisplayName / _ihMembers without re-clustering. */
@@ -11435,7 +11560,12 @@
       return harmSpendKindKeySetFromRows(rowsSlice);
     };
     ctx.buildStrap = function (capPrefix, spreadV) {
-      return capPrefix + " · L1 Indirects only · client-computed MECE · fuzzy Part Name fallback for blank Part Numbers · max unit-price spread cap $" + spreadV + " · Click a row for chart + line detail.";
+      var minB = (Math.round(INDIRECT_HARM_MIN_BENCHMARK_USD * 100) / 100).toFixed(2);
+      return capPrefix +
+        " · L1 Indirects only · client-computed MECE · fuzzy Part Name fallback for blank Part Numbers" +
+        " · noise filter: benchmark ≥ $" + minB + "/unit, max " + idpIhFmtInt(INDIRECT_HARM_MAX_PRICE_RATIO) + "x spread" +
+        " · max unit-price spread cap $" + spreadV +
+        " · Click a row for chart + line detail.";
     };
     ctx.emptyPayloadMsg = "Indirect harmonization could not be computed (harmonization client library missing).";
     ctx.emptyAllOppsMsg = "No harmonization opportunities for the current indirect slice.";
