@@ -134,7 +134,7 @@ spec:
           # image reference, which together with `imagePullPolicy: Always`
           # below guarantees the kubelet does a fresh registry pull on
           # the next rollout.
-          image: "mckinsey-cummins-idp-dashboard-docker-local.jfrog.io/procurement-spend-dashboard:0.1.0-369f6e68"
+          image: "mckinsey-cummins-idp-dashboard-docker-local.jfrog.io/procurement-spend-dashboard:0.1.0-b06e6849"
           # Bumped from IfNotPresent → Always so future `:0.1.0` floats
           # (and any other tag reuse) can't silently degrade to a cached
           # node image. The pull cost on this image is negligible (~50 MB)
