@@ -4357,9 +4357,35 @@
             <div class="flex items-center gap-1.5">
               <h2 class="m-0 text-base font-semibold" style="color: #333" id="ih-page-title">Indirect Harmonization</h2>
               <span class="idp-info-tip" tabindex="0" role="img" aria-label="Methodology"
-                title="Indirect-only. For rows with a numeric Part Number we key on the part. For rows with a blank/non-numeric Part Number we key on a fuzzy cluster of the Part Description: lowercase + strip punctuation + drop stopwords (the/of/and/for/...) + sort tokens, then merge clusters whose token-set Jaccard >= 0.80. Clustering is blocked by L3 category to avoid cross-category merges. See INDEX_METHODOLOGY.md for the full pipeline.">&#9432;</span>
+                title="L1 = Indirect only, additive to the global filters.
+
+CATEGORIES
+• Cat 1 (high confidence): Same Supplier, Same Site — Single-Invoice Rightsizing. Benchmark = MIN unit price within (Part, Site, Supplier); per-txn savings = (up − benchmark) × qty for transactions above the benchmark.
+• Cat 2 (medium confidence): Same Supplier, Different Sites — Cross-Site Rightsizing to Site Average. For each site, site_avg = Σspend ÷ Σqty (volume-weighted). Benchmark = MIN site_avg among sites with ≥ 3 transactions in the (Part, Supplier) group; per-txn savings = (up − benchmark) × qty for transactions at non-benchmark sites with up > benchmark.
+
+PRE-CLEAN (excluded before grouping)
+• Description contains dummy/sample/test/ncr/return/credit/adjustment/void/reversal/placeholder (word-boundary, case-insensitive)
+• Qty ≤ 0 OR unit price ≤ 0
+• Line spend < $50
+• Unit price < $0.05
+
+PART KEYING
+Numeric-bearing Part Number wins. Otherwise fuzzy-cluster Part Description (token-set Jaccard ≥ 0.80, L3-blocked, Union-Find). Fuzzy keys take the form IH#FUZZY#<id>.
+
+SIMILARITY SANITY CHECK
+After Union-Find merges, each cluster is verified pairwise — if any pair's Jaccard drops below 0.80, the weakest member is dropped iteratively until every pair stays ≥ 0.80.
+
+GROUP-LEVEL NOISE FILTERS (both categories)
+• Benchmark ≥ $1.00/unit
+• max/min unit-price ratio ≤ 100x
+• ≥ 5 transactions per group
+• Group post-dedup savings ≥ $5,000
+• Cat 2 only: benchmark site must have ≥ 3 transactions
+
+DE-DUPLICATION
+Transactions eligible for both categories go to whichever yields LARGER per-transaction savings. Ties go to Cat 1 (higher confidence). KPI tiles, opportunity tables, and the Excel export all reflect post-dedup numbers.">&#9432;</span>
             </div>
-            <p class="mt-0.5 text-xs leading-snug idp-muted" id="ih-strap">Unit-price harmonization opportunities for L1 Indirect parts. Items without a Part Number are grouped by a fuzzy match on Part Name (token-set Jaccard &ge; 0.80).</p>
+            <p class="mt-0.5 text-xs leading-snug idp-muted" id="ih-strap">L1 = Indirect only. Two price-rightsizing categories: same supplier same site single-invoice rightsizing (high confidence) and same supplier different sites cross-site rightsizing to site average (medium confidence). Pre-cleaned, post-dedup totals.</p>
           </div>
           <div class="flex shrink-0 items-center gap-2" id="ih-view-toggle-wrap">
             <label for="ih-view-toggle" class="text-xs" style="color: #64748b">View</label>
@@ -4389,23 +4415,14 @@
         </div>
         <p id="ih-message" class="mb-3 hidden rounded-lg border border-[#E6E6E6] bg-[#FFF7ED] px-3 py-2 text-sm" style="color: #333; border-color: #f07f00"></p>
         <!--
-          IH-specific diagnostic chips (rows considered, key split,
-          fuzzy-cluster merges). These do NOT exist on the Harmonization
-          tab because Harm uses server-pre-computed opportunities so the
-          per-row classification is trivial; the IH tab synthesizes part
-          keys client-side via fuzzy clustering, so we surface the
-          counts for transparency.
+          IH-specific diagnostic chip row. Populated programmatically
+          by _idpIhUpdateStatusChips on every render to surface: total
+          indirect rows considered, items keyed by Part # vs by fuzzy
+          Part Description, fuzzy clusters formed, clusters split by
+          similarity sanity check, noise-filter exclusion count, dedup
+          reassignment count, and per-play kept/savings.
         -->
-        <div id="ih-status" class="mb-3 hidden flex-wrap items-center gap-2 text-xs idp-muted">
-          <span id="ih-status-chip" class="inline-flex items-center gap-1 rounded-full border border-[#E6E6E6] bg-white px-2 py-0.5"></span>
-          <span id="ih-fuzzy-chip" class="inline-flex items-center gap-1 rounded-full border border-[#E6E6E6] bg-white px-2 py-0.5"></span>
-          <span id="ih-merged-chip" class="inline-flex items-center gap-1 rounded-full border border-[#E6E6E6] bg-white px-2 py-0.5"></span>
-          <!-- 4th chip surfaces the noise-filter exclusion count so the
-               filter is transparent. Threshold defaults (min benchmark
-               $1.00/unit, max ratio 100x) come from INDIRECT_HARM_*
-               constants in the IH module and can be tuned there. -->
-          <span id="ih-noise-chip" class="inline-flex items-center gap-1 rounded-full border border-[#E6E6E6] bg-white px-2 py-0.5"></span>
-        </div>
+        <div id="ih-status" class="mb-3 hidden flex-wrap items-center gap-2 text-xs idp-muted"></div>
         <!--
           Mount point for the SHARED harmonization render core. The core
           (renderHarmonizationCore) appends the Overall Harmonization
@@ -7041,27 +7058,31 @@
     return it;
   }
   function harmRawRowsForPart(partKey) {
-    var rows, pk, fn, members, set, i, idxNum, baseRow, fuzzyRows;
+    var rows, pk, fn, members, i, baseRow, fuzzyRows, mEntry;
     rows = D.rows;
     if (!rows || !rows.length || !partKey) return [];
     pk = String(partKey).trim();
     /* IH#FUZZY#<n> is the synthetic key the Indirect Harmonization tab
        assigns to a cluster of rows whose Part Number was blank but
        whose Part Name fuzzy-matched into the same group. The cluster
-       membership (list of original D.rows indices) is stashed on the
-       global window._idpIhFuzzyMembersByKey map at IH render time.
-       For these keys we cannot match by r.part because every member
-       row has either no part number or a non-numeric one — so we
-       fall back to looking up the captured row indices. */
+       membership (list of row REFERENCES into D.rows) is stashed on
+       the global window._idpIhFuzzyMembersByKey map at IH render
+       time. We accept both the modern shape ({row, description}) and
+       the legacy numeric-index shape for backward compatibility. */
     if (pk.indexOf("IH#FUZZY#") === 0) {
       members = (typeof window !== "undefined" && window._idpIhFuzzyMembersByKey) ? window._idpIhFuzzyMembersByKey[pk] : null;
       if (!members || !members.length) return [];
       fuzzyRows = [];
       for (i = 0; i < members.length; i++) {
-        idxNum = +members[i];
-        if (isNaN(idxNum) || idxNum < 0 || idxNum >= rows.length) continue;
-        baseRow = rows[idxNum];
-        if (baseRow) fuzzyRows.push(baseRow);
+        mEntry = members[i];
+        if (mEntry && typeof mEntry === "object" && mEntry.row) {
+          fuzzyRows.push(mEntry.row);
+        } else {
+          var idxNum = +mEntry;
+          if (isNaN(idxNum) || idxNum < 0 || idxNum >= rows.length) continue;
+          baseRow = rows[idxNum];
+          if (baseRow) fuzzyRows.push(baseRow);
+        }
       }
       return fuzzyRows;
     }
@@ -7649,6 +7670,17 @@
     tit = document.createElement("div");
     tit.className = "title";
     tit.textContent = titleText;
+    /* Optional confidence chip rendered immediately after the title
+       text inside the same row. Used by Cat 4 to flag the category as
+       "high confidence" without modifying any of the existing Cat 1/2/3
+       header layouts. */
+    if (opts && opts.confidenceLabel) {
+      var chipLbl = document.createElement("span");
+      chipLbl.className = "harm-confidence-chip";
+      chipLbl.textContent = String(opts.confidenceLabel);
+      chipLbl.style.cssText = "display:inline-block;margin-left:0.5rem;padding:0.125rem 0.5rem;border-radius:999px;background:#dcfce7;color:#166534;font-size:0.6875rem;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;vertical-align:middle;";
+      tit.appendChild(chipLbl);
+    }
     titWrap.appendChild(tit);
     if (subtitleText) {
       sub = document.createElement("div");
@@ -7882,6 +7914,56 @@
   var HARM_ROW_SLICE_CAP = 50000;
   /** Default rows shown per category table before “Show all”; full sorted list is still loaded for expansion. */
   var HARM_TABLE_PREVIEW_ROWS = 20;
+
+  /* ------------------------------------------------------------------
+   * Indirect Harmonization render-level guardrails. The new IH tab
+   * exposes two categories (Cat 1 = Same Supplier, Same Site,
+   * Single-Invoice Rightsizing / harm_mece === 4; Cat 2 = Same
+   * Supplier, Different Sites, Cross-Site Rightsizing to Site Average
+   * / harm_mece === 5). Both categories share the same drill-down
+   * render path and the same top-N / show-all expansion contracts, so
+   * the constants live here at the top of the render layer where the
+   * SHARED rendering functions (harmRenderCategoryOpportunitySection,
+   * harmAppendHarmonizationUnitPriceBars) can read them by name. The
+   * standard Harmonization tab is unaffected — these only apply to
+   * harm_mece values 4 / 5, which never appear in the server-precomputed
+   * Cat 1/2/3 opportunity payload. The IH math layer emits the
+   * underlying opportunities WITHOUT these caps so the Excel export
+   * retains everything; only the rendered DOM is constrained.
+   *
+   *  INDIRECT_HARM_MAX_BARS              max bars in the drill-down
+   *                                       unit-price chart per opp. If a
+   *                                       group has more tranches we
+   *                                       keep top (MAX_BARS - 1) by
+   *                                       SPEND and collapse the
+   *                                       remainder into a single
+   *                                       "Other (N rows)" bar.
+   *  INDIRECT_HARM_TABLE_TOP_N           rows shown in each IH category
+   *                                       table before "Show all". Same
+   *                                       UX contract as
+   *                                       HARM_TABLE_PREVIEW_ROWS but
+   *                                       scoped to the IH tab so the
+   *                                       tabs can drift independently.
+   *  INDIRECT_HARM_DRILLDOWN_TXN_LIMIT   rows shown in the drill-down
+   *                                       transaction table before
+   *                                       "Show all". Prevents a single
+   *                                       thousand-tranche group from
+   *                                       locking up the browser.
+   *  INDIRECT_HARM_MAX_RENDERED_OPPS     hard cap on the number of IH
+   *                                       opportunities rendered per
+   *                                       category section, even when
+   *                                       the user clicks "Show all".
+   *                                       When exceeded we show a note
+   *                                       pointing the user to the
+   *                                       Excel download for the full
+   *                                       list. The cap is
+   *                                       rendering-only; export list is
+   *                                       uncapped.
+   * ------------------------------------------------------------------ */
+  var INDIRECT_HARM_MAX_BARS = 25;
+  var INDIRECT_HARM_TABLE_TOP_N = 20;
+  var INDIRECT_HARM_DRILLDOWN_TXN_LIMIT = 200;
+  var INDIRECT_HARM_MAX_RENDERED_OPPS = 500;
   function idpMarkHarmonizationDirty() {
     _idpHarmDirty = true;
     try {
@@ -8147,7 +8229,11 @@
           supplier: s.supplier != null ? String(s.supplier) : "—",
           qty: q,
           unitPrice: up,
-          spend: sp
+          spend: sp,
+          /* Pass through the Cat 4 per-tranche label if the math layer
+             provided one. Cat 1/3 leave this undefined; the row-label
+             function only consumes it when catId === 4. */
+          label: s.label != null ? String(s.label) : ""
         });
         sumS += sp;
         sumQ += q;
@@ -8261,14 +8347,30 @@
   function harmHarmonizationBarCaption(catId) {
     if (+catId === 2) return "Unit price ($/unit) — same part, different suppliers across plants";
     if (+catId === 3) return "Unit price ($/unit) — same supplier, different sites";
+    if (+catId === 4) return "Unit price ($/unit) — same supplier at the same site, by transaction tranche";
+    if (+catId === 5) return "Unit price ($/unit) — same supplier, different sites (each bar is a site's volume-weighted average $/unit)";
     return "Unit price ($/unit) — same part, multiple suppliers at this plant";
   }
-  /** Bar primary label: Cat 1 = supplier only; Cat 2/3 = supplier — plant/site. */
+  /** Bar primary label: Cat 1 = supplier only; Cat 2/3/5 = supplier — plant/site;
+   *  Cat 4 = the per-tranche "label" the math layer stamped on each row
+   *  (e.g. "Tranche #3"), since supplier+site are identical across bars. */
   function harmHarmonizationBarRowLabel(r, catId) {
+    if (+catId === 4) {
+      if (r && r.label) return String(r.label);
+      var sup4 = (r && r.supplier != null ? String(r.supplier) : "").trim() || "—";
+      var site4 = r && r.site != null ? String(r.site).trim() : "";
+      return site4 && site4 !== "—" ? sup4 + " — " + site4 : sup4;
+    }
     var sup = (r.supplier != null ? String(r.supplier) : "").trim() || "—";
     var site = r.site != null ? String(r.site).trim() : "";
     if (!site || site === "—") return sup;
     if (+catId === 1) return sup;
+    /* Cat 5 (IH Cat 2, Cross-Site Rightsizing to Site Average): supplier
+       is uniform across all bars within a single drill-down (that's
+       the whole grouping rule), so the informative label is the SITE
+       (each bar = one site's volume-weighted average $/unit). Mirror
+       Cat 3's display logic. */
+    if (+catId === 5) return site;
     return sup + " — " + site;
   }
   /**
@@ -8308,9 +8410,66 @@
     rowsSorted = wfMeta.rows.slice().sort(function (a, b) {
       return b.unitPrice - a.unitPrice;
     });
+
+    /* Indirect Harm guardrails — bars + transaction-table caps for
+       harm_mece 4 (Play 1 = Same Supplier, Same Site) and harm_mece 5
+       (Play 2 = Same Supplier, Different Site). We keep the full
+       sorted list for the table (potentially with a Show-all
+       expansion below INDIRECT_HARM_DRILLDOWN_TXN_LIMIT) but the bar
+       chart collapses to at most INDIRECT_HARM_MAX_BARS to keep the
+       drill-down readable on groups with hundreds of tranches. The
+       standard Harm tab's Cat 1/2/3 opps never trigger these branches
+       because the server payload's harm_mece is 1/2/3. */
+    var harmIsIhKind = (+catId === 4 || +catId === 5);
+    var rowsForBars = rowsSorted;
+    var rowsForTable = rowsSorted;
+    var rowsForTableFull = rowsSorted;
+    var barsAggregateNote = null;
+    var txnTruncatedCount = 0;
+    if (harmIsIhKind && rowsSorted.length > INDIRECT_HARM_MAX_BARS) {
+      /* Top (INDIRECT_HARM_MAX_BARS - 1) by SPEND become individual
+         bars; the remainder aggregates into a single "Other (N rows)"
+         bar at the spend-weighted-average unit price. The transaction
+         table is unaffected by this aggregation (it still shows top
+         INDIRECT_HARM_DRILLDOWN_TXN_LIMIT individual rows). */
+      var keepN = INDIRECT_HARM_MAX_BARS - 1;
+      var bySpendDesc = rowsSorted.slice().sort(function (a, b) {
+        var sa = +a.spend; var sb = +b.spend;
+        if (!isFinite(sa)) sa = 0;
+        if (!isFinite(sb)) sb = 0;
+        return sb - sa;
+      });
+      var topBars = bySpendDesc.slice(0, keepN);
+      var rest = bySpendDesc.slice(keepN);
+      if (rest.length) {
+        var otherSpend = 0, otherQty = 0, k0;
+        for (k0 = 0; k0 < rest.length; k0++) {
+          if (isFinite(+rest[k0].spend)) otherSpend += +rest[k0].spend;
+          if (isFinite(+rest[k0].qty)) otherQty += +rest[k0].qty;
+        }
+        var otherUp = otherQty > 0 ? otherSpend / otherQty : NaN;
+        topBars.push({
+          site: rowsSorted[0].site,
+          supplier: rowsSorted[0].supplier,
+          qty: otherQty,
+          unitPrice: otherUp,
+          spend: otherSpend,
+          label: "Other (" + rest.length + " rows)"
+        });
+      }
+      /* Re-sort the bar set by unit_price desc again so the layout is
+         consistent with the table's price-desc ordering. */
+      rowsForBars = topBars.sort(function (a, b) { return b.unitPrice - a.unitPrice; });
+      barsAggregateNote = "Top " + keepN + " tranches by spend shown individually; remaining " + rest.length + " rows aggregated as \u2018Other\u2019 to keep the chart readable.";
+    }
+    if (harmIsIhKind && rowsSorted.length > INDIRECT_HARM_DRILLDOWN_TXN_LIMIT) {
+      rowsForTable = rowsSorted.slice(0, INDIRECT_HARM_DRILLDOWN_TXN_LIMIT);
+      txnTruncatedCount = rowsSorted.length - INDIRECT_HARM_DRILLDOWN_TXN_LIMIT;
+    }
+
     pMax = 0;
-    for (i = 0; i < rowsSorted.length; i++) {
-      if (isFinite(rowsSorted[i].unitPrice) && rowsSorted[i].unitPrice > pMax) pMax = rowsSorted[i].unitPrice;
+    for (i = 0; i < rowsForBars.length; i++) {
+      if (isFinite(rowsForBars[i].unitPrice) && rowsForBars[i].unitPrice > pMax) pMax = rowsForBars[i].unitPrice;
     }
     if (!(pMax > 0) || !isFinite(wfMeta.benchmark)) return;
     benchmark = wfMeta.benchmark;
@@ -8323,8 +8482,15 @@
     cap.textContent = harmHarmonizationBarCaption(catId);
     root.appendChild(cap);
 
-    for (i = 0; i < rowsSorted.length; i++) {
-      r = rowsSorted[i];
+    if (harmIsIhKind && barsAggregateNote) {
+      var aggrNote = document.createElement("p");
+      aggrNote.className = "mb-2 text-xs idp-muted";
+      aggrNote.textContent = barsAggregateNote;
+      root.appendChild(aggrNote);
+    }
+
+    for (i = 0; i < rowsForBars.length; i++) {
+      r = rowsForBars[i];
       rowEl = document.createElement("div");
       rowEl.className = "idp-harm-c1-row";
       track = document.createElement("div");
@@ -8374,43 +8540,79 @@
     thead.appendChild(trHead);
     tbl.appendChild(thead);
     tb = document.createElement("tbody");
-    var harmWfFrag = document.createDocumentFragment();
-    for (hi = 0; hi < rowsSorted.length; hi++) {
-      r = rowsSorted[hi];
-      trb = document.createElement("tr");
-      if (harmNearBenchmarkUnit(r.unitPrice, benchmark)) trb.className = "idp-harm-wf-lowest";
-      rowSav = (benchmark - r.unitPrice) * r.qty;
-      td = document.createElement("td");
-      td.textContent = r.site != null ? String(r.site) : "—";
-      trb.appendChild(td);
-      td = document.createElement("td");
-      td.textContent = r.supplier != null ? String(r.supplier) : "—";
-      trb.appendChild(td);
-      td = document.createElement("td");
-      td.className = "idp-harm-wf-num";
-      td.textContent = fmtIntPlain(r.qty);
-      trb.appendChild(td);
-      td = document.createElement("td");
-      td.className = "idp-harm-wf-num";
-      td.textContent = fmtHarmBenchmarkPrice(r.unitPrice);
-      trb.appendChild(td);
-      td = document.createElement("td");
-      td.className = "idp-harm-wf-num";
-      td.textContent = fmtOppUSD(Math.round(r.spend));
-      trb.appendChild(td);
-      td = document.createElement("td");
-      td.className = "idp-harm-wf-num";
-      td.textContent = fmtHarmBenchmarkPrice(benchmark);
-      trb.appendChild(td);
-      td = document.createElement("td");
-      td.className = "idp-harm-wf-num harm-opportunity" + (rowSav < 0 ? " idp-harm-wf-sav-neg" : "");
-      td.textContent = fmtOppUSD(Math.round(rowSav));
-      trb.appendChild(td);
-      harmWfFrag.appendChild(trb);
+    /* Builder closure so the Cat 4 "Show all" expansion can append the
+       deferred rows into the SAME tbody without re-rendering the
+       whole detail cell. For Cat 1/2/3 we just render every row once
+       and never expose the button. */
+    function harmRenderUnitPriceTableRows(rowsArr, fragTarget) {
+      var hii, ri, trbi, sdi, savv;
+      for (hii = 0; hii < rowsArr.length; hii++) {
+        ri = rowsArr[hii];
+        trbi = document.createElement("tr");
+        if (harmNearBenchmarkUnit(ri.unitPrice, benchmark)) trbi.className = "idp-harm-wf-lowest";
+        savv = (benchmark - ri.unitPrice) * ri.qty;
+        sdi = document.createElement("td");
+        sdi.textContent = ri.site != null ? String(ri.site) : "—";
+        trbi.appendChild(sdi);
+        sdi = document.createElement("td");
+        sdi.textContent = ri.supplier != null ? String(ri.supplier) : "—";
+        trbi.appendChild(sdi);
+        sdi = document.createElement("td");
+        sdi.className = "idp-harm-wf-num";
+        sdi.textContent = fmtIntPlain(ri.qty);
+        trbi.appendChild(sdi);
+        sdi = document.createElement("td");
+        sdi.className = "idp-harm-wf-num";
+        sdi.textContent = fmtHarmBenchmarkPrice(ri.unitPrice);
+        trbi.appendChild(sdi);
+        sdi = document.createElement("td");
+        sdi.className = "idp-harm-wf-num";
+        sdi.textContent = fmtOppUSD(Math.round(ri.spend));
+        trbi.appendChild(sdi);
+        sdi = document.createElement("td");
+        sdi.className = "idp-harm-wf-num";
+        sdi.textContent = fmtHarmBenchmarkPrice(benchmark);
+        trbi.appendChild(sdi);
+        sdi = document.createElement("td");
+        sdi.className = "idp-harm-wf-num harm-opportunity" + (savv < 0 ? " idp-harm-wf-sav-neg" : "");
+        sdi.textContent = fmtOppUSD(Math.round(savv));
+        trbi.appendChild(sdi);
+        fragTarget.appendChild(trbi);
+      }
     }
+    var harmWfFrag = document.createDocumentFragment();
+    harmRenderUnitPriceTableRows(rowsForTable, harmWfFrag);
     tb.appendChild(harmWfFrag);
     tbl.appendChild(tb);
     root.appendChild(tbl);
+
+    /* Cat 4 only: if we truncated the transaction table, append a
+       Show all button that lazily appends the remaining rows into the
+       same tbody. */
+    if (harmIsIhKind && txnTruncatedCount > 0) {
+      var showAllWrap = document.createElement("div");
+      showAllWrap.className = "px-3 pt-1 pb-2";
+      var showAllNote = document.createElement("p");
+      showAllNote.className = "mb-1 text-xs idp-muted";
+      showAllNote.textContent =
+        "Showing top " + rowsForTable.length + " of " + rowsSorted.length + " tranches. " +
+        "The Excel download contains every row.";
+      var showAllBtn = document.createElement("button");
+      showAllBtn.type = "button";
+      showAllBtn.className = "text-xs idp-harm-show-all-btn";
+      showAllBtn.style.cssText = "color:#4a6cf7;text-decoration:underline;cursor:pointer;background:none;border:none;padding:0;";
+      showAllBtn.textContent = "Show all " + rowsSorted.length + " tranches \u25BC";
+      showAllBtn.addEventListener("click", function () {
+        var frag = document.createDocumentFragment();
+        harmRenderUnitPriceTableRows(rowsSorted.slice(rowsForTable.length), frag);
+        tb.appendChild(frag);
+        showAllBtn.remove();
+        showAllNote.textContent = "Showing all " + rowsSorted.length + " tranches.";
+      });
+      showAllWrap.appendChild(showAllNote);
+      showAllWrap.appendChild(showAllBtn);
+      root.appendChild(showAllWrap);
+    }
 
     if (rowsSorted.length >= 2 && isFinite(benchmark) && pMax > benchmark + 1e-12) {
       pctHi = ((pMax - benchmark) / pMax) * 100;
@@ -9103,22 +9305,40 @@
     }
   }
   /** Rollup table: one row per MECE category + total (display-only aggregation of payload fields). */
-  function harmAppendCategoryRollupTable(fGrid, cat1, cat2, cat3, idPrefix) {
-    var inner, tbl, thead, tr, th, tb, rows, ri, a1, a2, a3, tSp, tQ, tSv, tN, tdCell, meta;
+  function harmAppendCategoryRollupTable(fGrid, cat1, cat2, cat3, idPrefix, cat4, cat5, rowsOverride) {
+    var inner, tbl, thead, tr, th, tb, rows, ri, tSp, tQ, tSv, tN, tdCell, meta;
     if (!fGrid) return;
-    a1 = harmAggregateOppsList(cat1);
-    a2 = harmAggregateOppsList(cat2);
-    a3 = harmAggregateOppsList(cat3);
-    tSp = a1.spend + a2.spend + a3.spend;
-    tQ = a1.qty + a2.qty + a3.qty;
-    tSv = a1.sav + a2.sav + a3.sav;
-    tN = a1.n + a2.n + a3.n;
-    rows = [
-      ["Different supplier, same plant", a1],
-      ["Different supplier, different plant", a2],
-      ["Same supplier, different site", a3],
-      ["All categories (total)", { spend: tSp, qty: tQ, sav: tSv, n: tN }]
-    ];
+    if (Array.isArray(rowsOverride) && rowsOverride.length) {
+      /* IH-tab path: caller supplied [{name, opps, confidence}, ...].
+         We compute aggregates here so the renderer stays consistent
+         with the Harm-tab path below. The grand-total row is added
+         automatically. */
+      tSp = 0; tQ = 0; tSv = 0; tN = 0;
+      rows = [];
+      var ro;
+      for (ro = 0; ro < rowsOverride.length; ro++) {
+        var def = rowsOverride[ro];
+        var aggr = harmAggregateOppsList(def.opps || []);
+        tSp += aggr.spend; tQ += aggr.qty; tSv += aggr.sav; tN += aggr.n;
+        rows.push([def.name, aggr]);
+      }
+      rows.push(["All categories (total)", { spend: tSp, qty: tQ, sav: tSv, n: tN }]);
+    } else {
+      /* Harm-tab path: unchanged from the original signature. */
+      var a1 = harmAggregateOppsList(cat1);
+      var a2 = harmAggregateOppsList(cat2);
+      var a3 = harmAggregateOppsList(cat3);
+      tSp = a1.spend + a2.spend + a3.spend;
+      tQ = a1.qty + a2.qty + a3.qty;
+      tSv = a1.sav + a2.sav + a3.sav;
+      tN = a1.n + a2.n + a3.n;
+      rows = [
+        ["Different supplier, same plant", a1],
+        ["Different supplier, different plant", a2],
+        ["Same supplier, different site", a3],
+        ["All categories (total)", { spend: tSp, qty: tQ, sav: tSv, n: tN }]
+      ];
+    }
     inner = document.createElement("div");
     inner.className = "harmonization-section-inner px-3 pb-3 pt-1";
     tbl = document.createElement("table");
@@ -9199,7 +9419,7 @@
         if (li != null && !isNaN(li)) sumCatSav += li;
       }
     }
-    colSpan = harmKind === 2 ? 7 : 5;
+    colSpan = harmKind === 2 ? 7 : harmKind === 4 ? 6 : 5;
     secInner = document.createElement("div");
     secInner.className = "harmonization-section-inner";
     /* Section ID for the per-MECE KPI strip collapse toggle. Defaults
@@ -9274,7 +9494,9 @@
               "Category",
               "View details"
             ]
-          : ["Part number", "Description", "Supplier", "Total savings", "View details"];
+          : harmKind === 4
+            ? ["Part number", "Description", "Site", "Supplier", "Total savings", "View details"]
+            : ["Part number", "Description", "Supplier", "Total savings", "View details"];
     for (li = 0; li < labels.length; li++) {
       th2 = document.createElement("th");
       th2.textContent = labels[li];
@@ -9347,6 +9569,28 @@
                 td0R = document.createElement("td");
                 td0R.className = "text-sm idp-muted harm-opportunity";
                 td0R.textContent = "Different Supplier, Different Plant";
+                mainTrR.appendChild(td0R);
+              } else if (harmKind === 4) {
+                /* Cat 4 row: Part / Description / Site / Supplier /
+                   Total savings / View details. Site & supplier are
+                   identical within the cluster (that's the whole
+                   point of the category) so we lift them from the
+                   first supplier entry of the opportunity. */
+                var cat4Site = (rowP && rowP.suppliers && rowP.suppliers[0] && rowP.suppliers[0].site != null)
+                  ? String(rowP.suppliers[0].site)
+                  : (siteDisp || "—");
+                var cat4Sup = (rowP && rowP.suppliers && rowP.suppliers[0] && rowP.suppliers[0].supplier != null)
+                  ? String(rowP.suppliers[0].supplier)
+                  : (supDisp || "—");
+                td0R = document.createElement("td");
+                td0R.textContent = cat4Site;
+                mainTrR.appendChild(td0R);
+                td0R = document.createElement("td");
+                td0R.textContent = cat4Sup;
+                mainTrR.appendChild(td0R);
+                td0R = document.createElement("td");
+                td0R.className = "idp-harm-num harm-opportunity";
+                td0R.textContent = savR;
                 mainTrR.appendChild(td0R);
               } else {
                 td0R = document.createElement("td");
@@ -9469,12 +9713,18 @@
     if (harmMoreBtnWrap) secInner.appendChild(harmMoreBtnWrap);
     (function () {
       var outerPrefix = opts && opts.sectionIdPrefix ? String(opts.sectionIdPrefix) : "";
-      var collapseSectionId = outerPrefix + (harmKind === 1 ? "category-1" : harmKind === 2 ? "category-2" : "category-3");
+      var collapseSectionId = outerPrefix + (
+        harmKind === 1 ? "category-1" :
+        harmKind === 2 ? "category-2" :
+        harmKind === 4 ? "category-4" :
+        "category-3"
+      );
       var wrapped = harmBuildCollapsibleSection(collapseSectionId, {
         title: title,
         subtitle: "",
         variant: "category",
-        headerRight: isFinite(sumCatSav) ? fmtOppUSD(sumCatSav) + " savings" : "—"
+        headerRight: isFinite(sumCatSav) ? fmtOppUSD(sumCatSav) + " savings" : "—",
+        confidenceLabel: opts && opts.confidenceLabel ? String(opts.confidenceLabel) : ""
       }, secInner);
       wrapped.classList.add("harmonization-section");
       fGrid.appendChild(wrapped);
@@ -9518,7 +9768,43 @@
         return rowsSlice.length === 0 ? "No rows match harmonization filters." : "No harmonization opportunities match this filter combination (server MECE keys vs. current slice).";
       },
       onAfterFilter: null,
-      onAfterRender: null
+      onAfterRender: null,
+      /* Category definitions consumed by the SHARED render core.
+         The Harm tab renders the server-precomputed MECE categories
+         1, 2, 3. The new Indirect Harmonization tab overrides this
+         array with its own [4, 5] (Play 1, Play 2) definitions. Each
+         entry controls the section title, the description copy, the
+         table key, optional confidence label, and the harm_mece kind
+         this section gathers from the filtered opportunity list. */
+      categoryDefinitions: [
+        {
+          kind: 1,
+          titleTemplate: "CATEGORY 1: DIFFERENT SUPPLIER, SAME PLANT ($YEAR)",
+          description:
+            "Opportunities to switch suppliers within the same plant (same part + site, multiple suppliers). Ranked by potential savings; table shows top " +
+            HARM_TABLE_PREVIEW_ROWS +
+            " by default — use Show all to list every opportunity.",
+          tableKeyId: "cat1"
+        },
+        {
+          kind: 2,
+          titleTemplate: "CATEGORY 2: DIFFERENT SUPPLIER, DIFFERENT PLANT ($YEAR)",
+          description:
+            "Same part bought across multiple plants from different suppliers; opportunity aligns spend to the lowest unit price observed for that part across all sites. Ranked by potential savings; table shows top " +
+            HARM_TABLE_PREVIEW_ROWS +
+            " by default — use Show all to list every opportunity.",
+          tableKeyId: "cat2"
+        },
+        {
+          kind: 3,
+          titleTemplate: "CATEGORY 3: SAME SUPPLIER, DIFFERENT SITE ($YEAR)",
+          description:
+            "Shows where the same supplier charges different prices for the same part across plants. Savings equal aligning all plants to the lowest price that supplier offers. Ranked by potential savings; table shows top " +
+            HARM_TABLE_PREVIEW_ROWS +
+            " by default — use Show all to list every opportunity.",
+          tableKeyId: "cat3"
+        }
+      ]
     };
   }
 
@@ -9571,6 +9857,26 @@
       }
 
       allFlat = idpHarmFlattenServerOpportunities(hr);
+      /* The ctx may also supply pre-computed extra opportunities (the
+         IH tab pushes Play 1 + Play 2 opps here). These are merged
+         BEFORE the key-set filter so they go through the same
+         downstream pipeline (filtering, KPI rollup, Excel export,
+         row-click drill-down) as the server-precomputed Cat 1/2/3
+         opps. The Harm tab's default ctx provides no extras and this
+         block is a no-op for it. */
+      if (typeof ctx.computeExtraOpportunities === "function") {
+        try {
+          var extras = ctx.computeExtraOpportunities(rowsSlice, yYear, hr);
+          if (extras && extras.length) {
+            for (i = 0; i < extras.length; i++) {
+              if (extras[i]) allFlat.push(extras[i]);
+            }
+          }
+        } catch (eExtra) {
+          if (typeof console !== "undefined" && console.warn) console.warn("[" + ctx.logTag + "] computeExtraOpportunities failed:", eExtra && eExtra.message ? eExtra.message : eExtra);
+        }
+      }
+
       keySet = ctx.getKeySet(rowsSlice);
       filteredOpp = [];
       for (i = 0; i < allFlat.length; i++) {
@@ -9584,30 +9890,44 @@
         try { ctx.onAfterFilter(filteredOpp, allFlat, rowsSlice); } catch (eAf) {}
       }
 
-      filteredCat1 = [];
-      filteredCat2 = [];
-      filteredCat3 = [];
+      /* Split filteredOpp by harm_mece according to ctx.categoryDefinitions.
+         The Harm tab's default ctx has kinds [1, 2, 3] so an opportunity
+         with harm_mece 2 lands in the "2" bucket and an opportunity with
+         harm_mece 1 (or no harm_mece at all, the legacy default) lands in
+         the "1" bucket — preserving existing behavior. The IH tab's ctx
+         has kinds [4, 5]. */
+      var categoryDefs = (ctx && Array.isArray(ctx.categoryDefinitions) && ctx.categoryDefinitions.length)
+        ? ctx.categoryDefinitions
+        : [{ kind: 1 }, { kind: 2 }, { kind: 3 }];
+      var bucketByKind = Object.create(null);
+      for (i = 0; i < categoryDefs.length; i++) {
+        bucketByKind[categoryDefs[i].kind] = [];
+      }
+      /* Fallback bucket = first defined kind. This mirrors the prior
+         "else filteredCat1.push(p)" behavior for Harm tab and is the
+         right behavior for IH too (in practice all IH opps carry an
+         explicit harm_mece). */
+      var fallbackKind = categoryDefs[0].kind;
       for (i = 0; i < filteredOpp.length; i++) {
         p = filteredOpp[i];
         if (!p) continue;
         hm = +p.harm_mece;
-        if (hm === 3) filteredCat3.push(p);
-        else if (hm === 2) filteredCat2.push(p);
-        else filteredCat1.push(p);
+        if (bucketByKind[hm] != null) bucketByKind[hm].push(p);
+        else bucketByKind[fallbackKind].push(p);
       }
+      filteredCat1 = bucketByKind[1] || [];
+      filteredCat2 = bucketByKind[2] || [];
+      filteredCat3 = bucketByKind[3] || [];
 
       if (typeof console !== "undefined" && console.log) {
         try {
           console.log("[" + ctx.logTag + "] Opportunities (flat):", allFlat.length);
           console.log("[" + ctx.logTag + "] After tab filters (key match):", filteredOpp.length);
-          console.log(
-            "[" + ctx.logTag + "] Cat1:",
-            filteredCat1.length,
-            "· Cat2:",
-            filteredCat2.length,
-            "· Cat3:",
-            filteredCat3.length
-          );
+          var kindCountsLog = [];
+          for (i = 0; i < categoryDefs.length; i++) {
+            kindCountsLog.push("kind" + categoryDefs[i].kind + ":" + (bucketByKind[categoryDefs[i].kind] || []).length);
+          }
+          console.log("[" + ctx.logTag + "] " + kindCountsLog.join(" · "));
         } catch (eLog2) {}
       }
 
@@ -9688,49 +10008,53 @@
       window._idpHarmUnifiedRows = rowsSlice;
       window._idpHarmUnifiedYear = yYear;
       harmAppendOverallSummarySection(fGrid, filteredOpp, ctx.sectionIdPrefix);
-      harmAppendCategoryRollupTable(fGrid, filteredCat1, filteredCat2, filteredCat3, ctx.sectionIdPrefix);
-      filteredCat1 = harmSortOppsBySavingsDesc(filteredCat1);
-      filteredCat2 = harmSortOppsBySavingsDesc(filteredCat2);
-      filteredCat3 = harmSortOppsBySavingsDesc(filteredCat3);
-      harmRenderCategoryOpportunitySection(fGrid, {
-        title: "CATEGORY 1: DIFFERENT SUPPLIER, SAME PLANT (" + (yYear || "") + ")",
-        description:
-          "Opportunities to switch suppliers within the same plant (same part + site, multiple suppliers). Ranked by potential savings; table shows top " +
-          HARM_TABLE_PREVIEW_ROWS +
-          " by default — use Show all to list every opportunity.",
-        opps: filteredCat1,
-        rowsSlice: rowsSlice,
-        yYear: yYear,
-        harmKind: 1,
-        tableKey: ctx.tableKeyPrefix + "cat1",
-        sectionIdPrefix: ctx.sectionIdPrefix
-      });
-      harmRenderCategoryOpportunitySection(fGrid, {
-        title: "CATEGORY 2: DIFFERENT SUPPLIER, DIFFERENT PLANT (" + (yYear || "") + ")",
-        description:
-          "Same part bought across multiple plants from different suppliers; opportunity aligns spend to the lowest unit price observed for that part across all sites. Ranked by potential savings; table shows top " +
-          HARM_TABLE_PREVIEW_ROWS +
-          " by default — use Show all to list every opportunity.",
-        opps: filteredCat2,
-        rowsSlice: rowsSlice,
-        yYear: yYear,
-        harmKind: 2,
-        tableKey: ctx.tableKeyPrefix + "cat2",
-        sectionIdPrefix: ctx.sectionIdPrefix
-      });
-      harmRenderCategoryOpportunitySection(fGrid, {
-        title: "CATEGORY 3: SAME SUPPLIER, DIFFERENT SITE (" + (yYear || "") + ")",
-        description:
-          "Shows where the same supplier charges different prices for the same part across plants. Savings equal aligning all plants to the lowest price that supplier offers. Ranked by potential savings; table shows top " +
-          HARM_TABLE_PREVIEW_ROWS +
-          " by default — use Show all to list every opportunity.",
-        opps: filteredCat3,
-        rowsSlice: rowsSlice,
-        yYear: yYear,
-        harmKind: 3,
-        tableKey: ctx.tableKeyPrefix + "cat3",
-        sectionIdPrefix: ctx.sectionIdPrefix
-      });
+      /* Build the per-kind, savings-sorted list of opportunities that
+         feed both the rollup table and each category section. */
+      var sortedBucketByKind = Object.create(null);
+      for (i = 0; i < categoryDefs.length; i++) {
+        sortedBucketByKind[categoryDefs[i].kind] = harmSortOppsBySavingsDesc(bucketByKind[categoryDefs[i].kind] || []);
+      }
+      /* The rollup-table call shape is preserved for the Harm tab (it
+         still receives cat1/cat2/cat3 as before). The IH tab supplies
+         its own categoryDefinitions and exercises the new
+         rollupRowsOverride path. */
+      if (ctx.rollupRowsOverride) {
+        harmAppendCategoryRollupTable(fGrid, [], [], [], ctx.sectionIdPrefix, null, null, ctx.rollupRowsOverride(sortedBucketByKind));
+      } else {
+        harmAppendCategoryRollupTable(fGrid, sortedBucketByKind[1] || [], sortedBucketByKind[2] || [], sortedBucketByKind[3] || [], ctx.sectionIdPrefix);
+      }
+      /* Render each category section in the order defined by ctx.
+         Apply the rendering cap from INDIRECT_HARM_MAX_RENDERED_OPPS
+         for harm_mece 4 / 5 sections (IH tab), and unconditionally for
+         any other kind that the ctx flags via def.applyMaxRenderedCap.
+         The Excel export is uncapped — caps are rendering-only. */
+      var kindI, def, oppsBucket, finalOpps, truncated, sectionDescription, finalTitle;
+      for (kindI = 0; kindI < categoryDefs.length; kindI++) {
+        def = categoryDefs[kindI];
+        oppsBucket = sortedBucketByKind[def.kind] || [];
+        finalOpps = oppsBucket;
+        truncated = 0;
+        if ((def.kind === 4 || def.kind === 5 || def.applyMaxRenderedCap) && oppsBucket.length > INDIRECT_HARM_MAX_RENDERED_OPPS) {
+          finalOpps = oppsBucket.slice(0, INDIRECT_HARM_MAX_RENDERED_OPPS);
+          truncated = oppsBucket.length - INDIRECT_HARM_MAX_RENDERED_OPPS;
+        }
+        sectionDescription = def.description || "";
+        if (truncated > 0) {
+          sectionDescription += " Showing top " + INDIRECT_HARM_MAX_RENDERED_OPPS + " of " + oppsBucket.length + " qualifying opportunities; the Excel download includes the full list.";
+        }
+        finalTitle = String(def.titleTemplate || ("CATEGORY " + def.kind)).replace(/\$YEAR/g, String(yYear || ""));
+        harmRenderCategoryOpportunitySection(fGrid, {
+          title: finalTitle,
+          description: sectionDescription,
+          opps: finalOpps,
+          rowsSlice: rowsSlice,
+          yYear: yYear,
+          harmKind: def.kind,
+          tableKey: ctx.tableKeyPrefix + (def.tableKeyId || ("cat" + def.kind)),
+          sectionIdPrefix: ctx.sectionIdPrefix,
+          confidenceLabel: def.confidenceLabel || ""
+        });
+      }
       loadCollapseStates();
       if (typeof ctx.onAfterRender === "function") {
         try { ctx.onAfterRender(filteredOpp, hbarDisplay, rowsSlice); } catch (eAr) {}
@@ -10836,846 +11160,886 @@
   }
 
   /* ============================================
-  SECTION: INDIRECT HARMONIZATION TAB
+  SECTION: INDIRECT HARMONIZATION TAB (REDESIGN)
 
-  Reuses the standard harmonization math (harmonization-client.js
-  exposes idpCalculateHarmonizationFromRows) but pre-processes its
-  input so that:
-    1. Only L1 = Indirect rows are considered.
-    2. Rows whose Part Number is blank/non-numeric are RE-KEYED to a
-       synthetic "fuzzy cluster" key derived from a Part Name
-       (description) token-set Jaccard match (default >= 0.80). This
-       merges near-duplicates ("Office Paper A4 White" vs "office
-       paper - a4 - white" vs "WHITE A4 OFFICE PAPER") into a single
-       harmonization "item" so the math doesn't fragment savings
-       across slight description variants.
+  Analyzes EXACTLY two price-rightsizing categories on L1 = Indirect
+  spend (additive to the global filter bar):
 
-  Pure clustering math lives in src/dashboard/index-math.mjs (exposed
-  on window.IDP_INDEX_MATH as fuzzyClusterNames / normalizeNameForFuzzy
-  / tokenJaccard / FUZZY_NAME_DEFAULTS); the glue + UI lives here.
+    Cat 1 — Same Supplier, Same Site — Single-Invoice Rightsizing.
+            Benchmark = MIN unit price within the (Part key, Site,
+            Supplier) group, even from a single invoice. Per-txn
+            savings = (up - bench) × qty for txns above the benchmark.
+            High-confidence ("they accepted this price once, they can
+            accept it again"). Single-invoice benchmark is intentional;
+            pre-clean and noise filters (below) prevent a dummy
+            transaction from becoming the benchmark.
+
+    Cat 2 — Same Supplier, Different Sites — Cross-Site Rightsizing
+            to Site Average. For every (Part key, Supplier) group
+            spanning ≥ 2 sites, compute site_avg = Σspend ÷ Σqty
+            (volume-weighted). Benchmark = MIN site_avg among sites
+            with ≥ INDIRECT_HARM_CAT2_MIN_BENCHMARK_SITE_TXNS = 3
+            transactions in the group. Per-txn savings = (up - bench)
+            × qty for transactions at non-benchmark sites with up >
+            bench. Medium-confidence — uses site averages (not single
+            invoices) so the cross-site lever is defensible.
+
+  Pre-clean pass (applied BEFORE any grouping or benchmarking — these
+  transactions cease to exist for the purposes of the analysis):
+    • r.material OR r.noun contains any INDIRECT_HARM_DUMMY_WORD
+      (word-boundary, case-insensitive)
+    • qty ≤ 0 OR unit price ≤ 0
+    • line spend < INDIRECT_HARM_MIN_LINE_SPEND_USD ($50)
+    • unit price < INDIRECT_HARM_MIN_UNIT_PRICE_USD ($0.05)
+  Exclusion counts are surfaced per-rule in the diagnostic chip row.
+
+  Part keying: numeric-bearing Part Number wins; otherwise we fall
+  back to fuzzy clustering on Part Description (token-set Jaccard ≥
+  INDIRECT_HARM_FUZZY_THRESHOLD = 0.80, blocked by L3 category for
+  speed). After Union-Find, a similarity sanity-check splits clusters
+  whose pairwise Jaccard drops below threshold (prevents transitive
+  A~B~C chains from merging semantically distant items). Fuzzy keys
+  take the form IH#FUZZY#<id>.
+
+  De-duplication: A transaction can qualify for both categories. We
+  assign each dual-eligible transaction to the category with the
+  LARGER per-transaction savings. Ties go to Cat 1 (higher confidence
+  / more specific). Group totals are recomputed post-dedup; any group
+  below INDIRECT_HARM_MIN_SAVINGS_USD is dropped.
+
+  Math layer (pre-clean + groups + dedup + opps + diagnostics) lives
+  in harmonization-client.js → idpComputeIndirectHarmFromRows. Fuzzy
+  clustering lives in src/dashboard/index-math.mjs (exposed on
+  window.IDP_INDEX_MATH as fuzzyClusterNames). The render layer drives
+  the SHARED renderHarmonizationUnified renderer via a custom ctx, so
+  layout, drill-down, KPI strip and table behavior are identical to
+  the standard Harmonization tab.
   ============================================ */
 
   /* --------------------------------------------------------------
-   * Noise-filter thresholds for the INDIRECT Harmonization tab only.
-   *
-   * Indirect spend mixes real consumables with services priced per
-   * line item, lab/testing tranches, and small-cent placeholders.
-   * When those land in the same harmonization cluster they generate
-   * cluster benchmarks that look like opportunities ($0.01 vs $19.94)
-   * but actually reflect mismatched UoMs or different items grouped
-   * by description alone. We drop any cluster whose:
-   *   (a) cheapest supplier $/unit (the benchmark) is below
-   *       INDIRECT_HARM_MIN_BENCHMARK_USD, OR
-   *   (b) MAX($/unit) / MIN($/unit) ratio exceeds
-   *       INDIRECT_HARM_MAX_PRICE_RATIO (default 100x, well above
-   *       any real bulk-discount range).
-   *
-   * Tune via these two constants. Do NOT apply to the regular
-   * Harmonization tab; the noise pattern is concentrated in
-   * indirect spend (services / lab line items / small consumables).
+   * Indirect Harmonization thresholds. These are the ONLY math
+   * thresholds for the IH tab. Bumping any changes which groups
+   * become opportunities; the Excel "Methodology" sheet documents
+   * every value to the user.
    * -------------------------------------------------------------- */
+  /* PRE-CLEAN — drop transactions whose part-description text
+     matches any of these dummy/junk words (word-boundary,
+     case-insensitive). Matched against r.material AND r.noun. */
+  var INDIRECT_HARM_DUMMY_WORDS = ["dummy", "sample", "test", "ncr", "return", "credit", "adjustment", "void", "reversal", "placeholder"];
+  /* PRE-CLEAN — drop transactions whose line spend is below this.
+     Accounting noise (sub-$50 lines) is often not real signal. */
+  var INDIRECT_HARM_MIN_LINE_SPEND_USD = 50;
+  /* PRE-CLEAN — drop transactions whose unit price is below this.
+     Sub-cent unit prices are almost always dummy / placeholder. */
+  var INDIRECT_HARM_MIN_UNIT_PRICE_USD = 0.05;
+  /* GROUP-LEVEL — cluster benchmark unit price must be at least
+     this (USD). Filters cent-priced services / placeholder noise
+     that survived pre-clean. */
   var INDIRECT_HARM_MIN_BENCHMARK_USD = 1.00;
+  /* GROUP-LEVEL — group's MAX($/unit) / MIN($/unit) must not
+     exceed this. Filters mismatched units-of-measure and obvious
+     data artifacts. 100x is well above any real bulk-discount
+     range. */
   var INDIRECT_HARM_MAX_PRICE_RATIO = 100;
+  /* GROUP-LEVEL — group must have at least this many raw
+     transactions in the period (signal-quality; one-off prices
+     are unreliable). */
+  var INDIRECT_HARM_MIN_TRANSACTIONS = 5;
+  /* GROUP-LEVEL — group's total POST-DEDUP savings must be at
+     least this (USD). Drops trivial groups whose savings collapse
+     once dual-eligible transactions go to the other category. */
+  var INDIRECT_HARM_MIN_SAVINGS_USD = 5000;
+  /* CAT 2 ONLY — the benchmark site (whose volume-weighted average
+     is used as the cross-site benchmark) must itself have at least
+     this many transactions. Keeps a singleton "lucky low" invoice
+     from becoming a defensible cross-site benchmark. The group-
+     level MIN_TRANSACTIONS filter applies to the whole multi-site
+     group; this filter applies to the benchmark site specifically. */
+  var INDIRECT_HARM_CAT2_MIN_BENCHMARK_SITE_TXNS = 3;
+  /* Token-set Jaccard threshold for fuzzy description clustering.
+     Used both during Union-Find merging and during the post-merge
+     similarity sanity check. */
+  var INDIRECT_HARM_FUZZY_THRESHOLD = 0.80;
 
-  /** Compute min/max/ratio of $/unit across an opportunity's supplier
-   *  rows. Returns null if there are no positive finite unit prices,
-   *  which means the caller can't meaningfully classify (leave intact). */
-  function _idpIhComputePriceStats(p) {
-    if (!p || !p.suppliers || !p.suppliers.length) return null;
-    var min = Infinity, max = -Infinity, anyOk = false, i, up;
-    for (i = 0; i < p.suppliers.length; i++) {
-      up = p.suppliers[i] != null ? +p.suppliers[i].unit_price : NaN;
-      if (!isFinite(up) || up <= 0) continue;
-      anyOk = true;
-      if (up < min) min = up;
-      if (up > max) max = up;
+  /* Rendering caps are declared at the top of this script
+     (INDIRECT_HARM_MAX_BARS / TABLE_TOP_N / DRILLDOWN_TXN_LIMIT /
+     MAX_RENDERED_OPPS) — they control DISPLAY only. The math is
+     uncapped; the Excel export retains every qualifying post-dedup
+     opportunity. */
+
+  /* Lazy cache: full IH prep (fuzzy clustering + key remap) is
+     expensive (~O(N log N) on indirect rows). Re-run only when the
+     row slice changes. */
+  var _idpIhPrepCache = null;     // { sliceSig, prep }
+  var _idpIhLastResult = null;    // { cat1Opps, cat2Opps, diagnostics, prepDiagnostics, fuzzyMembersByKey, fuzzyMetaByKey, sliceLength }
+  var _idpIhWired = false;
+
+  /* Slice signature: cheap fingerprint to detect when the global
+     filter selection has changed enough to invalidate the cached
+     prep. We hash the length + the first/last row's part+site
+     because the slice array identity also resets on every filter
+     pass even when contents are identical, so identity-based caching
+     would never hit. */
+  function _idpIhSliceSig(slice) {
+    if (!slice || !slice.length) return "0";
+    var first = slice[0] || {};
+    var last = slice[slice.length - 1] || {};
+    return slice.length + "|" + (first.part != null ? String(first.part) : "") +
+      "|" + (first.site != null ? String(first.site) : "") +
+      "|" + (last.part != null ? String(last.part) : "") +
+      "|" + (last.site != null ? String(last.site) : "");
+  }
+
+  /* Return only the rows currently visible after the global Spend
+     Review filter bar, additionally restricted to L1 = Indirect. */
+  function _idpIhGetIndirectRows() {
+    if (typeof allRowsFiltered === "undefined" || !allRowsFiltered || !allRowsFiltered.length) return [];
+    var out = [];
+    var i;
+    for (i = 0; i < allRowsFiltered.length; i++) {
+      var r = allRowsFiltered[i];
+      if (!r) continue;
+      var c1 = String(r.category_l1 != null ? r.category_l1 : r.c1 != null ? r.c1 : "").trim().toLowerCase();
+      if (c1 === "indirect" || c1 === "indirects") out.push(r);
     }
-    if (!anyOk) return null;
-    return { min: min, max: max, ratio: max / min };
+    return out;
   }
 
-  /** True if this IH opportunity should be filtered out as noise.
-   *  Returns false if we can't classify (no usable price data) so the
-   *  default is to keep the opportunity. */
-  function _idpIhIsNoiseOpportunity(p) {
-    var s = _idpIhComputePriceStats(p);
-    if (!s) return false;
-    if (s.min < INDIRECT_HARM_MIN_BENCHMARK_USD) return true;
-    if (isFinite(s.ratio) && s.ratio > INDIRECT_HARM_MAX_PRICE_RATIO) return true;
-    return false;
+  /* True if a Part Number is "numeric-bearing" — same rule the
+     standard Harmonization tab uses via harmonizationItemKey (any
+     digit present anywhere in the string). Blank, whitespace-only,
+     and fully non-numeric strings fall back to fuzzy clustering. */
+  function _idpIhHasRealPartNumber(r) {
+    if (!r) return false;
+    var p = r.part != null ? String(r.part).trim() : "";
+    if (!p) return false;
+    return /\d/.test(p);
   }
 
-  /** Apply the noise filter across the IH payload's three opportunity
-   *  arrays (category_1, category_3, all_opportunities). Mutates the
-   *  payload in place. Returns the count of UNIQUE clusters excluded
-   *  (we count against all_opportunities because each opp also appears
-   *  in either category_1 or category_3 — counting per-array would
-   *  double-count). */
-  function _idpIhApplyNoiseFilter(payload) {
-    if (!payload) return 0;
-    var excluded = 0;
-    if (payload.all_opportunities && payload.all_opportunities.length) {
-      for (var i = 0; i < payload.all_opportunities.length; i++) {
-        if (_idpIhIsNoiseOpportunity(payload.all_opportunities[i])) excluded++;
+  /* Pairwise-similarity sanity check. Union-Find can chain clusters
+     where A~B and B~C merge {A,B,C} even though A~C falls below
+     threshold. For any cluster we form, verify every pair's Jaccard
+     stays ≥ threshold; if any pair fails, drop the WEAKEST member
+     (the one whose mean Jaccard to the rest is lowest) and repeat
+     until the cluster is dense. Returns the split-survivor member
+     index list (input is array of clustering-item indexes; works
+     against the same `tokens` array fuzzyClusterNames uses). */
+  function _idpIhSimilaritySanityCheck(memberIdxs, tokenSets, threshold) {
+    if (!memberIdxs || memberIdxs.length < 2) return { kept: memberIdxs || [], split: false };
+    var dropped = false;
+    var members = memberIdxs.slice();
+    var IDPMATH = (typeof window !== "undefined" && window.IDP_INDEX_MATH) ? window.IDP_INDEX_MATH : null;
+    if (!IDPMATH || typeof IDPMATH.tokenJaccard !== "function") return { kept: members, split: false };
+    var maxIters = members.length;
+    while (members.length >= 2 && maxIters-- > 0) {
+      var worstIdx = -1;
+      var worstMean = Infinity;
+      var anyBad = false;
+      var i, j, sim, meanSim, simSum, simCount;
+      /* Compute each member's mean pairwise Jaccard to the rest;
+         find the lowest min-pair across all (i,j). */
+      for (i = 0; i < members.length; i++) {
+        simSum = 0; simCount = 0;
+        for (j = 0; j < members.length; j++) {
+          if (i === j) continue;
+          sim = IDPMATH.tokenJaccard(tokenSets[members[i]], tokenSets[members[j]]);
+          if (sim < threshold) anyBad = true;
+          simSum += sim;
+          simCount++;
+        }
+        meanSim = simCount ? simSum / simCount : 0;
+        if (meanSim < worstMean) { worstMean = meanSim; worstIdx = i; }
       }
-      payload.all_opportunities = payload.all_opportunities.filter(function (p) {
-        return !_idpIhIsNoiseOpportunity(p);
-      });
+      if (!anyBad) break;
+      members.splice(worstIdx, 1);
+      dropped = true;
     }
-    if (payload.category_1 && payload.category_1.length) {
-      payload.category_1 = payload.category_1.filter(function (p) {
-        return !_idpIhIsNoiseOpportunity(p);
-      });
-    }
-    if (payload.category_3 && payload.category_3.length) {
-      payload.category_3 = payload.category_3.filter(function (p) {
-        return !_idpIhIsNoiseOpportunity(p);
-      });
-    }
-    return excluded;
+    return { kept: members, split: dropped };
   }
 
-  /** Convert a raw row to the fuzzy-clustering input shape — pulls the
-   *  best available "part name" / description and the L3 blocking key.
-   *  Returns null if no usable signal at all (item is dropped). */
-  function idpIhRowToClusterItem(rowIdx, r) {
-    if (!r) return null;
-    var name = "";
-    if (r.material != null && String(r.material).trim() !== "") name = String(r.material).trim();
-    else if (r.noun != null && String(r.noun).trim() !== "") name = String(r.noun).trim();
-    else if (r.description != null && String(r.description).trim() !== "") name = String(r.description).trim();
-    if (!name) return null;
-    var l3 = "";
-    if (r.category_l3 != null) l3 = String(r.category_l3).trim();
-    else if (r.c3 != null) l3 = String(r.c3).trim();
-    if (!l3) {
-      /* Fall back to L2 / L1 as the blocking key when L3 is missing.
-       * Anything is better than no block (which would put all
-       * blank-L3 rows in a single huge candidate pool). */
-      if (r.category_l2 != null) l3 = "L2:" + String(r.category_l2).trim();
-      else if (r.c2 != null) l3 = "L2:" + String(r.c2).trim();
-      else if (r.category_l1 != null) l3 = "L1:" + String(r.category_l1).trim();
-      else if (r.c1 != null) l3 = "L1:" + String(r.c1).trim();
-      else l3 = "__nb__";
-    }
-    return { id: rowIdx, name: name, block: l3 };
-  }
-
-  /** Does this row have a usable, numeric-bearing Part Number? Mirrors
-   *  the rule used by the existing harmonizationItemKey() in
-   *  harmonization-client.js — a part is "real" only if it contains at
-   *  least one digit. Pure strings without digits ("MISC", "TBD") are
-   *  treated as blank and fall through to fuzzy clustering. */
-  function idpIhHasRealPartNumber(r) {
-    if (!r || r.part == null) return false;
-    var s = String(r.part).trim();
-    if (s === "") return false;
-    return /\d/.test(s);
-  }
-
-  /** Get the indirect-only row slice filtered by the current global
-   *  Spend Review filter bar. The user explicitly opted OUT of locking
-   *  the global filter to Indirect (they own that), so this just
-   *  additively filters whatever the user has selected upstream. */
-  function idpIhGetIndirectRows() {
-    var idx = (typeof getFiltered === "function") ? getFiltered() : null;
-    if (!idx || !idx.length) return { rows: [], dIdx: [] };
-    var rows = D && D.rows ? D.rows : [];
-    var outRows = [], outIdx = [], i, di, r;
-    for (i = 0; i < idx.length; i++) {
-      di = idx[i];
-      r = rows[di];
+  /* Build the IH prep: filters to Indirect, computes part keys
+     (numeric-bearing Part Number wins, blank/non-numeric → fuzzy
+     cluster id), runs the similarity sanity check, returns the
+     prep + diagnostics. The output `rows` array is the original
+     slice with each row carrying a `_idpIhKey` field for downstream
+     consumers (math layer reads it via partKeyFn). */
+  function _idpIhBuildPrep(slice) {
+    var diag = {
+      totalIndirectRows: slice.length,
+      rowsKeyedByPartNum: 0,
+      rowsKeyedByFuzzy: 0,
+      fuzzyClustersFormed: 0,
+      fuzzyClustersSplitBySimilarity: 0
+    };
+    var rows = new Array(slice.length);
+    /* Step 1: stamp _idpIhKey for Part-Number-keyed rows; collect
+       fuzzy candidates (blank / non-numeric part). */
+    var fuzzyCandidates = [];
+    var fuzzyCandidateIdxs = [];
+    var i;
+    for (i = 0; i < slice.length; i++) {
+      var r = slice[i];
+      rows[i] = r;
       if (!r) continue;
-      if (idpRowSpendTypeString(r) !== "Indirect") continue;
-      outRows.push(r);
-      outIdx.push(di);
-    }
-    return { rows: outRows, dIdx: outIdx };
-  }
-
-  /** Build the cluster lookup table for the indirect slice and return
-   *  the prepared rows + diagnostics. Each row gets a stable synthetic
-   *  `part` field:
-   *    - If the original had a numeric-bearing Part Number → kept as-is.
-   *    - Else → "IH#FUZZY#<clusterId>" (digit-bearing, so the existing
-   *      harmonizationItemKey() routes through the "use r.part" branch
-   *      and the math stays untouched).
-   *
-   *  The original Part Number is stashed on `_origPart` and the cluster
-   *  metadata (was-fuzzy, display name, merged-from list) on `_ihFuzzy`
-   *  so the renderer can surface the badge + tooltip without recomputing.
-   */
-  function idpIhPrepareRows(indirectSlice) {
-    /* indirectSlice = { rows: [...], dIdx: [...] } from
-       idpIhGetIndirectRows. The parallel dIdx array records each
-       row's original index into D.rows so the fuzzy cluster member
-       list can be expressed in D.rows terms — that's what
-       harmRawRowsForPart needs to look up raw rows for the
-       row-click chart + line-detail drilldown. */
-    var indirectRows = indirectSlice && indirectSlice.rows ? indirectSlice.rows : (indirectSlice || []);
-    var dRowIdxBySlot = indirectSlice && indirectSlice.dIdx ? indirectSlice.dIdx : null;
-    var M = (typeof window !== "undefined" && window.IDP_INDEX_MATH) || null;
-    var fuzzyFn = M && typeof M.fuzzyClusterNames === "function" ? M.fuzzyClusterNames : null;
-    var defaults = M && M.FUZZY_NAME_DEFAULTS ? M.FUZZY_NAME_DEFAULTS : { threshold: 0.80, minTokenLen: 2 };
-    var prepared = [];
-    var blankRows = [];          /* indexes into indirectRows that need clustering */
-    var blankClusterItems = [];  /* parallel list passed to fuzzyClusterNames */
-    var fromPartNumber = 0;
-    var fromFuzzy = 0;
-    var droppedNoSignal = 0;
-    var i, r, item, dRowIdx;
-    /* Pass 1: classify each row. */
-    for (i = 0; i < indirectRows.length; i++) {
-      r = indirectRows[i];
-      if (!r) continue;
-      dRowIdx = dRowIdxBySlot ? dRowIdxBySlot[i] : -1;
-      if (idpIhHasRealPartNumber(r)) {
-        prepared.push({ row: r, dRowIdx: dRowIdx, source: "part", fuzzyMembers: null, displayName: null });
-        fromPartNumber++;
+      if (_idpIhHasRealPartNumber(r)) {
+        r._idpIhKey = String(r.part).trim();
+        diag.rowsKeyedByPartNum++;
       } else {
-        item = idpIhRowToClusterItem(i, r);
-        if (!item) { droppedNoSignal++; continue; }
-        blankRows.push({ row: r, dRowIdx: dRowIdx, listIdx: blankClusterItems.length });
-        blankClusterItems.push(item);
+        r._idpIhKey = null; // assigned after fuzzy clustering
+        var name = "";
+        if (r.noun != null && String(r.noun).trim()) name = String(r.noun).trim();
+        else if (r.material != null && String(r.material).trim()) name = String(r.material).trim();
+        else if (r.category_l3 != null && String(r.category_l3).trim()) name = String(r.category_l3).trim();
+        else if (r.c3 != null && String(r.c3).trim()) name = String(r.c3).trim();
+        fuzzyCandidates.push({
+          id: i,
+          name: name,
+          block: r.category_l3 != null ? String(r.category_l3) : (r.c3 != null ? String(r.c3) : "")
+        });
+        fuzzyCandidateIdxs.push(i);
       }
     }
-    /* Pass 2: cluster the blank-part rows. */
-    var clusterInfo = null;
-    if (fuzzyFn && blankClusterItems.length > 0) {
-      try {
-        clusterInfo = fuzzyFn(blankClusterItems, {});
-      } catch (eFc) {
-        clusterInfo = null;
-        if (typeof console !== "undefined" && console.warn) console.warn("[indirect-harm] fuzzy clustering failed:", eFc);
+    /* Step 2: run fuzzy clustering on candidates. */
+    var IDPMATH = (typeof window !== "undefined" && window.IDP_INDEX_MATH) ? window.IDP_INDEX_MATH : null;
+    var fuzzyMembersByKey = Object.create(null);
+    var fuzzyMetaByKey = Object.create(null);
+    if (fuzzyCandidates.length && IDPMATH && typeof IDPMATH.fuzzyClusterNames === "function") {
+      var clusterRes = IDPMATH.fuzzyClusterNames(fuzzyCandidates, {
+        threshold: INDIRECT_HARM_FUZZY_THRESHOLD
+      });
+      /* Step 3: similarity sanity check on each formed cluster.
+         fuzzyClusterNames returns clusters: [{id, members: [item-idx], rep, displayName}]
+         where item-idx points into fuzzyCandidates (NOT into slice). */
+      var tokenSets = [];
+      var ci;
+      for (ci = 0; ci < fuzzyCandidates.length; ci++) {
+        var nrm = IDPMATH.normalizeNameForFuzzy(fuzzyCandidates[ci].name, { threshold: INDIRECT_HARM_FUZZY_THRESHOLD });
+        tokenSets[ci] = nrm.tokens;
       }
-    }
-    /* Pass 3: stitch cluster keys back onto the prepared rows.
-     * Build per-cluster member descriptions so the renderer can show
-     * "merged from: A, B, C" in the row tooltip. */
-    var clusterMembers = {};  /* clusterId -> Set<string> of raw names */
-    if (clusterInfo && clusterInfo.clusters) {
-      var c, cl, kk, memIdx, origItem;
-      for (c = 0; c < clusterInfo.clusters.length; c++) {
-        cl = clusterInfo.clusters[c];
-        clusterMembers[cl.id] = [];
-        var seenMembers = {};
-        for (kk = 0; kk < cl.members.length; kk++) {
-          memIdx = cl.members[kk];
-          origItem = blankClusterItems[memIdx];
-          if (origItem && origItem.name && !seenMembers[origItem.name]) {
-            seenMembers[origItem.name] = 1;
-            clusterMembers[cl.id].push(origItem.name);
-          }
+      var clusters = clusterRes.clusters || [];
+      var cl;
+      for (cl = 0; cl < clusters.length; cl++) {
+        var c = clusters[cl];
+        if (!c || !c.members || !c.members.length) continue;
+        diag.fuzzyClustersFormed++;
+        var splitRes = _idpIhSimilaritySanityCheck(c.members, tokenSets, INDIRECT_HARM_FUZZY_THRESHOLD);
+        if (splitRes.split) diag.fuzzyClustersSplitBySimilarity++;
+        if (!splitRes.kept || !splitRes.kept.length) continue;
+        var clusterKey = "IH#FUZZY#" + cl;
+        var mergedDescriptions = [];
+        var membersOut = [];
+        var mi;
+        for (mi = 0; mi < splitRes.kept.length; mi++) {
+          var memberItemIdx = splitRes.kept[mi]; // index into fuzzyCandidates
+          var ci2 = fuzzyCandidates[memberItemIdx];
+          if (!ci2) continue;
+          var sliceIdx = ci2.id; // index into slice
+          var rowRef = rows[sliceIdx];
+          if (!rowRef) continue;
+          rowRef._idpIhKey = clusterKey;
+          diag.rowsKeyedByFuzzy++;
+          var dscr = ci2.name || "";
+          /* Store the actual row REFERENCE (not the slice index) so
+             downstream lookups (harmRawRowsForPart) work without
+             having to know about the slice. */
+          membersOut.push({ row: rowRef, description: dscr });
+          if (mergedDescriptions.indexOf(dscr) < 0) mergedDescriptions.push(dscr);
+        }
+        if (membersOut.length) {
+          fuzzyMembersByKey[clusterKey] = membersOut;
+          fuzzyMetaByKey[clusterKey] = {
+            cluster_index: cl,
+            member_count: membersOut.length,
+            display_name: c.displayName || c.rep || "",
+            merged_descriptions: mergedDescriptions
+          };
         }
       }
     }
-    /* Parallel map: synthetic "IH#FUZZY#<cid>" -> array of D.rows
-       indices that belong to that cluster. Consumed by the
-       fuzzy-aware branch in harmRawRowsForPart so the row-click
-       chart + line-detail drilldown can find the underlying raw
-       rows even though the cluster's synthetic part number was
-       generated client-side. */
-    var fuzzyDRowsByClusterId = {};
-    for (i = 0; i < blankRows.length; i++) {
-      var brec = blankRows[i];
-      var cid = clusterInfo && clusterInfo.clusterIdByItemIdx
-        ? clusterInfo.clusterIdByItemIdx[brec.listIdx] : -1;
-      if (cid == null || cid < 0) {
-        /* Row had no usable token signal after normalization — skip.
-         * (Already counted in droppedNoSignal above for the rows that
-         * failed idpIhRowToClusterItem; clustering-empty rows are
-         * extremely rare in practice but we drop them too.) */
-        continue;
-      }
-      var displayName = clusterInfo.clusters[cid].displayName;
-      var members = clusterMembers[cid] || [];
-      prepared.push({
-        row: brec.row,
-        dRowIdx: brec.dRowIdx,
-        source: "fuzzy",
-        fuzzyMembers: members,
-        displayName: displayName,
-        clusterId: cid
-      });
-      if (brec.dRowIdx != null && brec.dRowIdx >= 0) {
-        if (!fuzzyDRowsByClusterId[cid]) fuzzyDRowsByClusterId[cid] = [];
-        fuzzyDRowsByClusterId[cid].push(brec.dRowIdx);
-      }
-      fromFuzzy++;
-    }
-    /* Pass 4: emit clones with the synthetic part key stamped on.
-     * We CLONE here so we don't mutate D.rows — that would corrupt
-     * every other tab's view of the underlying data. */
-    var clones = [];
-    var j;
-    for (j = 0; j < prepared.length; j++) {
-      var rec = prepared[j];
-      var src = rec.row;
-      /* Shallow clone every consumed field. harmonization-client.js
-       * reads: part, supplier (or su), spend, quantity (or qty),
-       * material/noun, site, year/ym, category_l*. */
-      var clone = {};
-      var key;
-      for (key in src) {
-        if (Object.prototype.hasOwnProperty.call(src, key)) clone[key] = src[key];
-      }
-      clone._origPart = src.part;
-      if (rec.source === "fuzzy") {
-        var synthKey = "IH#FUZZY#" + rec.clusterId;
-        clone.part = synthKey;
-        clone._ihFuzzy = true;
-        clone._ihDisplayName = rec.displayName || "";
-        clone._ihMembers = rec.fuzzyMembers || [];
-        /* Replace noun/material with the cluster's representative so
-         * any downstream description lookup is consistent across all
-         * rows in the cluster. */
-        clone.noun = rec.displayName || clone.noun;
-        clone.material = rec.displayName || clone.material;
-      } else {
-        clone._ihFuzzy = false;
-      }
-      clones.push(clone);
-    }
-    /* Build the synthKey -> [D.rows indices] map keyed by the same
-       "IH#FUZZY#<cid>" string we stamp on the clones above. */
-    var fuzzyMembersByKey = {};
-    var fuzzyMetaByKey = {};
-    var cidStr;
-    for (cidStr in fuzzyDRowsByClusterId) {
-      if (!Object.prototype.hasOwnProperty.call(fuzzyDRowsByClusterId, cidStr)) continue;
-      fuzzyMembersByKey["IH#FUZZY#" + cidStr] = fuzzyDRowsByClusterId[cidStr];
-    }
-    for (j = 0; j < prepared.length; j++) {
-      var prec = prepared[j];
-      if (prec && prec.source === "fuzzy" && prec.clusterId != null) {
-        fuzzyMetaByKey["IH#FUZZY#" + prec.clusterId] = {
-          displayName: prec.displayName || "",
-          members: prec.fuzzyMembers || []
-        };
-      }
+    /* Step 4: rows whose fuzzy cluster was rejected by the sanity
+       check fall out of IH analysis. Stamp them with empty key so
+       partKeyFn returns "" and they're skipped by the math. */
+    for (i = 0; i < rows.length; i++) {
+      if (rows[i] && rows[i]._idpIhKey == null) rows[i]._idpIhKey = "";
     }
     return {
-      rows: clones,
+      rows: rows,
+      diagnostics: diag,
       fuzzyMembersByKey: fuzzyMembersByKey,
-      fuzzyMetaByKey: fuzzyMetaByKey,
-      diagnostics: {
-        indirectRowsIn: indirectRows.length,
-        rowsPrepared: clones.length,
-        keyedByPartNumber: fromPartNumber,
-        keyedByFuzzy: fromFuzzy,
-        droppedNoSignal: droppedNoSignal,
-        clusters: clusterInfo && clusterInfo.diagnostics ? clusterInfo.diagnostics : null
-      }
+      fuzzyMetaByKey: fuzzyMetaByKey
     };
   }
 
-  /* Cache the last computed payload so the download button can reuse
-   * it instead of recomputing. Invalidated on every render. */
-  var _idpIhLastPayload = null;
-  var _idpIhWired = false;
+  function _idpIhPrepareSliceCached(slice) {
+    var sig = _idpIhSliceSig(slice);
+    if (_idpIhPrepCache && _idpIhPrepCache.sliceSig === sig) return _idpIhPrepCache.prep;
+    var prep = _idpIhBuildPrep(slice);
+    _idpIhPrepCache = { sliceSig: sig, prep: prep };
+    return prep;
+  }
+
+  /* ---------- Render ---------- */
+
+  function _idpIhBuildKeySet(prep) {
+    var ks = Object.create(null);
+    var rows = prep.rows;
+    var i;
+    for (i = 0; i < rows.length; i++) {
+      var r = rows[i];
+      if (!r || !r._idpIhKey) continue;
+      ks[r._idpIhKey] = 1;
+    }
+    return ks;
+  }
+
+  function _idpIhFmtUsd(v) {
+    if (v == null || !isFinite(+v)) return "—";
+    return "$" + Math.round(+v).toLocaleString();
+  }
+  function _idpIhFmtInt(v) {
+    if (v == null || !isFinite(+v)) return "—";
+    return (+v).toLocaleString();
+  }
+
+  /* Append diagnostic chip row above the unified renderer's output.
+     Cleared + repopulated on every render so it reflects the current
+     post-filter slice's prep + math output. */
+  function _idpIhUpdateStatusChips(diagnostics, prepDiag) {
+    var statusEl = $("ih-status");
+    if (!statusEl) return;
+    while (statusEl.firstChild) statusEl.removeChild(statusEl.firstChild);
+    if (!diagnostics) {
+      statusEl.classList.add("hidden");
+      return;
+    }
+    function addChip(text, tone) {
+      var span = document.createElement("span");
+      var cls = "inline-flex items-center gap-1 rounded-full border px-2 py-0.5";
+      var border = "border-[#E6E6E6]";
+      var bg = "bg-white";
+      var fg = "";
+      if (tone === "good") { border = "border-[#bbf7d0]"; bg = "bg-[#f0fdf4]"; fg = " text-[#166534]"; }
+      else if (tone === "warn") { border = "border-[#fde68a]"; bg = "bg-[#fffbeb]"; fg = " text-[#92400e]"; }
+      span.className = cls + " " + border + " " + bg + fg;
+      span.textContent = text;
+      statusEl.appendChild(span);
+    }
+    addChip("Indirect rows in scope: " + _idpIhFmtInt(prepDiag.totalIndirectRows || 0));
+    /* Pre-clean breakdown — one chip per rule so the user can see
+       exactly which rule is driving exclusions, in spec order. */
+    var preCleanTotal =
+      (diagnostics.preCleanExcludedByDummyWord || 0) +
+      (diagnostics.preCleanExcludedByZeroQtyOrPrice || 0) +
+      (diagnostics.preCleanExcludedByMinLineSpend || 0) +
+      (diagnostics.preCleanExcludedByMinUnitPrice || 0);
+    if (preCleanTotal > 0) {
+      addChip("Pre-clean excluded: " + _idpIhFmtInt(preCleanTotal), "warn");
+      if ((diagnostics.preCleanExcludedByDummyWord || 0) > 0)
+        addChip("  · dummy/sample/test/etc: " + _idpIhFmtInt(diagnostics.preCleanExcludedByDummyWord));
+      if ((diagnostics.preCleanExcludedByZeroQtyOrPrice || 0) > 0)
+        addChip("  · qty/price ≤ 0: " + _idpIhFmtInt(diagnostics.preCleanExcludedByZeroQtyOrPrice));
+      if ((diagnostics.preCleanExcludedByMinLineSpend || 0) > 0)
+        addChip("  · line spend < $50: " + _idpIhFmtInt(diagnostics.preCleanExcludedByMinLineSpend));
+      if ((diagnostics.preCleanExcludedByMinUnitPrice || 0) > 0)
+        addChip("  · unit price < $0.05: " + _idpIhFmtInt(diagnostics.preCleanExcludedByMinUnitPrice));
+    }
+    addChip("Keyed by Part #: " + _idpIhFmtInt(prepDiag.rowsKeyedByPartNum || 0));
+    addChip("Keyed by fuzzy desc: " + _idpIhFmtInt(prepDiag.rowsKeyedByFuzzy || 0));
+    addChip("Fuzzy clusters: " + _idpIhFmtInt(prepDiag.fuzzyClustersFormed || 0));
+    if ((prepDiag.fuzzyClustersSplitBySimilarity || 0) > 0) {
+      addChip(_idpIhFmtInt(prepDiag.fuzzyClustersSplitBySimilarity) + " split by similarity", "warn");
+    }
+    /* Group-level filter breakdown (combined across categories) — one
+       chip per filter to mirror the pre-clean transparency. */
+    var nfMinTxn = (diagnostics.cat1ExcludedByMinTransactions || 0) + (diagnostics.cat2ExcludedByMinTransactions || 0);
+    var nfMinBench = (diagnostics.cat1ExcludedByMinBenchmark || 0) + (diagnostics.cat2ExcludedByMinBenchmark || 0);
+    var nfMaxRatio = (diagnostics.cat1ExcludedByMaxRatio || 0) + (diagnostics.cat2ExcludedByMaxRatio || 0);
+    var nfMinSavings = (diagnostics.cat1ExcludedByMinSavings || 0) + (diagnostics.cat2ExcludedByMinSavings || 0);
+    if (nfMinTxn > 0) addChip("Group: < " + INDIRECT_HARM_MIN_TRANSACTIONS + " txns: " + _idpIhFmtInt(nfMinTxn));
+    if (nfMinBench > 0) addChip("Group: benchmark < $1: " + _idpIhFmtInt(nfMinBench));
+    if (nfMaxRatio > 0) addChip("Group: ratio > 100x: " + _idpIhFmtInt(nfMaxRatio));
+    if ((diagnostics.cat2ExcludedByOneSite || 0) > 0)
+      addChip("Cat 2: single-site groups excluded: " + _idpIhFmtInt(diagnostics.cat2ExcludedByOneSite));
+    if ((diagnostics.cat2ExcludedByNoEligibleBenchmarkSite || 0) > 0)
+      addChip("Cat 2: no benchmark site ≥ " + INDIRECT_HARM_CAT2_MIN_BENCHMARK_SITE_TXNS + " txns: " + _idpIhFmtInt(diagnostics.cat2ExcludedByNoEligibleBenchmarkSite));
+    if (nfMinSavings > 0) addChip("Group: post-dedup savings < $" + _idpIhFmtInt(INDIRECT_HARM_MIN_SAVINGS_USD) + ": " + _idpIhFmtInt(nfMinSavings));
+    if ((diagnostics.dedupReassignmentsTotal || 0) > 0) {
+      addChip(
+        _idpIhFmtInt(diagnostics.dedupReassignmentsTotal) + " transactions de-duped (" +
+        _idpIhFmtInt(diagnostics.dedupReassignedToCat1) + " → Cat 1, " +
+        _idpIhFmtInt(diagnostics.dedupReassignedToCat2) + " → Cat 2)"
+      );
+    }
+    addChip(
+      "Cat 1: " + _idpIhFmtInt(diagnostics.cat1GroupsKept || 0) + " opps · " +
+      _idpIhFmtUsd(diagnostics.cat1TotalSavings || 0),
+      "good"
+    );
+    addChip(
+      "Cat 2: " + _idpIhFmtInt(diagnostics.cat2GroupsKept || 0) + " opps · " +
+      _idpIhFmtUsd(diagnostics.cat2TotalSavings || 0),
+      "good"
+    );
+    statusEl.classList.remove("hidden");
+  }
+
+  /* Apply small italic violet "fuzzy" badge to rows in the rendered
+     opportunity tables whose underlying opp was keyed by IH#FUZZY#.
+     Runs after the unified renderer paints. Hover shows the merged
+     descriptions (sourced from the prep). */
+  function _idpIhDecorateFuzzyRows(fuzzyMetaByKey) {
+    if (!fuzzyMetaByKey || typeof document === "undefined") return;
+    var rows = document.querySelectorAll('#view-indirect-harm tr[data-opp-key]');
+    if (!rows || !rows.length) return;
+    var i;
+    for (i = 0; i < rows.length; i++) {
+      var rowEl = rows[i];
+      var k = rowEl.getAttribute("data-opp-key") || "";
+      if (k.indexOf("IH#FUZZY#") !== 0) continue;
+      if (rowEl.querySelector(".idp-ih-fuzzy-badge")) continue;
+      var meta = fuzzyMetaByKey[k];
+      var firstCell = rowEl.querySelector("td");
+      if (!firstCell) continue;
+      var badge = document.createElement("span");
+      badge.className = "idp-ih-fuzzy-badge ml-2 italic text-xs";
+      badge.style.cssText = "color:#7c3aed;font-style:italic;font-size:11px;";
+      badge.textContent = "fuzzy";
+      if (meta && meta.merged_descriptions && meta.merged_descriptions.length) {
+        badge.title = "Merged descriptions:\n• " + meta.merged_descriptions.slice(0, 10).join("\n• ") +
+          (meta.merged_descriptions.length > 10 ? "\n…(+" + (meta.merged_descriptions.length - 10) + " more)" : "");
+      }
+      firstCell.appendChild(badge);
+    }
+  }
+
+  function idpIhRender() {
+    var view = $("view-indirect-harm");
+    if (!view) return;
+    if (typeof currentAppView !== "undefined" && currentAppView !== "indirect-harm") return;
+    var statusEl = $("ih-status");
+    if (statusEl) statusEl.classList.add("hidden");
+    if (typeof allRowsFiltered === "undefined" || !allRowsFiltered || !allRowsFiltered.length) {
+      _idpIhLastResult = null;
+      var fGridEmpty = $("ih-comparison-grid");
+      if (fGridEmpty) {
+        fGridEmpty.innerHTML = "";
+        var emptyP = document.createElement("p");
+        emptyP.className = "text-sm idp-muted mb-4";
+        emptyP.textContent = "No rows in scope after the global Spend Review filters.";
+        fGridEmpty.appendChild(emptyP);
+      }
+      return;
+    }
+    var slice = _idpIhGetIndirectRows();
+    if (!slice.length) {
+      _idpIhLastResult = null;
+      var fGridInd = $("ih-comparison-grid");
+      if (fGridInd) {
+        fGridInd.innerHTML = "";
+        var emptyInd = document.createElement("p");
+        emptyInd.className = "text-sm idp-muted mb-4";
+        emptyInd.textContent = "No L1 = Indirect rows in the current global filter selection.";
+        fGridInd.appendChild(emptyInd);
+      }
+      return;
+    }
+    var prep = _idpIhPrepareSliceCached(slice);
+    var mathOut = null;
+    if (typeof window !== "undefined" && typeof window.idpComputeIndirectHarmFromRows === "function") {
+      mathOut = window.idpComputeIndirectHarmFromRows(prep.rows, {
+        partKeyFn: function (r) { return r && r._idpIhKey ? r._idpIhKey : ""; },
+        dummyWords: INDIRECT_HARM_DUMMY_WORDS,
+        minLineSpendUsd: INDIRECT_HARM_MIN_LINE_SPEND_USD,
+        minUnitPriceUsd: INDIRECT_HARM_MIN_UNIT_PRICE_USD,
+        minBenchmarkUsd: INDIRECT_HARM_MIN_BENCHMARK_USD,
+        maxPriceRatio: INDIRECT_HARM_MAX_PRICE_RATIO,
+        minTransactions: INDIRECT_HARM_MIN_TRANSACTIONS,
+        minSavingsUsd: INDIRECT_HARM_MIN_SAVINGS_USD,
+        cat2MinBenchmarkSiteTxns: INDIRECT_HARM_CAT2_MIN_BENCHMARK_SITE_TXNS
+      });
+    }
+    if (!mathOut) {
+      var fGridNoMath = $("ih-comparison-grid");
+      if (fGridNoMath) {
+        fGridNoMath.innerHTML = "";
+        var noMath = document.createElement("p");
+        noMath.className = "text-sm idp-muted mb-4";
+        noMath.textContent = "Indirect Harm math layer unavailable (harmonization-client.js not loaded).";
+        fGridNoMath.appendChild(noMath);
+      }
+      return;
+    }
+    _idpIhLastResult = {
+      cat1Opps: mathOut.cat1Opps,
+      cat2Opps: mathOut.cat2Opps,
+      diagnostics: mathOut.diagnostics,
+      prepDiagnostics: prep.diagnostics,
+      fuzzyMembersByKey: prep.fuzzyMembersByKey,
+      fuzzyMetaByKey: prep.fuzzyMetaByKey,
+      sliceLength: slice.length
+    };
+    if (typeof window !== "undefined") {
+      window._idpIhLastResult = _idpIhLastResult;
+      window._idpIhFuzzyMembersByKey = prep.fuzzyMembersByKey;
+      window._idpIhFuzzyMetaByKey = prep.fuzzyMetaByKey;
+    }
+    _idpIhUpdateStatusChips(mathOut.diagnostics, prep.diagnostics);
+    /* Drive the shared renderer with a custom ctx. The IH tab does
+       not have a server-precomputed harmonization payload, so
+       getPayload returns a synthetic stub carrying the target year
+       and a marker message. All actual opportunities (Cat 1 + Cat 2
+       post-dedup) are injected via computeExtraOpportunities. */
+    var combined = (mathOut.cat1Opps || []).concat(mathOut.cat2Opps || []);
+    var targetYear = mathOut.diagnostics && mathOut.diagnostics.targetYear != null
+      ? mathOut.diagnostics.targetYear : new Date().getFullYear() - 1;
+    var ctx = {
+      viewName: "indirect-harm",
+      fGridId: "ih-comparison-grid",
+      messageId: "ih-message",
+      titleId: "ih-page-title",
+      strapId: "ih-strap",
+      titleText: "Indirect Harmonization",
+      logTag: "indirect-harm",
+      sectionIdPrefix: "ih-",
+      tableKeyPrefix: "ih-",
+      payloadGlobalKey: "_idpIhUnifiedPayload",
+      opsGlobalKey: "_idpIhUnifiedOps",
+      rowsGlobalKey: "_idpIhUnifiedRows",
+      yearGlobalKey: "_idpIhUnifiedYear",
+      beforeRender: function () { /* no per-tab filter populate */ },
+      getPayload: function () {
+        return {
+          message: "ok",
+          analysis_year: targetYear,
+          year: targetYear,
+          categories: [],
+          harmonization_meta: { max_unit_price_spread_usd: 0 },
+          category_1: [],
+          category_2: [],
+          category_3: []
+        };
+      },
+      getRowsSlice: function () { return prep.rows; },
+      getKeySet: function () { return _idpIhBuildKeySet(prep); },
+      buildStrap: function (capPrefix, spreadV) {
+        return capPrefix + " · L1 = Indirect (additive to global filters) · Pre-cleaned · Two MECE categories · Post-dedup · Click a row for chart + line detail.";
+      },
+      emptyPayloadMsg: "Indirect Harmonization math not available.",
+      emptyAllOppsMsg: "No qualifying Indirect Harmonization opportunities under the current filters and noise thresholds.",
+      emptyFilteredMsgFn: function (rowsSliceLocal) {
+        return rowsSliceLocal.length === 0
+          ? "No L1 = Indirect rows match the global filter selection."
+          : "No qualifying opportunities for the current filter selection (parts in slice vs. keyed-group eligibility).";
+      },
+      computeExtraOpportunities: function () { return combined; },
+      categoryDefinitions: [
+        {
+          kind: 4,
+          titleTemplate: "CAT 1: SAME SUPPLIER, SAME SITE — SINGLE-INVOICE RIGHTSIZING ($YEAR)",
+          description:
+            "Rightsizing opportunity — the same supplier already accepted a lower unit price for the same part at the same site within the period, even on a single invoice. Savings come from aligning all transactions in the group to that lowest accepted price.",
+          tableKeyId: "cat1",
+          confidenceLabel: "high confidence",
+          applyMaxRenderedCap: true
+        },
+        {
+          kind: 5,
+          titleTemplate: "CAT 2: SAME SUPPLIER, DIFFERENT SITES — CROSS-SITE RIGHTSIZING ($YEAR)",
+          description:
+            "Cross-site rightsizing — the same supplier sells the same part at a lower volume-weighted average unit price at a different site. Savings come from aligning higher-priced sites to the supplier's lowest site-average price across the network.",
+          tableKeyId: "cat2",
+          confidenceLabel: "medium confidence",
+          applyMaxRenderedCap: true
+        }
+      ],
+      rollupRowsOverride: function (sortedBucketByKind) {
+        return [
+          {
+            name: "Cat 1 — Same Supplier, Same Site (single-invoice rightsizing, high confidence)",
+            opps: sortedBucketByKind[4] || []
+          },
+          {
+            name: "Cat 2 — Same Supplier, Different Sites (cross-site rightsizing to site average, medium confidence)",
+            opps: sortedBucketByKind[5] || []
+          }
+        ];
+      },
+      onAfterRender: function () {
+        try { _idpIhDecorateFuzzyRows(prep.fuzzyMetaByKey); } catch (eDeco) {}
+        try {
+          if (typeof window !== "undefined" && window.location &&
+              /[?&]ihverify=1\b/.test(String(window.location.search || ""))) {
+            _idpIhRenderVerificationPanel(mathOut.diagnostics, prep.diagnostics);
+          }
+        } catch (eVer) {}
+      }
+    };
+    if (typeof renderHarmonizationUnified === "function") {
+      try { renderHarmonizationUnified(ctx); } catch (eRen) {
+        if (typeof console !== "undefined" && console.warn) console.warn("[indirect-harm] render failed:", eRen && eRen.message ? eRen.message : eRen);
+      }
+    }
+  }
+
+  /* Floating verification panel mounted via ?ihverify=1. Mirrors the
+     verification surface from the standard Harm tab pre-launch flow:
+     totals, per-play counts/savings, filter exclusions, fuzzy stats,
+     dedup count, and top 5 per play. No-op without the flag. */
+  function _idpIhRenderVerificationPanel(diag, prepDiag) {
+    if (typeof document === "undefined" || !diag) return;
+    var panel = document.getElementById("ih-verify-panel");
+    if (!panel) {
+      panel = document.createElement("div");
+      panel.id = "ih-verify-panel";
+      panel.style.cssText =
+        "position:fixed;bottom:16px;right:16px;z-index:9999;max-width:420px;" +
+        "background:#fff;border:2px solid #166534;border-radius:8px;" +
+        "padding:12px 14px;font-family:ui-sans-serif,system-ui;" +
+        "font-size:12px;line-height:1.4;color:#111;" +
+        "box-shadow:0 6px 24px rgba(0,0,0,.18);max-height:80vh;overflow:auto;";
+      var hdr = document.createElement("div");
+      hdr.style.cssText = "display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;border-bottom:1px solid #e5e7eb;padding-bottom:6px;";
+      var ttl = document.createElement("span");
+      ttl.style.cssText = "font-weight:600;color:#166534;";
+      ttl.textContent = "Indirect Harm verification";
+      hdr.appendChild(ttl);
+      var btn = document.createElement("button");
+      btn.type = "button"; btn.textContent = "\u2715";
+      btn.style.cssText = "background:none;border:none;cursor:pointer;color:#6b7280;font-size:14px;line-height:1;padding:0 4px;";
+      btn.addEventListener("click", function () { panel.remove(); });
+      hdr.appendChild(btn);
+      panel.appendChild(hdr);
+      var body = document.createElement("div");
+      body.id = "ih-verify-body";
+      panel.appendChild(body);
+      document.body.appendChild(panel);
+    }
+    var body = document.getElementById("ih-verify-body");
+    if (!body) return;
+    while (body.firstChild) body.removeChild(body.firstChild);
+    function row(label, value, hl) {
+      var d = document.createElement("div");
+      d.style.cssText = "display:flex;justify-content:space-between;gap:8px;";
+      var l = document.createElement("span"); l.style.color = "#374151"; l.textContent = label;
+      var v = document.createElement("span"); v.style.cssText = "font-weight:" + (hl ? "600" : "400") + ";color:" + (hl ? "#166534" : "#111");
+      v.textContent = value;
+      d.appendChild(l); d.appendChild(v); body.appendChild(d);
+    }
+    function hdr(text) {
+      var h = document.createElement("div");
+      h.style.cssText = "margin-top:8px;margin-bottom:2px;font-weight:600;color:#374151;";
+      h.textContent = text; body.appendChild(h);
+    }
+    hdr("Scope");
+    row("Indirect rows in scope", _idpIhFmtInt(prepDiag.totalIndirectRows || 0));
+    row("  · keyed by Part #", _idpIhFmtInt(prepDiag.rowsKeyedByPartNum || 0));
+    row("  · keyed by fuzzy desc", _idpIhFmtInt(prepDiag.rowsKeyedByFuzzy || 0));
+    row("Fuzzy clusters formed", _idpIhFmtInt(prepDiag.fuzzyClustersFormed || 0));
+    row("  · split by similarity check", _idpIhFmtInt(prepDiag.fuzzyClustersSplitBySimilarity || 0));
+    row("Target year", diag.targetYear != null ? String(diag.targetYear) : "—");
+    hdr("Pre-clean exclusions");
+    row("  · dummy/sample/test/etc word", _idpIhFmtInt(diag.preCleanExcludedByDummyWord || 0));
+    row("  · qty ≤ 0 or unit price ≤ 0", _idpIhFmtInt(diag.preCleanExcludedByZeroQtyOrPrice || 0));
+    row("  · line spend < $" + INDIRECT_HARM_MIN_LINE_SPEND_USD, _idpIhFmtInt(diag.preCleanExcludedByMinLineSpend || 0));
+    row("  · unit price < $" + INDIRECT_HARM_MIN_UNIT_PRICE_USD, _idpIhFmtInt(diag.preCleanExcludedByMinUnitPrice || 0));
+    row("Rows surviving pre-clean", _idpIhFmtInt(diag.rowsAfterPreClean || 0));
+    hdr("Totals (post-dedup)");
+    row("Cat 1 opps", _idpIhFmtInt(diag.cat1GroupsKept || 0), true);
+    row("Cat 1 total savings", _idpIhFmtUsd(diag.cat1TotalSavings), true);
+    row("Cat 2 opps", _idpIhFmtInt(diag.cat2GroupsKept || 0), true);
+    row("Cat 2 total savings", _idpIhFmtUsd(diag.cat2TotalSavings), true);
+    row("Grand total opps", _idpIhFmtInt((diag.cat1GroupsKept || 0) + (diag.cat2GroupsKept || 0)), true);
+    row("Grand total savings", _idpIhFmtUsd((diag.cat1TotalSavings || 0) + (diag.cat2TotalSavings || 0)), true);
+    hdr("Group-level filter exclusions (Cat 1)");
+    row("  · < " + INDIRECT_HARM_MIN_TRANSACTIONS + " transactions", _idpIhFmtInt(diag.cat1ExcludedByMinTransactions || 0));
+    row("  · benchmark < $" + INDIRECT_HARM_MIN_BENCHMARK_USD, _idpIhFmtInt(diag.cat1ExcludedByMinBenchmark || 0));
+    row("  · ratio > " + INDIRECT_HARM_MAX_PRICE_RATIO + "x", _idpIhFmtInt(diag.cat1ExcludedByMaxRatio || 0));
+    row("  · post-dedup savings < $" + INDIRECT_HARM_MIN_SAVINGS_USD, _idpIhFmtInt(diag.cat1ExcludedByMinSavings || 0));
+    hdr("Group-level filter exclusions (Cat 2)");
+    row("  · < " + INDIRECT_HARM_MIN_TRANSACTIONS + " transactions", _idpIhFmtInt(diag.cat2ExcludedByMinTransactions || 0));
+    row("  · only one site", _idpIhFmtInt(diag.cat2ExcludedByOneSite || 0));
+    row("  · no benchmark site ≥ " + INDIRECT_HARM_CAT2_MIN_BENCHMARK_SITE_TXNS + " txns", _idpIhFmtInt(diag.cat2ExcludedByNoEligibleBenchmarkSite || 0));
+    row("  · benchmark < $" + INDIRECT_HARM_MIN_BENCHMARK_USD, _idpIhFmtInt(diag.cat2ExcludedByMinBenchmark || 0));
+    row("  · ratio > " + INDIRECT_HARM_MAX_PRICE_RATIO + "x", _idpIhFmtInt(diag.cat2ExcludedByMaxRatio || 0));
+    row("  · post-dedup savings < $" + INDIRECT_HARM_MIN_SAVINGS_USD, _idpIhFmtInt(diag.cat2ExcludedByMinSavings || 0));
+    hdr("De-dup");
+    row("Transactions reassigned", _idpIhFmtInt(diag.dedupReassignmentsTotal || 0));
+    row("  · → Cat 1", _idpIhFmtInt(diag.dedupReassignedToCat1 || 0));
+    row("  · → Cat 2", _idpIhFmtInt(diag.dedupReassignedToCat2 || 0));
+    row("  · ties → Cat 1", _idpIhFmtInt(diag.dedupTiesResolvedToCat1 || 0));
+    hdr("Top 5 — Cat 1");
+    var t1 = diag.cat1Top5 || [], k;
+    if (!t1.length) { var n1 = document.createElement("div"); n1.style.color = "#6b7280"; n1.textContent = "(none)"; body.appendChild(n1); }
+    else for (k = 0; k < t1.length; k++) {
+      var t = t1[k];
+      var line = document.createElement("div");
+      line.style.cssText = "font-size:11px;color:#4b5563;margin-left:4px;";
+      line.textContent = (k + 1) + ". " + (t.item || "—") + " @ " + (t.site || "—") + " / " + (t.supplier || "—") +
+        " = " + _idpIhFmtUsd(t.savings) + " (bench $" + ((+t.benchmark || 0).toFixed(2)) + ")";
+      body.appendChild(line);
+    }
+    hdr("Top 5 — Cat 2");
+    var t2 = diag.cat2Top5 || [];
+    if (!t2.length) { var n2 = document.createElement("div"); n2.style.color = "#6b7280"; n2.textContent = "(none)"; body.appendChild(n2); }
+    else for (k = 0; k < t2.length; k++) {
+      var t = t2[k];
+      var line = document.createElement("div");
+      line.style.cssText = "font-size:11px;color:#4b5563;margin-left:4px;";
+      line.textContent = (k + 1) + ". " + (t.item || "—") + " across " + (t.site_count || 0) + " sites / " +
+        (t.supplier || "—") + " = " + _idpIhFmtUsd(t.savings) +
+        " (bench $" + ((+t.benchmark || 0).toFixed(2)) +
+        (t.benchmark_site ? " @ " + t.benchmark_site : "") + ")";
+      body.appendChild(line);
+    }
+  }
+
+  /* ---------- Excel export ---------- */
+
+  function _idpIhEsc(s) { return s == null ? "" : String(s); }
+
+  function _idpIhBuildExcelRowsForPlay(opps, categoryLabel, confidenceLabel, fuzzyMetaByKey) {
+    var out = [];
+    var i;
+    for (i = 0; i < opps.length; i++) {
+      var p = opps[i];
+      if (!p) continue;
+      var partKey = p.item != null ? String(p.item) : "";
+      var keyedBy = (partKey.indexOf("IH#FUZZY#") === 0) ? "Fuzzy" : "Part #";
+      var meta = fuzzyMetaByKey && fuzzyMetaByKey[partKey];
+      var mergedDescs = meta && meta.merged_descriptions ? meta.merged_descriptions.join(" | ") : "";
+      var sites = {};
+      var sup = "";
+      var totalSpend = +(p.total_spend || 0);
+      var totalQty = +(p.total_quantity || 0);
+      var totalSavings = +(p.savings || 0);
+      var benchmark = +(p.benchmark || 0);
+      var sj;
+      if (p.suppliers && p.suppliers.length) {
+        for (sj = 0; sj < p.suppliers.length; sj++) {
+          if (p.suppliers[sj].site != null) sites[p.suppliers[sj].site] = 1;
+          if (!sup && p.suppliers[sj].supplier) sup = p.suppliers[sj].supplier;
+        }
+      }
+      var siteList = Object.keys(sites).join(", ");
+      var savingsPct = totalSpend > 0 ? Math.round(1000 * (100 * totalSavings / totalSpend)) / 1000 : null;
+      out.push({
+        "Category": categoryLabel,
+        "Confidence": confidenceLabel,
+        "Part Key": partKey,
+        "Keyed By": keyedBy,
+        "Merged Descriptions": mergedDescs,
+        "Site(s)": siteList,
+        "Supplier": sup,
+        "Total Spend": Math.round(totalSpend * 100) / 100,
+        "Total Volume": Math.round(totalQty * 100) / 100,
+        "Benchmark $/unit": Math.round(benchmark * 100) / 100,
+        "Total Savings": Math.round(totalSavings * 100) / 100,
+        "Savings %": savingsPct != null ? savingsPct + "%" : ""
+      });
+    }
+    return out;
+  }
+
+  function idpIhExport() {
+    if (!_idpIhLastResult) {
+      if (typeof window !== "undefined" && window.alert) {
+        window.alert("Indirect Harmonization has not been rendered yet — open the tab first.");
+      }
+      return;
+    }
+    if (typeof XLSX === "undefined" || !XLSX.utils || !XLSX.utils.book_new) {
+      if (typeof window !== "undefined" && window.alert) {
+        window.alert("Excel library (XLSX) is not available; export aborted.");
+      }
+      return;
+    }
+    var c1Rows = _idpIhBuildExcelRowsForPlay(
+      _idpIhLastResult.cat1Opps || [],
+      "Cat 1 — Same Supplier, Same Site — Single-Invoice Rightsizing",
+      "high",
+      _idpIhLastResult.fuzzyMetaByKey
+    );
+    var c2Rows = _idpIhBuildExcelRowsForPlay(
+      _idpIhLastResult.cat2Opps || [],
+      "Cat 2 — Same Supplier, Different Sites — Cross-Site Rightsizing to Site Average",
+      "medium",
+      _idpIhLastResult.fuzzyMetaByKey
+    );
+    var allRows = c1Rows.concat(c2Rows);
+    var wb = XLSX.utils.book_new();
+    var wsAll = XLSX.utils.json_to_sheet(allRows.length ? allRows : [{ "Category": "(no opportunities for the current global filters)" }]);
+    wsAll["!cols"] = allRows.length ? [
+      { wch: 56 }, { wch: 11 }, { wch: 18 }, { wch: 10 }, { wch: 60 },
+      { wch: 28 }, { wch: 28 }, { wch: 14 }, { wch: 14 }, { wch: 16 },
+      { wch: 14 }, { wch: 11 }
+    ] : [{ wch: 80 }];
+    XLSX.utils.book_append_sheet(wb, wsAll, "Indirect Opportunities");
+    var d = _idpIhLastResult.diagnostics || {};
+    var pd = _idpIhLastResult.prepDiagnostics || {};
+    var methodologyRows = [
+      { "Section": "Tab", "Value": "Indirect Harmonization (redesigned)" },
+      { "Section": "Data scope", "Value": "L1 = Indirect rows, additive to the global Spend Review filter bar" },
+      { "Section": "Target year", "Value": d.targetYear != null ? String(d.targetYear) : "—" },
+      { "Section": "", "Value": "" },
+      { "Section": "Cat 1", "Value": "Same Supplier, Same Site — Single-Invoice Rightsizing (high confidence)" },
+      { "Section": "Cat 1 — math", "Value": "Group by (Part key, Site, Supplier). Benchmark = MIN unit price within the group, even from a single invoice (intentional — pre-clean filters prevent dummies from becoming benchmarks). Per-transaction savings = (unit_price - benchmark) × quantity for transactions with unit_price > benchmark." },
+      { "Section": "", "Value": "" },
+      { "Section": "Cat 2", "Value": "Same Supplier, Different Sites — Cross-Site Rightsizing to Site Average (medium confidence)" },
+      { "Section": "Cat 2 — math", "Value": "Group by (Part key, Supplier) across ≥ 2 sites. For each site, site_avg = Σspend ÷ Σqty (volume-weighted). Benchmark = MIN site_avg among sites with ≥ " + INDIRECT_HARM_CAT2_MIN_BENCHMARK_SITE_TXNS + " transactions in the group (keeps singleton 'lucky low' invoices from becoming the cross-site benchmark). Per-transaction savings = (unit_price - benchmark) × quantity for transactions at non-benchmark sites with unit_price > benchmark. Benchmark-site transactions never contribute to savings." },
+      { "Section": "", "Value": "" },
+      { "Section": "Part keying", "Value": "Numeric-bearing Part Number (column J in source) wins. Otherwise fall back to fuzzy clustering on Part Description (column K — r.material → r.noun → r.category_l3) using token-set Jaccard ≥ 0.80, L3-blocked, Union-Find. Fuzzy keys take the form IH#FUZZY#<id>." },
+      { "Section": "Similarity sanity-check", "Value": "After Union-Find, each formed cluster is verified pairwise — if any pair's Jaccard drops below threshold (transitive chain), the weakest member is dropped iteratively until every remaining pair is ≥ threshold." },
+      { "Section": "", "Value": "" },
+      { "Section": "Pre-clean — INDIRECT_HARM_DUMMY_WORDS", "Value": "[" + INDIRECT_HARM_DUMMY_WORDS.join(", ") + "] (word-boundary, case-insensitive; matched against r.material and r.noun)" },
+      { "Section": "Pre-clean — qty / unit price", "Value": "Exclude transactions where quantity ≤ 0 OR unit price ≤ 0" },
+      { "Section": "Pre-clean — INDIRECT_HARM_MIN_LINE_SPEND_USD", "Value": "$" + INDIRECT_HARM_MIN_LINE_SPEND_USD + " (exclude transactions where line spend is below this — accounting noise filter)" },
+      { "Section": "Pre-clean — INDIRECT_HARM_MIN_UNIT_PRICE_USD", "Value": "$" + INDIRECT_HARM_MIN_UNIT_PRICE_USD + " (exclude transactions whose unit price is below this — dummy / placeholder filter)" },
+      { "Section": "", "Value": "" },
+      { "Section": "Group filter — INDIRECT_HARM_MIN_BENCHMARK_USD", "Value": "$" + INDIRECT_HARM_MIN_BENCHMARK_USD + " (group's benchmark unit price must be at least this)" },
+      { "Section": "Group filter — INDIRECT_HARM_MAX_PRICE_RATIO", "Value": String(INDIRECT_HARM_MAX_PRICE_RATIO) + "x (group's max/min unit price ratio must not exceed this)" },
+      { "Section": "Group filter — INDIRECT_HARM_MIN_TRANSACTIONS", "Value": String(INDIRECT_HARM_MIN_TRANSACTIONS) + " (group must have at least this many transactions post-pre-clean)" },
+      { "Section": "Group filter — INDIRECT_HARM_MIN_SAVINGS_USD", "Value": "$" + INDIRECT_HARM_MIN_SAVINGS_USD + " (group's POST-DEDUP total savings must be at least this)" },
+      { "Section": "Group filter — INDIRECT_HARM_CAT2_MIN_BENCHMARK_SITE_TXNS", "Value": String(INDIRECT_HARM_CAT2_MIN_BENCHMARK_SITE_TXNS) + " (Cat 2 only: the benchmark site must itself have at least this many transactions in the group)" },
+      { "Section": "Fuzzy threshold — INDIRECT_HARM_FUZZY_THRESHOLD", "Value": String(INDIRECT_HARM_FUZZY_THRESHOLD) + " (token-set Jaccard for fuzzy description clustering)" },
+      { "Section": "", "Value": "" },
+      { "Section": "De-duplication tiebreaker", "Value": "Transactions eligible for BOTH categories go to whichever has the LARGER per-transaction savings. Ties go to Cat 1 (higher confidence, more specific, no cross-site action needed)." },
+      { "Section": "", "Value": "" },
+      { "Section": "Diagnostics — total indirect rows", "Value": String(pd.totalIndirectRows || 0) },
+      { "Section": "Diagnostics — pre-clean: dummy word", "Value": String(d.preCleanExcludedByDummyWord || 0) },
+      { "Section": "Diagnostics — pre-clean: qty/price ≤ 0", "Value": String(d.preCleanExcludedByZeroQtyOrPrice || 0) },
+      { "Section": "Diagnostics — pre-clean: line spend < $" + INDIRECT_HARM_MIN_LINE_SPEND_USD, "Value": String(d.preCleanExcludedByMinLineSpend || 0) },
+      { "Section": "Diagnostics — pre-clean: unit price < $" + INDIRECT_HARM_MIN_UNIT_PRICE_USD, "Value": String(d.preCleanExcludedByMinUnitPrice || 0) },
+      { "Section": "Diagnostics — rows surviving pre-clean", "Value": String(d.rowsAfterPreClean || 0) },
+      { "Section": "Diagnostics — rows keyed by Part #", "Value": String(pd.rowsKeyedByPartNum || 0) },
+      { "Section": "Diagnostics — rows keyed by fuzzy desc", "Value": String(pd.rowsKeyedByFuzzy || 0) },
+      { "Section": "Diagnostics — fuzzy clusters formed", "Value": String(pd.fuzzyClustersFormed || 0) },
+      { "Section": "Diagnostics — clusters split by similarity", "Value": String(pd.fuzzyClustersSplitBySimilarity || 0) },
+      { "Section": "Diagnostics — transactions reassigned by dedup", "Value": String(d.dedupReassignmentsTotal || 0) + " (" + String(d.dedupReassignedToCat1 || 0) + " → Cat 1, " + String(d.dedupReassignedToCat2 || 0) + " → Cat 2)" },
+      { "Section": "Diagnostics — Cat 1 kept opps", "Value": String(d.cat1GroupsKept || 0) },
+      { "Section": "Diagnostics — Cat 1 total savings", "Value": "$" + Math.round(d.cat1TotalSavings || 0).toLocaleString() },
+      { "Section": "Diagnostics — Cat 2 kept opps", "Value": String(d.cat2GroupsKept || 0) },
+      { "Section": "Diagnostics — Cat 2 total savings", "Value": "$" + Math.round(d.cat2TotalSavings || 0).toLocaleString() }
+    ];
+    var wsM = XLSX.utils.json_to_sheet(methodologyRows);
+    wsM["!cols"] = [{ wch: 56 }, { wch: 80 }];
+    XLSX.utils.book_append_sheet(wb, wsM, "Methodology");
+    var ts = new Date().toISOString().slice(0, 10);
+    XLSX.writeFile(wb, "Indirect_Harmonization_Opportunities_" + ts + ".xlsx");
+  }
 
   function idpIhWireOnce() {
     if (_idpIhWired) return;
     _idpIhWired = true;
     var btn = $("ih-dl-btn");
-    if (btn && typeof btn.addEventListener === "function") {
-      btn.addEventListener("click", function () { idpIhExport(); });
-    }
-    /* The IH View toggle (Simple/Full) is wired the same way as the
-       Harm toggle and shares the harmCleanViewEnabled state so the
-       preference applies to both tabs simultaneously. */
-    try { wireIndirectHarmonizationViewToggle(); } catch (eToggle) {}
-  }
-
-  function idpIhFmtUsd(v) {
-    var n = +v;
-    if (!isFinite(n)) return "—";
-    if (Math.abs(n) >= 1e6) return "$" + (Math.round(n / 1e5) / 10) + "M";
-    if (Math.abs(n) >= 1e3) return "$" + (Math.round(n / 1e2) / 10) + "K";
-    return "$" + Math.round(n).toLocaleString();
-  }
-  function idpIhFmtInt(v) {
-    var n = +v;
-    if (!isFinite(n)) return "—";
-    return Math.round(n).toLocaleString();
-  }
-  function idpIhFmtPct(v) {
-    if (v == null || !isFinite(+v)) return "—";
-    return (Math.round(+v * 10) / 10) + "%";
-  }
-  function idpIhEsc(s) {
-    if (s == null) return "";
-    return String(s).replace(/[&<>"']/g, function (c) {
-      return c === "&" ? "&amp;" : c === "<" ? "&lt;" : c === ">" ? "&gt;" : c === "\"" ? "&quot;" : "&#39;";
-    });
-  }
-
-  /* The old IH-only KPI card builder (idpIhBuildKpiCards) was retired
-   * when the tab was refactored to share the Harmonization tab's full
-   * render pipeline. The shared layout produces the same 5-tile blue
-   * KPI strip per MECE category section via harmAppendCategoryKpiStrip,
-   * driven by the standard payload shape, so a separate KPI scaffold
-   * here would just diverge over time. */
-
-  function idpIhCategoryLabel(p) {
-    var hm = +(p && p.harm_mece);
-    if (hm === 1) return "Same site, different suppliers";
-    if (hm === 2) return "Same supplier, different sites";
-    if (hm === 3) return "Same supplier, different sites";
-    return "Other";
-  }
-
-  /** True if this opportunity object came from a fuzzy-clustered item
-   *  (i.e., its key starts with our synthetic "IH#FUZZY#" prefix or it
-   *  was tagged during the prep pass). Used to decide badge rendering. */
-  function idpIhIsFuzzyOpp(p) {
-    if (!p) return false;
-    if (p._ihFuzzy === true) return true;
-    var k = "";
-    if (p.item != null) k = String(p.item);
-    else if (p.part != null) k = String(p.part);
-    return k.indexOf("IH#FUZZY#") === 0;
-  }
-
-  /** Pull a human-readable display name out of an opportunity object.
-   *  Prefers the fuzzy-cluster display name if present, otherwise the
-   *  underlying description, otherwise the raw item key. */
-  function idpIhOppDisplayName(p) {
-    if (!p) return "";
-    if (p._ihDisplayName) return String(p._ihDisplayName);
-    /* For non-fuzzy items, the existing harmonization payload usually
-     * carries the description on a "Description"-shaped key OR inside
-     * export_rows. The easiest source is the row's own description. */
-    if (p.description) return String(p.description);
-    if (p.noun) return String(p.noun);
-    if (p.material) return String(p.material);
-    if (p.item != null) return String(p.item);
-    if (p.part != null) return String(p.part);
-    return "";
-  }
-
-  /** Sum the savings across an opportunity's export_rows. Mirrors
-   *  harmSumExportRowsSavings logic but defensively typed. */
-  function idpIhOppSavings(p) {
-    if (!p) return 0;
-    if (p.savings != null && isFinite(+p.savings)) return +p.savings;
-    var er = p.export_rows;
-    if (!er || !er.length) return 0;
-    var s = 0, i, v;
-    for (i = 0; i < er.length; i++) {
-      v = er[i] && er[i].Savings != null ? +er[i].Savings : 0;
-      if (isFinite(v)) s += v;
-    }
-    return s;
-  }
-  function idpIhOppSpend(p) {
-    if (!p) return 0;
-    if (p.total_spend != null && isFinite(+p.total_spend)) return +p.total_spend;
-    var er = p.export_rows;
-    if (!er || !er.length) return 0;
-    var s = 0, i, v;
-    for (i = 0; i < er.length; i++) {
-      v = er[i] && er[i].Spend != null ? +er[i].Spend : 0;
-      if (isFinite(v)) s += v;
-    }
-    return s;
-  }
-  /** Distinct count helper for transparency stats. */
-  function idpIhOppDistinct(p, field) {
-    var er = p && p.export_rows;
-    if (!er || !er.length) return 0;
-    var seen = {}, n = 0, i, v;
-    for (i = 0; i < er.length; i++) {
-      v = er[i] && er[i][field] != null ? String(er[i][field]) : "";
-      if (v && !seen[v]) { seen[v] = 1; n++; }
-    }
-    return n;
-  }
-
-  /* The pre-refactor IH tab carried its own private table builder
-   * (idpIhBuildOpportunityTable) + drill-down panel (idpIhBuildDrilldown
-   * + idpIhWireDrilldownToggles) so the tab could ship before the
-   * larger Harmonization layout was ready to share. As of this
-   * refactor the IH tab pumps its computed payload through the SAME
-   * render core as the regular Harmonization tab (renderHarmonization
-   * Unified with an IH context), so the bespoke builders here would
-   * just be dead code paths going stale. Anything specific to IH —
-   * status chips, fuzzy badges, fuzzy-aware row-click lookups — is
-   * grafted on via ctx.onAfterRender + the global fuzzy-members map. */
-
-  /** Update the IH-only diagnostic chips above the comparison grid.
-   *  Pure DOM write, no data dependencies beyond what's in prep.diagnostics. */
-  function _idpIhUpdateStatusChips(diagnostics) {
-    var statusEl = $("ih-status");
-    var statusChip = $("ih-status-chip");
-    var fuzzyChip = $("ih-fuzzy-chip");
-    var mergedChip = $("ih-merged-chip");
-    var noiseChip = $("ih-noise-chip");
-    if (!statusEl || !statusChip || !fuzzyChip || !mergedChip) return;
-    if (!diagnostics) {
-      statusEl.classList.add("hidden");
-      statusEl.classList.remove("flex");
-      return;
-    }
-    statusEl.classList.remove("hidden");
-    statusEl.classList.add("flex");
-    statusChip.textContent = idpIhFmtInt(diagnostics.indirectRowsIn) + " indirect rows · " + idpIhFmtInt(diagnostics.rowsPrepared) + " items considered";
-    fuzzyChip.textContent = idpIhFmtInt(diagnostics.keyedByPartNumber) + " by Part #  ·  " + idpIhFmtInt(diagnostics.keyedByFuzzy) + " by fuzzy Part Name";
-    var clusterDiag = diagnostics.clusters;
-    mergedChip.textContent = clusterDiag
-      ? (idpIhFmtInt(clusterDiag.mergedItems) + " merges across " + idpIhFmtInt(clusterDiag.blocksProcessed) + " L3 blocks (threshold 0.80)")
-      : "fuzzy clustering unavailable";
-    /* Noise chip: hidden when no exclusions ran (e.g. error in
-       calc before the filter could apply) OR when zero clusters were
-       caught. Showing "0 noise clusters" on every render is noisy. */
-    if (noiseChip) {
-      if (diagnostics.excludedNoise != null && +diagnostics.excludedNoise > 0) {
-        var minB = diagnostics.noiseMinBenchmark != null ? diagnostics.noiseMinBenchmark : INDIRECT_HARM_MIN_BENCHMARK_USD;
-        var maxR = diagnostics.noiseMaxRatio != null ? diagnostics.noiseMaxRatio : INDIRECT_HARM_MAX_PRICE_RATIO;
-        noiseChip.textContent =
-          idpIhFmtInt(diagnostics.excludedNoise) +
-          " noise clusters excluded (benchmark < $" +
-          (Math.round(minB * 100) / 100).toFixed(2) +
-          "/unit or > " +
-          idpIhFmtInt(maxR) +
-          "x price spread)";
-        noiseChip.classList.remove("hidden");
-      } else {
-        noiseChip.textContent = "";
-        noiseChip.classList.add("hidden");
-      }
-    }
-  }
-
-  /** DOM post-process: walk the rows that the shared render core just
-   *  painted into #ih-comparison-grid and, for any row whose Part
-   *  Number cell holds a synthetic "IH#FUZZY#<n>" key, swap the cell
-   *  text with the cluster's human-readable display name and append a
-   *  small "fuzzy" badge with the merged-descriptions list in the
-   *  tooltip. We DO NOT touch the row's data-* attributes or its
-   *  bound row object — the click handler reads the cluster key from
-   *  the closure over the original opportunity, so the chart +
-   *  line-detail drill-down still hits the right rows. */
-  function _idpIhDecorateFuzzyRows(fuzzyMetaByKey) {
-    var grid = $("ih-comparison-grid");
-    if (!grid || !fuzzyMetaByKey) return;
-    var rows = grid.querySelectorAll("tr[data-harm-table]");
-    var i, tr, partCell, raw, meta, members, tip, displayText, badge, span;
-    for (i = 0; i < rows.length; i++) {
-      tr = rows[i];
-      partCell = tr.querySelector("td");
-      if (!partCell) continue;
-      raw = (partCell.textContent || "").trim();
-      if (raw.indexOf("IH#FUZZY#") !== 0) continue;
-      meta = fuzzyMetaByKey[raw];
-      if (!meta) continue;
-      displayText = meta.displayName || raw;
-      members = meta.members && meta.members.length
-        ? (meta.members.slice(0, 12).join(" · ") + (meta.members.length > 12 ? " · …(+" + (meta.members.length - 12) + ")" : ""))
-        : "";
-      tip = members
-        ? "Grouped via fuzzy Part Name match. Merged descriptions: " + members
-        : "Grouped via fuzzy Part Name match (no Part Number on source rows).";
-      partCell.textContent = "";
-      partCell.appendChild(document.createTextNode(displayText));
-      badge = document.createElement("span");
-      badge.className = "idp-info-tip";
-      badge.setAttribute("tabindex", "0");
-      badge.setAttribute("role", "img");
-      badge.setAttribute("aria-label", "Fuzzy match");
-      badge.setAttribute("title", tip);
-      badge.style.cssText = "margin-left:6px;font-size:10px;font-style:italic;color:#7c3aed;border:1px solid #ddd6fe;border-radius:9999px;padding:1px 6px;background:#faf5ff;cursor:help";
-      badge.textContent = "fuzzy";
-      partCell.appendChild(badge);
-      /* Stash the synth key on the cell so the Excel export can still
-         find the cluster mapping if anyone ever reads from the DOM. */
-      partCell.setAttribute("data-ih-cluster-key", raw);
-    }
-  }
-
-  /** Main entrypoint for the Indirect Harmonization tab. Pulls the
-   *  indirect slice from the current global filter state, runs fuzzy
-   *  clustering on rows whose Part Number is blank/non-numeric, hands
-   *  the resulting rows to the standard harmonization math, then
-   *  feeds the math output into the SAME render pipeline the
-   *  Harmonization tab uses (renderHarmonizationUnified). The visible
-   *  layout — Overall Summary panel, MECE category sections with
-   *  5-tile blue KPI strips, drill-down rows, View toggle — is
-   *  therefore byte-identical to the Harmonization tab; the only
-   *  visible additions are the IH-specific diagnostic chips above
-   *  the grid and the small "fuzzy" badge on rows whose part key
-   *  was generated client-side. */
-  function idpIhRender() {
-    var view = $("view-indirect-harm");
-    if (!view || view.classList.contains("hidden")) return;
-    var msgEl = $("ih-message");
-    var dlBtn = $("ih-dl-btn");
-    var grid = $("ih-comparison-grid");
-    if (msgEl) { msgEl.classList.add("hidden"); msgEl.textContent = ""; }
-    if (dlBtn) dlBtn.classList.add("hidden");
-    _idpIhLastPayload = null;
-    /* Reset the fuzzy-members map exposed to harmRawRowsForPart so a
-       stale prior render can't leak row-click drilldowns into the
-       wrong cluster. */
-    if (typeof window !== "undefined") {
-      window._idpIhFuzzyMembersByKey = null;
-      window._idpIhFuzzyMetaByKey = null;
-    }
-
-    /* Step 1: indirect-only slice. */
-    var slice;
-    try {
-      slice = idpIhGetIndirectRows();
-    } catch (eGetR) {
-      if (msgEl) {
-        msgEl.classList.remove("hidden");
-        msgEl.textContent = "Failed to read indirect rows: " + (eGetR && eGetR.message ? eGetR.message : "unknown error");
-      }
-      _idpIhUpdateStatusChips(null);
-      if (grid) grid.innerHTML = '<p class="text-sm idp-muted" id="ih-empty">No data.</p>';
-      return;
-    }
-    if (!slice.rows.length) {
-      _idpIhUpdateStatusChips(null);
-      if (grid) grid.innerHTML = '<p class="text-sm idp-muted" id="ih-empty">No L1 Indirect rows in the current filter slice. Adjust the global Spend Review filters above.</p>';
-      return;
-    }
-
-    /* Step 2: prep + fuzzy clustering. */
-    var prep;
-    try {
-      prep = idpIhPrepareRows(slice);
-    } catch (ePrep) {
-      if (msgEl) {
-        msgEl.classList.remove("hidden");
-        msgEl.textContent = "Failed to prepare rows: " + (ePrep && ePrep.message ? ePrep.message : "unknown error");
-      }
-      _idpIhUpdateStatusChips(null);
-      if (grid) grid.innerHTML = "";
-      return;
-    }
-
-    /* Step 3: harmonization math. */
-    var calc = (typeof window !== "undefined" && typeof window.idpCalculateHarmonizationFromRows === "function")
-      ? window.idpCalculateHarmonizationFromRows : null;
-    if (!calc) {
-      if (msgEl) {
-        msgEl.classList.remove("hidden");
-        msgEl.textContent = "Harmonization client library is not loaded. Reload the page.";
-      }
-      _idpIhUpdateStatusChips(null);
-      if (grid) grid.innerHTML = "";
-      return;
-    }
-    var ihPayload;
-    try {
-      ihPayload = calc(prep.rows, {});
-    } catch (eCalc) {
-      if (msgEl) {
-        msgEl.classList.remove("hidden");
-        msgEl.textContent = "Harmonization math failed: " + (eCalc && eCalc.message ? eCalc.message : "unknown error");
-      }
-      _idpIhUpdateStatusChips(prep.diagnostics);
-      if (grid) grid.innerHTML = "";
-      return;
-    }
-
-    /* Step 3.5: noise filter (IH-only). Drop clusters whose benchmark
-       is below $1.00/unit or whose max/min unit-price spread exceeds
-       100x — these are cent-priced services / placeholder lines /
-       mismatched-UoM groupings, not real harmonization opportunities.
-       Mutates ihPayload's three opportunity arrays so every downstream
-       consumer (renderer, KPI strip, Excel export) sees the cleaned set. */
-    var excludedNoise = 0;
-    try {
-      excludedNoise = _idpIhApplyNoiseFilter(ihPayload);
-    } catch (eNoise) {
-      if (typeof console !== "undefined" && console.warn) console.warn("[indirect-harm] noise filter failed:", eNoise);
-      excludedNoise = 0;
-    }
-    if (prep.diagnostics) {
-      prep.diagnostics.excludedNoise = excludedNoise;
-      prep.diagnostics.noiseMinBenchmark = INDIRECT_HARM_MIN_BENCHMARK_USD;
-      prep.diagnostics.noiseMaxRatio = INDIRECT_HARM_MAX_PRICE_RATIO;
-    }
-
-    /* Step 4: stitch fuzzy metadata back onto each opportunity so
-       downstream code (Excel export, post-render badge pass) can find
-       _ihDisplayName / _ihMembers without re-clustering. */
-    var oppList = ihPayload && ihPayload.all_opportunities ? ihPayload.all_opportunities : [];
-    var oi, op, keyMaybe;
-    for (oi = 0; oi < oppList.length; oi++) {
-      op = oppList[oi];
-      if (!op) continue;
-      keyMaybe = "";
-      if (op.item != null) keyMaybe = String(op.item);
-      else if (op.part != null) keyMaybe = String(op.part);
-      if (keyMaybe && prep.fuzzyMetaByKey[keyMaybe]) {
-        op._ihFuzzy = true;
-        op._ihDisplayName = prep.fuzzyMetaByKey[keyMaybe].displayName;
-        op._ihMembers = prep.fuzzyMetaByKey[keyMaybe].members;
-      }
-    }
-
-    /* Step 5: expose the fuzzy-members map so the row-click chart +
-       line-detail drilldown (which goes through harmRawRowsForPart)
-       can resolve a synthetic IH#FUZZY# key back to its underlying
-       D.rows. */
-    if (typeof window !== "undefined") {
-      window._idpIhFuzzyMembersByKey = prep.fuzzyMembersByKey;
-      window._idpIhFuzzyMetaByKey = prep.fuzzyMetaByKey;
-    }
-    _idpIhLastPayload = { payload: ihPayload, opps: oppList, diagnostics: prep.diagnostics };
-    _idpIhUpdateStatusChips(prep.diagnostics);
-
-    /* Step 6: hand off to the shared render pipeline. The ctx tells
-       renderHarmonizationUnified to mount into the IH grid, use the
-       IH-specific source data, prefix internal section/table IDs
-       with "ih-" to avoid DOM collisions with the Harm tab, and run
-       our post-process pass to decorate fuzzy rows. */
-    var ctx = _harmDefaultRenderCtx();
-    ctx.viewName = "indirect-harm";
-    ctx.fGridId = "ih-comparison-grid";
-    ctx.messageId = "ih-message";
-    ctx.titleId = "ih-page-title";
-    ctx.strapId = "ih-strap";
-    ctx.titleText = "Indirect Harmonization";
-    ctx.logTag = "indirect-harm";
-    ctx.sectionIdPrefix = "ih-";
-    ctx.tableKeyPrefix = "ih-";
-    ctx.payloadGlobalKey = "_idpLastIhPayload";
-    ctx.opsGlobalKey = "_idpIhUnifiedOps";
-    ctx.rowsGlobalKey = "_idpIhUnifiedRows";
-    ctx.yearGlobalKey = "_idpIhUnifiedYear";
-    ctx.beforeRender = function () { /* no category-filter dropdown setup for IH */ };
-    ctx.getPayload = function () { return ihPayload; };
-    ctx.getRowsSlice = function () { return prep.rows; };
-    ctx.getKeySet = function (rowsSlice) {
-      /* The prep.rows clones already carry the synthetic part keys
-         on r.part, so the standard idpHarmonizationItemKey() routes
-         through r.part and the key set lines up exactly with what
-         the math produced. We bypass harmUnifiedSliceKeySetCached
-         because its snapshot key is global-filter-shaped and would
-         either over-cache (return the Harm key set) or thrash. */
-      return harmSpendKindKeySetFromRows(rowsSlice);
-    };
-    ctx.buildStrap = function (capPrefix, spreadV) {
-      var minB = (Math.round(INDIRECT_HARM_MIN_BENCHMARK_USD * 100) / 100).toFixed(2);
-      return capPrefix +
-        " · L1 Indirects only · client-computed MECE · fuzzy Part Name fallback for blank Part Numbers" +
-        " · noise filter: benchmark ≥ $" + minB + "/unit, max " + idpIhFmtInt(INDIRECT_HARM_MAX_PRICE_RATIO) + "x spread" +
-        " · max unit-price spread cap $" + spreadV +
-        " · Click a row for chart + line detail.";
-    };
-    ctx.emptyPayloadMsg = "Indirect harmonization could not be computed (harmonization client library missing).";
-    ctx.emptyAllOppsMsg = "No harmonization opportunities for the current indirect slice.";
-    ctx.emptyFilteredMsgFn = function () { return "No harmonization opportunities for the current indirect slice."; };
-    ctx.onAfterRender = function () {
-      try { _idpIhDecorateFuzzyRows(prep.fuzzyMetaByKey); } catch (eDeco) {
-        if (typeof console !== "undefined" && console.warn) console.warn("[indirect-harm] fuzzy decoration failed:", eDeco);
-      }
-    };
-
-    try {
-      renderHarmonizationUnified(ctx);
-    } catch (eRender) {
-      if (msgEl) {
-        msgEl.classList.remove("hidden");
-        msgEl.textContent = "Indirect harmonization render failed: " + (eRender && eRender.message ? eRender.message : "unknown error");
-      }
-      if (typeof console !== "undefined" && console.error) console.error("[indirect-harm] render failed:", eRender);
-      return;
-    }
-
-    if (dlBtn) dlBtn.classList.remove("hidden");
-  }
-
-  /** Excel download — mirrors exportAllHarmonizationOpportunities()
-   *  but uses the indirect-fuzzy payload + adds two extra columns
-   *  (Keyed By, Merged Descriptions) for transparency on fuzzy rows. */
-  function idpIhExport() {
-    if (typeof XLSX === "undefined") {
-      alert("Excel export library (SheetJS) is not loaded. Reload the page.");
-      return;
-    }
-    var cached = _idpIhLastPayload;
-    if (!cached || !cached.opps || !cached.opps.length) {
-      alert("No opportunities to export. Open the Indirect Harmonization tab and let it render first.");
-      return;
-    }
-    var opps = cached.opps;
-    var diag = cached.diagnostics;
-    var yYear = cached.payload && (cached.payload.analysis_year != null ? cached.payload.analysis_year : cached.payload.year);
-    var rowsCombined = [];
-    var i, j, p, er, row, up, qty, sp, sav, isFuzzy, dispName, mergedDescs, keyedBy;
-    for (i = 0; i < opps.length; i++) {
-      p = opps[i];
-      if (!p) continue;
-      er = p.export_rows;
-      if (!er || !er.length) continue;
-      isFuzzy = idpIhIsFuzzyOpp(p);
-      dispName = idpIhOppDisplayName(p);
-      mergedDescs = isFuzzy && p._ihMembers ? p._ihMembers.join(" · ") : "";
-      keyedBy = isFuzzy ? "Fuzzy Part Name" : "Part Number";
-      for (j = 0; j < er.length; j++) {
-        row = er[j];
-        if (!row) continue;
-        sav = row["Savings"] != null ? +row["Savings"] : 0;
-        up = row["Unit Price"] != null ? +row["Unit Price"] : NaN;
-        qty = row["Quantity"] != null ? +row["Quantity"] : NaN;
-        sp = row["Spend"] != null ? +row["Spend"] : NaN;
-        rowsCombined.push({
-          "Item Key": (row["Item Number"] != null ? String(row["Item Number"]) : (p.item != null ? String(p.item) : "")),
-          "Display Name": dispName,
-          "Keyed By": keyedBy,
-          "Merged Descriptions (fuzzy)": mergedDescs,
-          "Site": row["Site"] != null ? String(row["Site"]) : "",
-          "Supplier": row["Supplier"] != null ? String(row["Supplier"]) : "",
-          "Unit Price": isFinite(up) ? Math.round(up * 100) / 100 : "",
-          "Annual Quantity": isFinite(qty) ? Math.round(qty) : "",
-          "Annual Spend": isFinite(sp) ? Math.round(sp * 100) / 100 : "",
-          "Potential Savings": isFinite(sav) ? Math.round(sav * 100) / 100 : "",
-          "MECE Category": row["Category"] != null ? String(row["Category"]) : (idpIhCategoryLabel(p)),
-          "Analysis Year": yYear != null && yYear !== "" ? yYear : ""
-        });
-      }
-    }
-    rowsCombined.sort(function (a, b) { return (+b["Potential Savings"] || 0) - (+a["Potential Savings"] || 0); });
-    var diagRows = [
-      { Metric: "Indirect rows in (after global filters)", Value: diag.indirectRowsIn },
-      { Metric: "Items considered after prep",             Value: diag.rowsPrepared },
-      { Metric: "Items keyed by Part Number",              Value: diag.keyedByPartNumber },
-      { Metric: "Items keyed by fuzzy Part Name",          Value: diag.keyedByFuzzy },
-      { Metric: "Rows dropped (no usable name signal)",    Value: diag.droppedNoSignal },
-      { Metric: "Fuzzy threshold (token-set Jaccard)",     Value: 0.80 }
-    ];
-    if (diag.clusters) {
-      diagRows.push({ Metric: "Fuzzy merges performed",      Value: diag.clusters.mergedItems });
-      diagRows.push({ Metric: "L3 blocks processed",          Value: diag.clusters.blocksProcessed });
-      diagRows.push({ Metric: "Total fuzzy clusters formed",  Value: diag.clusters.totalClusters });
-    }
-    var wb = XLSX.utils.book_new();
-    var wsAll = XLSX.utils.json_to_sheet(rowsCombined.length ? rowsCombined : [{ Information: "No opportunities to export." }]);
-    wsAll["!cols"] = rowsCombined.length ? [
-      { wch: 18 }, { wch: 32 }, { wch: 16 }, { wch: 40 }, { wch: 20 }, { wch: 22 },
-      { wch: 12 }, { wch: 14 }, { wch: 14 }, { wch: 16 }, { wch: 28 }, { wch: 14 }
-    ] : [{ wch: 80 }];
-    XLSX.utils.book_append_sheet(wb, wsAll, "Indirect Opportunities");
-    var wsDiag = XLSX.utils.json_to_sheet(diagRows);
-    wsDiag["!cols"] = [{ wch: 42 }, { wch: 16 }];
-    XLSX.utils.book_append_sheet(wb, wsDiag, "Methodology");
-    var ts = new Date().toISOString().slice(0, 10);
-    var filename = "Indirect_Harmonization_Opportunities_" + ts + ".xlsx";
-    XLSX.writeFile(wb, filename);
+    if (btn) btn.addEventListener("click", function () { idpIhExport(); });
   }
 
   if (typeof window !== "undefined") {
     window.idpIhRender = idpIhRender;
     window.idpIhWireOnce = idpIhWireOnce;
     window.idpIhExport = idpIhExport;
-    window.idpIhPrepareRows = idpIhPrepareRows;
-    window.idpIhGetIndirectRows = idpIhGetIndirectRows;
   }
+
 
   /* ============================================
   SECTION: PART SEARCH TAB

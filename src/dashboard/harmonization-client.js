@@ -1030,8 +1030,605 @@
     };
   }
 
+
+  /* ====================================================================
+   * INDIRECT HARMONIZATION — Cat 1 + Cat 2 + pre-clean + de-duplication
+   *
+   * Standalone math layer for the redesigned Indirect Harmonization tab.
+   * Operates on RAW transaction rows (typically post-key-remap so that
+   * blank/non-numeric Part Numbers carry a synthetic `IH#FUZZY#<id>` key
+   * in `r._idpIhKey` — supplied by the caller via opts.partKeyFn). The
+   * function emits two MECE-aligned opportunity lists (harm_mece 4 and
+   * 5) in the same shape that renderHarmonizationUnified consumes, plus
+   * a diagnostics block reporting pre-clean exclusions, group-level
+   * noise-filter exclusions, dedup reassignment counts, and per-play
+   * totals.
+   *
+   * PRE-CLEAN PASS (applied BEFORE any grouping or benchmarking — these
+   * rows do not exist for the purposes of the analysis):
+   *   • Drop rows whose part-description text (r.material OR r.noun)
+   *     contains any "dummy word" — word-boundary, case-insensitive.
+   *   • Drop rows with qty <= 0 OR unit price <= 0 (computed sp/q).
+   *   • Drop rows with line spend < minLineSpendUsd ($50).
+   *   • Drop rows with unit price < minUnitPriceUsd ($0.05).
+   * Each rule's exclusion count is reported via diagnostics so the UI
+   * can show a transparent chip row.
+   *
+   * Categories:
+   *   Cat 1 (harm_mece = 4, high-confidence):
+   *     Same Supplier, Same Site, Same Part — Single-Invoice Rightsizing.
+   *     Benchmark = MIN unit price within the (key, site, supplier)
+   *     group; per-transaction savings = (up - benchmark) * qty for
+   *     every transaction whose up > benchmark.
+   *   Cat 2 (harm_mece = 5, medium-confidence):
+   *     Same Supplier, Different Sites, Same Part — Cross-Site
+   *     Rightsizing to Site Average. For each site in the (key,
+   *     supplier) group, compute the site's VOLUME-WEIGHTED average
+   *     unit price = sum(spend at site) / sum(qty at site). Benchmark
+   *     = MIN of those site averages, restricted to sites with at
+   *     least cat2MinBenchmarkSiteTxns transactions (default 3) — this
+   *     keeps a singleton "lucky low" invoice from becoming a
+   *     defensible cross-site benchmark. Per-transaction savings for
+   *     a transaction at a non-benchmark site with up > benchmark =
+   *     (up - benchmark) * qty.
+   *
+   * Group-level noise filters (applied at group level, BOTH categories):
+   *   minBenchmarkUsd      group's benchmark unit price must be >= this
+   *   maxPriceRatio        group's (maxUP / minUP) must be <= this
+   *   minTransactions      group must have at least this many raw
+   *                        transactions (post-pre-clean; signal-quality)
+   *   minSavingsUsd        group's total post-dedup savings must be >=
+   *                        this (post-dedup; quality of the play)
+   *
+   * De-duplication:
+   *   For every transaction that is eligible for BOTH categories (its
+   *   up exceeds both its same-site min and the cross-site site-avg
+   *   min), assign to the category whose per-transaction savings is
+   *   LARGER. On exact equality, Cat 1 wins (higher-confidence). After
+   *   dedup we recompute per-group totals; any group whose post-dedup
+   *   total falls below minSavingsUsd is dropped.
+   *
+   * @param {Array} rows  Raw transaction rows (post-L1-filter,
+   *   post-key-remap). Required fields: spend, quantity (or qty),
+   *   supplier, site, year (or ym/d). For pre-clean dummy-word match,
+   *   r.material and r.noun are scanned.
+   * @param {object} opts
+   *   partKeyFn(r) -> string   REQUIRED. Returns the IH part key for
+   *                            this row, or "" to skip the row.
+   *   forcedYear: number|null  If set, analyze only that calendar year.
+   *   minBenchmarkUsd: number  Default 1.00
+   *   maxPriceRatio: number    Default 100
+   *   minTransactions: number  Default 5
+   *   minSavingsUsd: number    Default 5000
+   *   cat2MinBenchmarkSiteTxns: number  Default 3 (singleton-lucky-low guard)
+   *   dummyWords: string[]     Default INDIRECT_HARM_DUMMY_WORDS_DEFAULT
+   *   minLineSpendUsd: number  Default 50
+   *   minUnitPriceUsd: number  Default 0.05
+   *   maxOppsPerPlay: number   Hard cap per category.
+   *
+   * @returns {{
+   *   cat1Opps: Opportunity[],          // post-dedup, savings-sorted
+   *   cat2Opps: Opportunity[],          // post-dedup, savings-sorted
+   *   diagnostics: { ...counts and Top 5 per category... }
+   * }}
+   */
+  var INDIRECT_HARM_DUMMY_WORDS_DEFAULT = ["dummy", "sample", "test", "ncr", "return", "credit", "adjustment", "void", "reversal", "placeholder"];
+
+  function computeIndirectHarmFromRows(rows, opts) {
+    opts = opts || {};
+    var partKeyFn = typeof opts.partKeyFn === "function" ? opts.partKeyFn : harmonizationItemKey;
+    var forcedYear = opts.forcedYear != null ? +opts.forcedYear : null;
+    var minBenchmarkUsd = opts.minBenchmarkUsd != null ? +opts.minBenchmarkUsd : 1.00;
+    var maxPriceRatio = opts.maxPriceRatio != null ? +opts.maxPriceRatio : 100;
+    var minTransactions = opts.minTransactions != null ? +opts.minTransactions : 5;
+    var minSavingsUsd = opts.minSavingsUsd != null ? +opts.minSavingsUsd : 5000;
+    var cat2MinBenchmarkSiteTxns = opts.cat2MinBenchmarkSiteTxns != null ? +opts.cat2MinBenchmarkSiteTxns : 3;
+    var minLineSpendUsd = opts.minLineSpendUsd != null ? +opts.minLineSpendUsd : 50;
+    var minUnitPriceUsd = opts.minUnitPriceUsd != null ? +opts.minUnitPriceUsd : 0.05;
+    var maxOppsPerPlay = opts.maxOppsPerPlay != null ? +opts.maxOppsPerPlay : MAX_ALL_OPPORTUNITY_CARDS;
+    var dummyWords = Array.isArray(opts.dummyWords) && opts.dummyWords.length
+      ? opts.dummyWords
+      : INDIRECT_HARM_DUMMY_WORDS_DEFAULT;
+    /* Pre-compile a single word-boundary regex for the dummy-word match
+       so each row is one regex test instead of N substring lookups. */
+    var dummyRegex = null;
+    if (dummyWords && dummyWords.length) {
+      var esc = dummyWords.map(function (w) {
+        return String(w).toLowerCase().replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&");
+      });
+      dummyRegex = new RegExp("\\b(" + esc.join("|") + ")\\b", "i");
+    }
+    var diag = {
+      rawRowsIn: rows ? rows.length : 0,
+      preCleanExcludedByDummyWord: 0,
+      preCleanExcludedByZeroQtyOrPrice: 0,
+      preCleanExcludedByMinLineSpend: 0,
+      preCleanExcludedByMinUnitPrice: 0,
+      rowsAfterPreClean: 0,
+      targetYear: null,
+      rowsKeyedByPartNum: 0,
+      rowsKeyedByFuzzy: 0,
+      cat1GroupsTotal: 0,
+      cat1ExcludedByMinTransactions: 0,
+      cat1ExcludedByMinBenchmark: 0,
+      cat1ExcludedByMaxRatio: 0,
+      cat1ExcludedByMinSavings: 0,
+      cat1ExcludedDroppedByMaxOpps: 0,
+      cat1GroupsKept: 0,
+      cat1TotalSavings: 0,
+      cat1Top5: [],
+      cat2GroupsTotal: 0,
+      cat2ExcludedByMinTransactions: 0,
+      cat2ExcludedByMinBenchmark: 0,
+      cat2ExcludedByMaxRatio: 0,
+      cat2ExcludedByOneSite: 0,
+      cat2ExcludedByNoEligibleBenchmarkSite: 0,
+      cat2ExcludedByMinSavings: 0,
+      cat2ExcludedDroppedByMaxOpps: 0,
+      cat2GroupsKept: 0,
+      cat2TotalSavings: 0,
+      cat2Top5: [],
+      dedupReassignmentsTotal: 0,
+      dedupReassignedToCat1: 0,
+      dedupReassignedToCat2: 0,
+      dedupTiesResolvedToCat1: 0
+    };
+    if (!rows || !rows.length) return { cat1Opps: [], cat2Opps: [], diagnostics: diag };
+    if (rows.length > MAX_CLIENT_HARM_INPUT_ROWS) {
+      diag._truncatedInputBelow = MAX_CLIENT_HARM_INPUT_ROWS;
+      rows = rows.slice(0, MAX_CLIENT_HARM_INPUT_ROWS);
+    }
+    /* PRE-CLEAN + NORMALIZE pass. Rules in order: dummy word → qty/up <= 0 →
+       min line spend → min unit price. Each row is excluded by the FIRST
+       rule it violates (so the counts are MECE — a single row can't
+       inflate two buckets at once). */
+    var work = [];
+    var nowY = new Date().getFullYear();
+    var i, r, yr, partKey, sup, site, sp, q, up;
+    for (i = 0; i < rows.length; i++) {
+      r = rows[i];
+      if (!r) continue;
+      partKey = partKeyFn(r);
+      if (!partKey) continue;
+      yr = rowYear(r);
+      if (!yr || yr < 1990 || yr > 2100) continue;
+      sup = r.supplier != null ? String(r.supplier).trim() : "";
+      site = r.site != null ? String(r.site).trim() : "";
+      if (!sup || !site) continue;
+      if (dummyRegex) {
+        var descA = r.material != null ? String(r.material) : "";
+        var descB = r.noun != null ? String(r.noun) : "";
+        if (dummyRegex.test(descA) || dummyRegex.test(descB)) {
+          diag.preCleanExcludedByDummyWord++;
+          continue;
+        }
+      }
+      sp = +(r.spend != null ? r.spend : 0);
+      q = +(r.quantity != null ? r.quantity : r.qty != null ? r.qty : 0);
+      if (!isFinite(sp) || !isFinite(q) || q <= 0 || sp <= 0) {
+        diag.preCleanExcludedByZeroQtyOrPrice++;
+        continue;
+      }
+      if (sp < minLineSpendUsd) {
+        diag.preCleanExcludedByMinLineSpend++;
+        continue;
+      }
+      up = sp / q;
+      if (!isFinite(up) || up <= 0) {
+        diag.preCleanExcludedByZeroQtyOrPrice++;
+        continue;
+      }
+      if (up < minUnitPriceUsd) {
+        diag.preCleanExcludedByMinUnitPrice++;
+        continue;
+      }
+      diag.rowsAfterPreClean++;
+      work.push({
+        yr: yr,
+        part: partKey,
+        partRaw: r.part != null ? String(r.part).trim() : "",
+        supplier: sup,
+        site: site,
+        spend: sp,
+        qty: q,
+        unit_price: up,
+        _rawIdx: i,
+        _keyedByFuzzy: partKey.indexOf("IH#FUZZY#") === 0
+      });
+      if (partKey.indexOf("IH#FUZZY#") === 0) diag.rowsKeyedByFuzzy++;
+      else diag.rowsKeyedByPartNum++;
+    }
+    if (!work.length) return { cat1Opps: [], cat2Opps: [], diagnostics: diag };
+    /* Pick target year (forced or latest complete; same policy as
+       buildBaseTable so this function picks the same year as Cat 1/3
+       when invoked on an unfiltered slice). */
+    var target_year;
+    if (forcedYear != null && forcedYear >= 1990 && forcedYear <= 2100) {
+      target_year = forcedYear;
+    } else {
+      var maxInData = -Infinity;
+      var yComplete = [];
+      for (i = 0; i < work.length; i++) {
+        if (work[i].yr > maxInData) maxInData = work[i].yr;
+        if (work[i].yr < nowY) yComplete.push(work[i].yr);
+      }
+      target_year = yComplete.length ? Math.max.apply(null, yComplete) : Math.min(maxInData, nowY);
+    }
+    diag.targetYear = target_year;
+    work = work.filter(function (w) { return w.yr === target_year; });
+    if (!work.length) return { cat1Opps: [], cat2Opps: [], diagnostics: diag };
+    /* Build Cat 1 groups: (key, site, supplier). Each transaction lands
+       in exactly one Cat 1 group. Cat 2 groups: (key, supplier). */
+    var cat1Groups = Object.create(null);
+    var cat2Groups = Object.create(null);
+    for (i = 0; i < work.length; i++) {
+      var w = work[i];
+      var k1 = w.part + "\u0001" + w.site + "\u0001" + w.supplier;
+      var k2 = w.part + "\u0001" + w.supplier;
+      if (!cat1Groups[k1]) cat1Groups[k1] = { key: w.part, site: w.site, supplier: w.supplier, rows: [] };
+      cat1Groups[k1].rows.push(w);
+      w._c1Key = k1;
+      if (!cat2Groups[k2]) cat2Groups[k2] = { key: w.part, supplier: w.supplier, rows: [] };
+      cat2Groups[k2].rows.push(w);
+      w._c2Key = k2;
+    }
+    /* Cat 1 group eligibility — MIN_TRANSACTIONS, MIN_BENCHMARK,
+       MAX_RATIO. Cat 1 benchmark = MIN unit price across the group's
+       transactions. minSavingsUsd is enforced LATER post-dedup. */
+    var c1Filt = { minTxn: 0, minBenchmark: 0, maxRatio: 0 };
+    var c1Stats = Object.create(null);
+    var gk;
+    for (gk in cat1Groups) {
+      if (!Object.prototype.hasOwnProperty.call(cat1Groups, gk)) continue;
+      diag.cat1GroupsTotal++;
+      var g1 = cat1Groups[gk];
+      if (g1.rows.length < minTransactions) { c1Filt.minTxn++; continue; }
+      var c1Min = Infinity, c1Max = -Infinity;
+      for (var di = 0; di < g1.rows.length; di++) {
+        var upi = g1.rows[di].unit_price;
+        if (upi < c1Min) c1Min = upi;
+        if (upi > c1Max) c1Max = upi;
+      }
+      if (c1Min < minBenchmarkUsd) { c1Filt.minBenchmark++; continue; }
+      var c1Ratio = c1Min > 0 ? (c1Max / c1Min) : Infinity;
+      if (c1Ratio > maxPriceRatio) { c1Filt.maxRatio++; continue; }
+      c1Stats[gk] = { minUP: c1Min, maxUP: c1Max, ratio: c1Ratio };
+    }
+    diag.cat1ExcludedByMinTransactions = c1Filt.minTxn;
+    diag.cat1ExcludedByMinBenchmark = c1Filt.minBenchmark;
+    diag.cat1ExcludedByMaxRatio = c1Filt.maxRatio;
+    /* Cat 2 group eligibility — MIN_TRANSACTIONS (across group), must
+       span >=2 sites, build per-site volume-weighted-avg, restrict
+       benchmark candidates to sites with >= cat2MinBenchmarkSiteTxns
+       transactions, then MIN_BENCHMARK + MAX_RATIO. */
+    var c2Filt = {
+      minTxn: 0, oneSite: 0, noEligibleSite: 0,
+      minBenchmark: 0, maxRatio: 0
+    };
+    var c2Stats = Object.create(null);
+    for (gk in cat2Groups) {
+      if (!Object.prototype.hasOwnProperty.call(cat2Groups, gk)) continue;
+      diag.cat2GroupsTotal++;
+      var g2 = cat2Groups[gk];
+      if (g2.rows.length < minTransactions) { c2Filt.minTxn++; continue; }
+      /* Build per-site aggregates. */
+      var perSite = Object.create(null);
+      for (var ri = 0; ri < g2.rows.length; ri++) {
+        var gr2 = g2.rows[ri];
+        if (!perSite[gr2.site]) perSite[gr2.site] = { site: gr2.site, spend: 0, qty: 0, txnCount: 0 };
+        perSite[gr2.site].spend += gr2.spend;
+        perSite[gr2.site].qty += gr2.qty;
+        perSite[gr2.site].txnCount += 1;
+      }
+      var siteList = [];
+      var sk;
+      for (sk in perSite) {
+        if (!Object.prototype.hasOwnProperty.call(perSite, sk)) continue;
+        var ps = perSite[sk];
+        ps.avgUP = ps.qty > 0 ? ps.spend / ps.qty : Infinity;
+        siteList.push(ps);
+      }
+      if (siteList.length < 2) { c2Filt.oneSite++; continue; }
+      /* Benchmark site must have >= cat2MinBenchmarkSiteTxns transactions
+         to keep a singleton low-invoice site from becoming the
+         benchmark. */
+      var eligibleSites = siteList.filter(function (s) { return s.txnCount >= cat2MinBenchmarkSiteTxns; });
+      if (!eligibleSites.length) { c2Filt.noEligibleSite++; continue; }
+      /* Cross-site benchmark = MIN site-avg across eligible sites. */
+      var benchSite = null;
+      for (var ei = 0; ei < eligibleSites.length; ei++) {
+        if (!benchSite || eligibleSites[ei].avgUP < benchSite.avgUP) benchSite = eligibleSites[ei];
+      }
+      if (!benchSite || !isFinite(benchSite.avgUP)) { c2Filt.noEligibleSite++; continue; }
+      var c2Min = benchSite.avgUP;
+      /* maxUP for ratio purposes = the highest per-site average, not
+         the highest single transaction. */
+      var c2Max = -Infinity;
+      for (var mi = 0; mi < siteList.length; mi++) {
+        if (siteList[mi].avgUP > c2Max) c2Max = siteList[mi].avgUP;
+      }
+      if (c2Min < minBenchmarkUsd) { c2Filt.minBenchmark++; continue; }
+      var c2Ratio = c2Min > 0 ? (c2Max / c2Min) : Infinity;
+      if (c2Ratio > maxPriceRatio) { c2Filt.maxRatio++; continue; }
+      c2Stats[gk] = {
+        minUP: c2Min, maxUP: c2Max, ratio: c2Ratio,
+        benchSite: benchSite.site, siteAggregates: perSite,
+        siteCount: siteList.length
+      };
+    }
+    diag.cat2ExcludedByMinTransactions = c2Filt.minTxn;
+    diag.cat2ExcludedByOneSite = c2Filt.oneSite;
+    diag.cat2ExcludedByNoEligibleBenchmarkSite = c2Filt.noEligibleSite;
+    diag.cat2ExcludedByMinBenchmark = c2Filt.minBenchmark;
+    diag.cat2ExcludedByMaxRatio = c2Filt.maxRatio;
+    /* Per-transaction eligibility + dedup pass.
+       Cat 1: up > c1Stats[c1Key].minUP   (single-invoice benchmark)
+       Cat 2: row's site != benchSite AND up > c2Stats[c2Key].minUP
+       Both eligible: bigger per-txn savings wins (tie → Cat 1). */
+    for (i = 0; i < work.length; i++) {
+      var w2 = work[i];
+      var s1 = c1Stats[w2._c1Key];
+      var s2 = c2Stats[w2._c2Key];
+      var c1Eligible = !!s1;
+      var c2Eligible = !!s2;
+      var c1Sav = 0, c2Sav = 0;
+      if (c1Eligible) {
+        if (w2.unit_price > s1.minUP) c1Sav = (w2.unit_price - s1.minUP) * w2.qty;
+        else c1Eligible = false;
+      }
+      if (c2Eligible) {
+        if (w2.site === s2.benchSite) {
+          c2Eligible = false; // benchmark site itself never contributes
+        } else if (w2.unit_price > s2.minUP) {
+          c2Sav = (w2.unit_price - s2.minUP) * w2.qty;
+        } else {
+          c2Eligible = false;
+        }
+      }
+      if (c1Eligible && c2Eligible) {
+        diag.dedupReassignmentsTotal++;
+        if (c1Sav >= c2Sav) {
+          w2._assignedCat = 1;
+          w2._assignedSavings = c1Sav;
+          diag.dedupReassignedToCat1++;
+          if (c1Sav === c2Sav) diag.dedupTiesResolvedToCat1++;
+        } else {
+          w2._assignedCat = 2;
+          w2._assignedSavings = c2Sav;
+          diag.dedupReassignedToCat2++;
+        }
+      } else if (c1Eligible) {
+        w2._assignedCat = 1;
+        w2._assignedSavings = c1Sav;
+      } else if (c2Eligible) {
+        w2._assignedCat = 2;
+        w2._assignedSavings = c2Sav;
+      } else {
+        w2._assignedCat = 0;
+        w2._assignedSavings = 0;
+      }
+    }
+    /* Emit Cat 1 opportunities (post-dedup totals). */
+    function emitCat1Opps() {
+      var out = [];
+      var kk, totals = Object.create(null);
+      for (i = 0; i < work.length; i++) {
+        if (work[i]._assignedCat !== 1) continue;
+        kk = work[i]._c1Key;
+        if (!totals[kk]) totals[kk] = { sav: 0 };
+        totals[kk].sav += work[i]._assignedSavings;
+      }
+      for (kk in cat1Groups) {
+        if (!Object.prototype.hasOwnProperty.call(cat1Groups, kk)) continue;
+        var stat = c1Stats[kk];
+        if (!stat) continue;
+        var g = cat1Groups[kk];
+        var grpTotal = totals[kk] ? totals[kk].sav : 0;
+        if (grpTotal < minSavingsUsd) { diag.cat1ExcludedByMinSavings++; continue; }
+        var benchmark = stat.minUP;
+        var sortedRows = g.rows.slice().sort(function (a, b) { return b.unit_price - a.unit_price; });
+        var supRows = [];
+        var exportRows = [];
+        var totalSpend = 0, totalQty = 0;
+        var ti;
+        for (ti = 0; ti < sortedRows.length; ti++) {
+          var gr = sortedRows[ti];
+          totalSpend += gr.spend;
+          totalQty += gr.qty;
+          var rowSav = (gr._assignedCat === 1) ? gr._assignedSavings : 0;
+          var trancheLabel = "Tranche #" + (ti + 1);
+          supRows.push({
+            supplier: g.supplier,
+            site: g.site,
+            unit_price: roundUsd(gr.unit_price),
+            quantity: roundUsd(gr.qty),
+            spend: roundUsd(gr.spend),
+            label: trancheLabel,
+            _assignedCat: gr._assignedCat || 0,
+            _rowSavings: roundUsd(rowSav)
+          });
+          exportRows.push({
+            "Item Number": g.key,
+            "Site": g.site,
+            "Supplier": g.supplier,
+            "Tranche": trancheLabel,
+            "Quantity": gr.qty,
+            "Unit Price": roundUsd(gr.unit_price),
+            "Spend": roundUsd(gr.spend),
+            "Savings": roundUsd(rowSav),
+            "Category": "Same Supplier, Same Site - Single-Invoice Rightsizing",
+            "Confidence": "high"
+          });
+        }
+        var labels = supRows.map(function (s) { return s.label; });
+        var unitPrices = supRows.map(function (s) { return s.unit_price; });
+        var barColors = supRows.map(function () { return BAR_BLUE; });
+        out.push({
+          item: g.key,
+          part: g.key,
+          harm_mece: 4,
+          confidence: "high",
+          total_spend: roundUsd(totalSpend),
+          total_quantity: roundUsd(totalQty),
+          savings: roundUsd(grpTotal),
+          savings_subtitle: formatNotePctBelow(benchmark, stat.maxUP)[1] || "",
+          suppliers: supRows,
+          supplier_count: 1,
+          site_count: 1,
+          benchmark: benchmark,
+          chart: { labels: labels, unit_prices: unitPrices, bar_colors: barColors, y_axis_label: "Unit price ($/unit)" },
+          export_rows: exportRows,
+          analysis_year: target_year,
+          year: target_year,
+          bar_label_field: "label",
+          _keyedByFuzzy: g.key.indexOf("IH#FUZZY#") === 0
+        });
+      }
+      return out;
+    }
+    /* Emit Cat 2 opportunities. Bars = per-site volume-weighted avg.
+       Drill-down rows are per-site (each site = one row). */
+    function emitCat2Opps() {
+      var out = [];
+      var kk, totals = Object.create(null);
+      for (i = 0; i < work.length; i++) {
+        if (work[i]._assignedCat !== 2) continue;
+        kk = work[i]._c2Key;
+        if (!totals[kk]) totals[kk] = { sav: 0, perSiteSav: Object.create(null) };
+        totals[kk].sav += work[i]._assignedSavings;
+        var sname = work[i].site;
+        if (!totals[kk].perSiteSav[sname]) totals[kk].perSiteSav[sname] = 0;
+        totals[kk].perSiteSav[sname] += work[i]._assignedSavings;
+      }
+      for (kk in cat2Groups) {
+        if (!Object.prototype.hasOwnProperty.call(cat2Groups, kk)) continue;
+        var stat = c2Stats[kk];
+        if (!stat) continue;
+        var g = cat2Groups[kk];
+        var grpTotal = totals[kk] ? totals[kk].sav : 0;
+        if (grpTotal < minSavingsUsd) { diag.cat2ExcludedByMinSavings++; continue; }
+        var benchmark = stat.minUP;
+        var perSite = stat.siteAggregates;
+        var perSiteSav = totals[kk] ? totals[kk].perSiteSav : Object.create(null);
+        var siteRows = [];
+        var sk2;
+        for (sk2 in perSite) {
+          if (!Object.prototype.hasOwnProperty.call(perSite, sk2)) continue;
+          var sr = perSite[sk2];
+          siteRows.push({
+            site: sr.site,
+            spend: sr.spend,
+            qty: sr.qty,
+            txnCount: sr.txnCount,
+            unit_price: sr.avgUP,
+            assignedSav: perSiteSav[sr.site] || 0,
+            _isBenchmark: sr.site === stat.benchSite
+          });
+        }
+        siteRows.sort(function (a, b) { return b.unit_price - a.unit_price; });
+        var supRows = [];
+        var exportRows = [];
+        var totalSpend = 0, totalQty = 0;
+        for (var ti = 0; ti < siteRows.length; ti++) {
+          var sr2 = siteRows[ti];
+          totalSpend += sr2.spend;
+          totalQty += sr2.qty;
+          supRows.push({
+            supplier: g.supplier,
+            site: sr2.site,
+            unit_price: roundUsd(sr2.unit_price),
+            quantity: roundUsd(sr2.qty),
+            spend: roundUsd(sr2.spend),
+            txn_count: sr2.txnCount,
+            _rowSavings: roundUsd(sr2.assignedSav),
+            _isBenchmark: !!sr2._isBenchmark
+          });
+          exportRows.push({
+            "Item Number": g.key,
+            "Site": sr2.site,
+            "Supplier": g.supplier,
+            "Site Txn Count": sr2.txnCount,
+            "Quantity": sr2.qty,
+            "Site Volume-Weighted Avg Unit Price": roundUsd(sr2.unit_price),
+            "Spend": roundUsd(sr2.spend),
+            "Savings": roundUsd(sr2.assignedSav),
+            "Is Benchmark Site": sr2._isBenchmark ? "yes" : "no",
+            "Category": "Same Supplier, Different Sites - Cross-Site Rightsizing",
+            "Confidence": "medium"
+          });
+        }
+        var labels = supRows.map(function (s) { return String(s.site || "—"); });
+        var unitPrices = supRows.map(function (s) { return s.unit_price; });
+        var barColors = supRows.map(function () { return BAR_BLUE; });
+        out.push({
+          item: g.key,
+          part: g.key,
+          harm_mece: 5,
+          confidence: "medium",
+          total_spend: roundUsd(totalSpend),
+          total_quantity: roundUsd(totalQty),
+          savings: roundUsd(grpTotal),
+          savings_subtitle: formatNotePctBelow(benchmark, stat.maxUP)[1] || "",
+          suppliers: supRows,
+          supplier_count: 1,
+          site_count: stat.siteCount,
+          benchmark: benchmark,
+          benchmark_site: stat.benchSite,
+          chart: { labels: labels, unit_prices: unitPrices, bar_colors: barColors, y_axis_label: "Unit price ($/unit)" },
+          export_rows: exportRows,
+          analysis_year: target_year,
+          year: target_year,
+          _keyedByFuzzy: g.key.indexOf("IH#FUZZY#") === 0
+        });
+      }
+      return out;
+    }
+    var cat1Opps = emitCat1Opps();
+    var cat2Opps = emitCat2Opps();
+    cat1Opps.sort(function (a, b) { return (+b.savings || 0) - (+a.savings || 0); });
+    if (cat1Opps.length > maxOppsPerPlay) {
+      diag.cat1ExcludedDroppedByMaxOpps = cat1Opps.length - maxOppsPerPlay;
+      cat1Opps = cat1Opps.slice(0, maxOppsPerPlay);
+    }
+    cat2Opps.sort(function (a, b) { return (+b.savings || 0) - (+a.savings || 0); });
+    if (cat2Opps.length > maxOppsPerPlay) {
+      diag.cat2ExcludedDroppedByMaxOpps = cat2Opps.length - maxOppsPerPlay;
+      cat2Opps = cat2Opps.slice(0, maxOppsPerPlay);
+    }
+    diag.cat1GroupsKept = cat1Opps.length;
+    diag.cat2GroupsKept = cat2Opps.length;
+    diag.cat1TotalSavings = cat1Opps.reduce(function (s, p) { return s + (+p.savings || 0); }, 0);
+    diag.cat2TotalSavings = cat2Opps.reduce(function (s, p) { return s + (+p.savings || 0); }, 0);
+    diag.cat1Top5 = cat1Opps.slice(0, 5).map(function (p) {
+      return {
+        item: p.item,
+        site: p.suppliers && p.suppliers[0] ? p.suppliers[0].site : "",
+        supplier: p.suppliers && p.suppliers[0] ? p.suppliers[0].supplier : "",
+        savings: +p.savings || 0,
+        total_spend: p.total_spend,
+        benchmark: p.benchmark
+      };
+    });
+    diag.cat2Top5 = cat2Opps.slice(0, 5).map(function (p) {
+      return {
+        item: p.item,
+        site_count: p.site_count,
+        supplier: p.suppliers && p.suppliers[0] ? p.suppliers[0].supplier : "",
+        savings: +p.savings || 0,
+        total_spend: p.total_spend,
+        benchmark: p.benchmark,
+        benchmark_site: p.benchmark_site
+      };
+    });
+    return { cat1Opps: cat1Opps, cat2Opps: cat2Opps, diagnostics: diag };
+  }
+
   global.idpCalculateHarmonizationFromRows = calculateFromRows;
+  global.idpComputeIndirectHarmFromRows = computeIndirectHarmFromRows;
   global.idpHarmonizationItemKey = harmonizationItemKey;
+  global.idpIndirectHarmDefaults = {
+    DUMMY_WORDS: INDIRECT_HARM_DUMMY_WORDS_DEFAULT
+  };
   global.idpHarmonizationLimits = {
     maxClientInputRows: MAX_CLIENT_HARM_INPUT_ROWS,
     maxAllOpportunityCards: MAX_ALL_OPPORTUNITY_CARDS,
