@@ -1075,6 +1075,14 @@
    * Group-level noise filters (applied at group level, BOTH categories):
    *   minBenchmarkUsd      group's benchmark unit price must be >= this
    *   maxPriceRatio        group's (maxUP / minUP) must be <= this
+   *   maxQtyRatio          group's (maxQty / minQty) must be <= this OR
+   *                        the high-quantity rows must NOT have a unit
+   *                        price < 10% of the low-quantity rows' unit
+   *                        price (UoM-mismatch fingerprint guard)
+   *   minBenchmarkVolumeShare  fraction of the group's total quantity
+   *                            that the benchmark price must come
+   *                            from -- protects against a benchmark
+   *                            anchored in a single sliver of volume
    *   minTransactions      group must have at least this many raw
    *                        transactions (post-pre-clean; signal-quality)
    *   minSavingsUsd        group's total post-dedup savings must be >=
@@ -1097,7 +1105,9 @@
    *                            this row, or "" to skip the row.
    *   forcedYear: number|null  If set, analyze only that calendar year.
    *   minBenchmarkUsd: number  Default 1.00
-   *   maxPriceRatio: number    Default 100
+   *   maxPriceRatio: number    Default 20
+   *   maxQtyRatio: number      Default 10 (UoM-mismatch guard)
+   *   minBenchmarkVolumeShare: number  Default 0.10 (benchmark-anchor guard)
    *   minTransactions: number  Default 5
    *   minSavingsUsd: number    Default 5000
    *   cat2MinBenchmarkSiteTxns: number  Default 3 (singleton-lucky-low guard)
@@ -1119,7 +1129,23 @@
     var partKeyFn = typeof opts.partKeyFn === "function" ? opts.partKeyFn : harmonizationItemKey;
     var forcedYear = opts.forcedYear != null ? +opts.forcedYear : null;
     var minBenchmarkUsd = opts.minBenchmarkUsd != null ? +opts.minBenchmarkUsd : 1.00;
-    var maxPriceRatio = opts.maxPriceRatio != null ? +opts.maxPriceRatio : 100;
+    var maxPriceRatio = opts.maxPriceRatio != null ? +opts.maxPriceRatio : 20;
+    /* UoM-mismatch fingerprint guard. Two bands of activity within a
+       (Supplier, Site, Part) group -- one with low quantities at high
+       unit prices, one with high quantities at much lower unit prices
+       -- almost always indicates the items being billed are different
+       even though they share a part key (e.g. one supplier line is
+       billed "per system" at $89K/unit and a separate line is billed
+       "per piece" at $1,260/unit). Trip the guard when BOTH (a)
+       maxQty/minQty > maxQtyRatio AND (b) the high-quantity cohort's
+       volume-weighted avg unit price is below 10% of the low-quantity
+       cohort's. */
+    var maxQtyRatio = opts.maxQtyRatio != null ? +opts.maxQtyRatio : 10;
+    /* The benchmark price must come from transactions representing at
+       least this fraction of the group's total quantity, otherwise
+       the benchmark is anchored in an outlier sliver of volume and
+       not defensible. */
+    var minBenchmarkVolumeShare = opts.minBenchmarkVolumeShare != null ? +opts.minBenchmarkVolumeShare : 0.10;
     var minTransactions = opts.minTransactions != null ? +opts.minTransactions : 5;
     var minSavingsUsd = opts.minSavingsUsd != null ? +opts.minSavingsUsd : 5000;
     var cat2MinBenchmarkSiteTxns = opts.cat2MinBenchmarkSiteTxns != null ? +opts.cat2MinBenchmarkSiteTxns : 3;
@@ -1197,6 +1223,8 @@
       cat1ExcludedByMinTransactions: 0,
       cat1ExcludedByMinBenchmark: 0,
       cat1ExcludedByMaxRatio: 0,
+      cat1ExcludedByQtyBand: 0,
+      cat1ExcludedByBenchShare: 0,
       cat1ExcludedByMinSavings: 0,
       cat1ExcludedDroppedByMaxOpps: 0,
       cat1GroupsKept: 0,
@@ -1206,6 +1234,8 @@
       cat2ExcludedByMinTransactions: 0,
       cat2ExcludedByMinBenchmark: 0,
       cat2ExcludedByMaxRatio: 0,
+      cat2ExcludedByQtyBand: 0,
+      cat2ExcludedByBenchShare: 0,
       cat2ExcludedByOneSite: 0,
       cat2ExcludedByNoEligibleBenchmarkSite: 0,
       cat2ExcludedByMinSavings: 0,
@@ -1233,6 +1263,23 @@
       groupExcludedByMaxRatioRowsCount: 0,
       groupExcludedByMaxRatioRowsSpend: 0,
       groupExcludedByMaxRatioRowsSpendAbs: 0,
+      /* UoM-mismatch fingerprint guard rejections, per-row, post-emit.
+         Catches the pattern where a (Part, Supplier, Site) -- or
+         (Part, Supplier) -- group has both a low-qty/high-price
+         cohort and a high-qty/low-price cohort that almost certainly
+         represent different items billed under the same part key
+         (e.g. billed "per system" vs "per piece"). */
+      groupExcludedByQtyBandRowsCount: 0,
+      groupExcludedByQtyBandRowsSpend: 0,
+      groupExcludedByQtyBandRowsSpendAbs: 0,
+      /* Benchmark-anchor guard rejections, per-row, post-emit. Catches
+         the pattern where the benchmark unit price is set by a tiny
+         sliver of the group's total volume (e.g. one 12-unit invoice
+         in a group otherwise dominated by 6 single-unit invoices at
+         a completely different price band). */
+      groupExcludedByBenchShareRowsCount: 0,
+      groupExcludedByBenchShareRowsSpend: 0,
+      groupExcludedByBenchShareRowsSpendAbs: 0,
       /* Walk bottom-bookend — UNIQUE rows in at least one kept opp. */
       analyzedRowsCount: 0,
       analyzedRowsSpend: 0
@@ -1435,13 +1482,55 @@
       cat2Groups[k2].rows.push(w);
       w._c2Key = k2;
     }
+    /* UoM-mismatch fingerprint detector. Splits the group's rows at
+       the median quantity, computes a spend-weighted-average unit
+       price for the low-qty half and the high-qty half, and returns
+       true iff BOTH (a) the qty spread exceeds maxQtyRatio AND (b)
+       the high-qty cohort's avg unit price is below 10% of the
+       low-qty cohort's. Operates on the raw txn rows of any group
+       (Cat 1 OR Cat 2) -- the fingerprint is item-level so per-site
+       splits don't matter. */
+    function hasQtyBandUomMismatch(grpRows) {
+      if (!grpRows || grpRows.length < 2) return false;
+      var qMin = Infinity, qMax = -Infinity;
+      for (var qi = 0; qi < grpRows.length; qi++) {
+        var qv = grpRows[qi].qty;
+        if (qv < qMin) qMin = qv;
+        if (qv > qMax) qMax = qv;
+      }
+      if (!isFinite(qMin) || qMin <= 0) return false;
+      var qRatio = qMax / qMin;
+      if (qRatio <= maxQtyRatio) return false;
+      /* Median-split by qty. Even-length groups split in the middle;
+         odd-length groups put the median row in the high-qty half so
+         a singleton "high" row still has signal. */
+      var sortedQ = grpRows.slice().sort(function (a, b) { return a.qty - b.qty; });
+      var midIx = Math.floor(sortedQ.length / 2);
+      var lowSpend = 0, lowQty = 0, highSpend = 0, highQty = 0;
+      for (var si = 0; si < sortedQ.length; si++) {
+        if (si < midIx) {
+          lowSpend += sortedQ[si].spend;
+          lowQty += sortedQ[si].qty;
+        } else {
+          highSpend += sortedQ[si].spend;
+          highQty += sortedQ[si].qty;
+        }
+      }
+      if (lowQty <= 0 || highQty <= 0) return false;
+      var lowAvgUp = lowSpend / lowQty;
+      var highAvgUp = highSpend / highQty;
+      if (!isFinite(lowAvgUp) || lowAvgUp <= 0) return false;
+      if (!isFinite(highAvgUp)) return false;
+      return highAvgUp < 0.10 * lowAvgUp;
+    }
     /* Cat 1 group eligibility — MIN_TRANSACTIONS, MIN_BENCHMARK,
-       MAX_RATIO. Cat 1 benchmark = MIN unit price across the group's
+       MAX_RATIO, QTY_BAND (UoM mismatch), MIN_BENCHMARK_VOLUME_SHARE.
+       Cat 1 benchmark = MIN unit price across the group's
        transactions. minSavingsUsd is enforced LATER post-dedup.
-       c1Fail[gk] = failure reason ("minTxn"|"minBenchmark"|"maxRatio"|
-       "minSavings" set later by emit) so the walk attribution loop
-       can blame the right rule. */
-    var c1Filt = { minTxn: 0, minBenchmark: 0, maxRatio: 0 };
+       c1Fail[gk] = failure reason ("minTxn"|"minBenchmark"|"maxRatio"
+       |"qtyBand"|"benchShare"|"minSavings" set later by emit) so the
+       walk attribution loop can blame the right rule. */
+    var c1Filt = { minTxn: 0, minBenchmark: 0, maxRatio: 0, qtyBand: 0, benchShare: 0 };
     var c1Stats = Object.create(null);
     var c1Fail = Object.create(null);
     var gk;
@@ -1459,25 +1548,57 @@
       if (c1Min < minBenchmarkUsd) { c1Filt.minBenchmark++; c1Fail[gk] = "minBenchmark"; continue; }
       var c1Ratio = c1Min > 0 ? (c1Max / c1Min) : Infinity;
       if (c1Ratio > maxPriceRatio) { c1Filt.maxRatio++; c1Fail[gk] = "maxRatio"; continue; }
+      /* NEW: UoM-mismatch fingerprint. Two qty bands at vastly
+         different unit-price bands almost always = different items
+         under the same part key. */
+      if (hasQtyBandUomMismatch(g1.rows)) {
+        c1Filt.qtyBand++; c1Fail[gk] = "qtyBand"; continue;
+      }
+      /* NEW: benchmark-volume-share guard. "Benchmark cohort" =
+         rows whose unit price is within 1% of c1Min (small tolerance
+         absorbs floating-point quotient drift). Sum their qty; must
+         be at least minBenchmarkVolumeShare of the group's total qty
+         or the benchmark is anchored in a sliver of volume and not
+         defensible. */
+      var benchQty = 0, totalQty = 0;
+      var benchCutoff = c1Min * 1.01;
+      for (var bi = 0; bi < g1.rows.length; bi++) {
+        var brQty = g1.rows[bi].qty;
+        totalQty += brQty;
+        if (g1.rows[bi].unit_price <= benchCutoff) benchQty += brQty;
+      }
+      if (totalQty > 0 && (benchQty / totalQty) < minBenchmarkVolumeShare) {
+        c1Filt.benchShare++; c1Fail[gk] = "benchShare"; continue;
+      }
       c1Stats[gk] = { minUP: c1Min, maxUP: c1Max, ratio: c1Ratio };
     }
     diag.cat1ExcludedByMinTransactions = c1Filt.minTxn;
     diag.cat1ExcludedByMinBenchmark = c1Filt.minBenchmark;
     diag.cat1ExcludedByMaxRatio = c1Filt.maxRatio;
+    diag.cat1ExcludedByQtyBand = c1Filt.qtyBand;
+    diag.cat1ExcludedByBenchShare = c1Filt.benchShare;
     /* Cat 2 group eligibility — MIN_TRANSACTIONS (across group), must
        span >=2 sites, build per-site volume-weighted-avg, restrict
        benchmark candidates to sites with >= cat2MinBenchmarkSiteTxns
        transactions, then MIN_BENCHMARK + MAX_RATIO. */
+    /* Cat 2 group eligibility -- mirrors Cat 1 but with site-level
+       benchmark. Same QTY_BAND + BENCHMARK_VOLUME_SHARE guards
+       apply (the UoM-mismatch fingerprint is item-level so it's the
+       same row-level check; the benchmark-volume-share check uses
+       benchSite's qty / group total qty since the Cat 2 benchmark
+       is per-site, not per-row).
+       c2Fail[gk] is populated for the per-row walk attribution. */
     var c2Filt = {
       minTxn: 0, oneSite: 0, noEligibleSite: 0,
-      minBenchmark: 0, maxRatio: 0
+      minBenchmark: 0, maxRatio: 0, qtyBand: 0, benchShare: 0
     };
     var c2Stats = Object.create(null);
+    var c2Fail = Object.create(null);
     for (gk in cat2Groups) {
       if (!Object.prototype.hasOwnProperty.call(cat2Groups, gk)) continue;
       diag.cat2GroupsTotal++;
       var g2 = cat2Groups[gk];
-      if (g2.rows.length < minTransactions) { c2Filt.minTxn++; continue; }
+      if (g2.rows.length < minTransactions) { c2Filt.minTxn++; c2Fail[gk] = "minTxn"; continue; }
       /* Build per-site aggregates. */
       var perSite = Object.create(null);
       for (var ri = 0; ri < g2.rows.length; ri++) {
@@ -1495,18 +1616,18 @@
         ps.avgUP = ps.qty > 0 ? ps.spend / ps.qty : Infinity;
         siteList.push(ps);
       }
-      if (siteList.length < 2) { c2Filt.oneSite++; continue; }
+      if (siteList.length < 2) { c2Filt.oneSite++; c2Fail[gk] = "oneSite"; continue; }
       /* Benchmark site must have >= cat2MinBenchmarkSiteTxns transactions
          to keep a singleton low-invoice site from becoming the
          benchmark. */
       var eligibleSites = siteList.filter(function (s) { return s.txnCount >= cat2MinBenchmarkSiteTxns; });
-      if (!eligibleSites.length) { c2Filt.noEligibleSite++; continue; }
+      if (!eligibleSites.length) { c2Filt.noEligibleSite++; c2Fail[gk] = "noEligibleSite"; continue; }
       /* Cross-site benchmark = MIN site-avg across eligible sites. */
       var benchSite = null;
       for (var ei = 0; ei < eligibleSites.length; ei++) {
         if (!benchSite || eligibleSites[ei].avgUP < benchSite.avgUP) benchSite = eligibleSites[ei];
       }
-      if (!benchSite || !isFinite(benchSite.avgUP)) { c2Filt.noEligibleSite++; continue; }
+      if (!benchSite || !isFinite(benchSite.avgUP)) { c2Filt.noEligibleSite++; c2Fail[gk] = "noEligibleSite"; continue; }
       var c2Min = benchSite.avgUP;
       /* maxUP for ratio purposes = the highest per-site average, not
          the highest single transaction. */
@@ -1514,9 +1635,22 @@
       for (var mi = 0; mi < siteList.length; mi++) {
         if (siteList[mi].avgUP > c2Max) c2Max = siteList[mi].avgUP;
       }
-      if (c2Min < minBenchmarkUsd) { c2Filt.minBenchmark++; continue; }
+      if (c2Min < minBenchmarkUsd) { c2Filt.minBenchmark++; c2Fail[gk] = "minBenchmark"; continue; }
       var c2Ratio = c2Min > 0 ? (c2Max / c2Min) : Infinity;
-      if (c2Ratio > maxPriceRatio) { c2Filt.maxRatio++; continue; }
+      if (c2Ratio > maxPriceRatio) { c2Filt.maxRatio++; c2Fail[gk] = "maxRatio"; continue; }
+      /* NEW: UoM-mismatch fingerprint at the (Part, Supplier) level. */
+      if (hasQtyBandUomMismatch(g2.rows)) {
+        c2Filt.qtyBand++; c2Fail[gk] = "qtyBand"; continue;
+      }
+      /* NEW: benchmark-volume-share -- the benchmark site must
+         contribute at least minBenchmarkVolumeShare of the group's
+         total quantity. */
+      var c2TotalQty = 0;
+      for (var qti = 0; qti < g2.rows.length; qti++) c2TotalQty += g2.rows[qti].qty;
+      var c2BenchQty = benchSite.qty;
+      if (c2TotalQty > 0 && (c2BenchQty / c2TotalQty) < minBenchmarkVolumeShare) {
+        c2Filt.benchShare++; c2Fail[gk] = "benchShare"; continue;
+      }
       c2Stats[gk] = {
         minUP: c2Min, maxUP: c2Max, ratio: c2Ratio,
         benchSite: benchSite.site, siteAggregates: perSite,
@@ -1528,6 +1662,8 @@
     diag.cat2ExcludedByNoEligibleBenchmarkSite = c2Filt.noEligibleSite;
     diag.cat2ExcludedByMinBenchmark = c2Filt.minBenchmark;
     diag.cat2ExcludedByMaxRatio = c2Filt.maxRatio;
+    diag.cat2ExcludedByQtyBand = c2Filt.qtyBand;
+    diag.cat2ExcludedByBenchShare = c2Filt.benchShare;
     /* Per-transaction eligibility + dedup pass.
        Cat 1: up > c1Stats[c1Key].minUP   (single-invoice benchmark)
        Cat 2: row's site != benchSite AND up > c2Stats[c2Key].minUP
@@ -1793,7 +1929,25 @@
         diag.analyzedRowsSpend += wr.spend;
         continue;
       }
-      failReason = c1Fail[wr._c1Key];
+      /* Walk attribution: a row is attributed to whichever rule
+         excluded it, choosing the MOST RESTRICTIVE pass-of-blame
+         between its Cat 1 group and its Cat 2 group. We resolve in
+         the user-spec display order (minTxn -> minSavings ->
+         minBenchmark -> maxRatio -> qtyBand -> benchShare); since
+         every row has exactly one Cat 1 group and (at most) one
+         Cat 2 group, we prefer the Cat 1 failure reason when both
+         fail (Cat 1 is the higher-confidence side) and only fall
+         through to Cat 2 when the Cat 1 group failed for a
+         display-rank-equal-or-later reason but Cat 2 caught it
+         earlier in the rank. Practically: if c1Fail provides a
+         reason we trust it; only walk back to c2Fail when c1Fail
+         is the catch-all minSavings (which is the broadest bucket)
+         and c2Fail has a more specific qty-band/bench-share guard
+         finding. */
+      var fr1 = c1Fail[wr._c1Key];
+      var fr2 = c2Fail[wr._c2Key];
+      failReason = fr1;
+      if ((!fr1 || fr1 === "minSavings") && (fr2 === "qtyBand" || fr2 === "benchShare")) failReason = fr2;
       var wrAbs = Math.abs(wr.spend);
       if (failReason === "minTxn") {
         diag.groupExcludedByMinTransactionsRowsCount++;
@@ -1811,6 +1965,14 @@
         diag.groupExcludedByMaxRatioRowsCount++;
         diag.groupExcludedByMaxRatioRowsSpend += wr.spend;
         diag.groupExcludedByMaxRatioRowsSpendAbs += wrAbs;
+      } else if (failReason === "qtyBand") {
+        diag.groupExcludedByQtyBandRowsCount++;
+        diag.groupExcludedByQtyBandRowsSpend += wr.spend;
+        diag.groupExcludedByQtyBandRowsSpendAbs += wrAbs;
+      } else if (failReason === "benchShare") {
+        diag.groupExcludedByBenchShareRowsCount++;
+        diag.groupExcludedByBenchShareRowsSpend += wr.spend;
+        diag.groupExcludedByBenchShareRowsSpendAbs += wrAbs;
       } else {
         /* Safety net — should be unreachable in practice. */
         diag.groupExcludedByMinSavingsRowsCount++;

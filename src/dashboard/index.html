@@ -4385,7 +4385,9 @@ After Union-Find merges, each cluster is verified pairwise — if any pair's Jac
 
 GROUP-LEVEL NOISE FILTERS (both categories)
 • Benchmark ≥ $1.00/unit
-• max/min unit-price ratio ≤ 100x
+• max/min unit-price ratio ≤ 20x (tightened from 100x — UoM mismatch / billing-unit differences)
+• UoM-mismatch fingerprint: NOT (max qty / min qty > 10x AND high-qty avg up < 10% of low-qty avg up)
+• Benchmark anchored in ≥ 10% of group total quantity (no benchmark from sliver-volume outliers)
 • ≥ 5 transactions per group
 • Group post-dedup savings ≥ $5,000
 • Cat 2 only: benchmark site must have ≥ 3 transactions
@@ -11246,9 +11248,30 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
   var INDIRECT_HARM_MIN_BENCHMARK_USD = 1.00;
   /* GROUP-LEVEL — group's MAX($/unit) / MIN($/unit) must not
      exceed this. Filters mismatched units-of-measure and obvious
-     data artifacts. 100x is well above any real bulk-discount
-     range. */
-  var INDIRECT_HARM_MAX_PRICE_RATIO = 100;
+     data artifacts. Tightened from 100x to 20x after the Gibson
+     Engineering / Jacobs Vehicle Systems noise case: a 20x intra-
+     group spread is already at the edge of plausibility for
+     genuine bulk-discount variance, and anything beyond is
+     overwhelmingly UoM mismatch / billing-unit difference / wrong-
+     part grouping. */
+  var INDIRECT_HARM_MAX_PRICE_RATIO = 20;
+  /* GROUP-LEVEL — UoM-mismatch fingerprint guard. If the group's
+     transactions cluster into TWO bands -- low quantities at high
+     unit prices, high quantities at much lower unit prices -- that
+     is overwhelmingly evidence that the items being billed are
+     different even though they share a part key. Guard fires when
+     BOTH (a) maxQty/minQty > 10x AND (b) the high-quantity
+     cohort's spend-weighted avg unit price is below 10% of the
+     low-quantity cohort's. Catches "1 unit at $89K vs 12 units at
+     $1,260" type patterns. */
+  var INDIRECT_HARM_MAX_QTY_RATIO = 10;
+  /* GROUP-LEVEL — benchmark anchor guard. The benchmark unit
+     price must come from transactions representing at least 10%
+     of the group's total quantity, otherwise the benchmark is
+     anchored in an outlier sliver of volume and not defensible
+     (e.g. one 12-unit invoice in a group dominated by 6 single-
+     unit invoices at completely different price points). */
+  var INDIRECT_HARM_MIN_BENCHMARK_VOLUME_SHARE = 0.10;
   /* GROUP-LEVEL — group must have at least this many raw
      transactions in the period (signal-quality; one-off prices
      are unreliable). */
@@ -11738,10 +11761,14 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
     var nfMinTxn = (diagnostics.cat1ExcludedByMinTransactions || 0) + (diagnostics.cat2ExcludedByMinTransactions || 0);
     var nfMinBench = (diagnostics.cat1ExcludedByMinBenchmark || 0) + (diagnostics.cat2ExcludedByMinBenchmark || 0);
     var nfMaxRatio = (diagnostics.cat1ExcludedByMaxRatio || 0) + (diagnostics.cat2ExcludedByMaxRatio || 0);
+    var nfQtyBand = (diagnostics.cat1ExcludedByQtyBand || 0) + (diagnostics.cat2ExcludedByQtyBand || 0);
+    var nfBenchShare = (diagnostics.cat1ExcludedByBenchShare || 0) + (diagnostics.cat2ExcludedByBenchShare || 0);
     var nfMinSavings = (diagnostics.cat1ExcludedByMinSavings || 0) + (diagnostics.cat2ExcludedByMinSavings || 0);
     if (nfMinTxn > 0) addChip("Group: < " + INDIRECT_HARM_MIN_TRANSACTIONS + " txns: " + _idpIhFmtInt(nfMinTxn));
     if (nfMinBench > 0) addChip("Group: benchmark < $1: " + _idpIhFmtInt(nfMinBench));
-    if (nfMaxRatio > 0) addChip("Group: ratio > 100x: " + _idpIhFmtInt(nfMaxRatio));
+    if (nfMaxRatio > 0) addChip("Group: ratio > " + INDIRECT_HARM_MAX_PRICE_RATIO + "x: " + _idpIhFmtInt(nfMaxRatio));
+    if (nfQtyBand > 0) addChip("Group: UoM-mismatch fingerprint: " + _idpIhFmtInt(nfQtyBand));
+    if (nfBenchShare > 0) addChip("Group: benchmark < " + Math.round(INDIRECT_HARM_MIN_BENCHMARK_VOLUME_SHARE * 100) + "% of vol: " + _idpIhFmtInt(nfBenchShare));
     if ((diagnostics.cat2ExcludedByOneSite || 0) > 0)
       addChip("Cat 2: single-site groups excluded: " + _idpIhFmtInt(diagnostics.cat2ExcludedByOneSite));
     if ((diagnostics.cat2ExcludedByNoEligibleBenchmarkSite || 0) > 0)
@@ -11846,6 +11873,8 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
         minUnitPriceUsd: INDIRECT_HARM_MIN_UNIT_PRICE_USD,
         minBenchmarkUsd: INDIRECT_HARM_MIN_BENCHMARK_USD,
         maxPriceRatio: INDIRECT_HARM_MAX_PRICE_RATIO,
+        maxQtyRatio: INDIRECT_HARM_MAX_QTY_RATIO,
+        minBenchmarkVolumeShare: INDIRECT_HARM_MIN_BENCHMARK_VOLUME_SHARE,
         minTransactions: INDIRECT_HARM_MIN_TRANSACTIONS,
         minSavingsUsd: INDIRECT_HARM_MIN_SAVINGS_USD,
         cat2MinBenchmarkSiteTxns: INDIRECT_HARM_CAT2_MIN_BENCHMARK_SITE_TXNS
@@ -12065,6 +12094,8 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
     row("  · < " + INDIRECT_HARM_MIN_TRANSACTIONS + " transactions", _idpIhFmtInt(diag.cat1ExcludedByMinTransactions || 0));
     row("  · benchmark < $" + INDIRECT_HARM_MIN_BENCHMARK_USD, _idpIhFmtInt(diag.cat1ExcludedByMinBenchmark || 0));
     row("  · ratio > " + INDIRECT_HARM_MAX_PRICE_RATIO + "x", _idpIhFmtInt(diag.cat1ExcludedByMaxRatio || 0));
+    row("  · UoM-mismatch fingerprint (qty > " + INDIRECT_HARM_MAX_QTY_RATIO + "x & price < 10%)", _idpIhFmtInt(diag.cat1ExcludedByQtyBand || 0));
+    row("  · benchmark anchored < " + Math.round(INDIRECT_HARM_MIN_BENCHMARK_VOLUME_SHARE * 100) + "% of group volume", _idpIhFmtInt(diag.cat1ExcludedByBenchShare || 0));
     row("  · post-dedup savings < $" + INDIRECT_HARM_MIN_SAVINGS_USD, _idpIhFmtInt(diag.cat1ExcludedByMinSavings || 0));
     hdr("Group-level filter exclusions (Cat 2)");
     row("  · < " + INDIRECT_HARM_MIN_TRANSACTIONS + " transactions", _idpIhFmtInt(diag.cat2ExcludedByMinTransactions || 0));
@@ -12072,6 +12103,8 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
     row("  · no benchmark site ≥ " + INDIRECT_HARM_CAT2_MIN_BENCHMARK_SITE_TXNS + " txns", _idpIhFmtInt(diag.cat2ExcludedByNoEligibleBenchmarkSite || 0));
     row("  · benchmark < $" + INDIRECT_HARM_MIN_BENCHMARK_USD, _idpIhFmtInt(diag.cat2ExcludedByMinBenchmark || 0));
     row("  · ratio > " + INDIRECT_HARM_MAX_PRICE_RATIO + "x", _idpIhFmtInt(diag.cat2ExcludedByMaxRatio || 0));
+    row("  · UoM-mismatch fingerprint (qty > " + INDIRECT_HARM_MAX_QTY_RATIO + "x & price < 10%)", _idpIhFmtInt(diag.cat2ExcludedByQtyBand || 0));
+    row("  · benchmark anchored < " + Math.round(INDIRECT_HARM_MIN_BENCHMARK_VOLUME_SHARE * 100) + "% of group volume", _idpIhFmtInt(diag.cat2ExcludedByBenchShare || 0));
     row("  · post-dedup savings < $" + INDIRECT_HARM_MIN_SAVINGS_USD, _idpIhFmtInt(diag.cat2ExcludedByMinSavings || 0));
     hdr("De-dup");
     row("Transactions reassigned", _idpIhFmtInt(diag.dedupReassignmentsTotal || 0));
@@ -12215,10 +12248,44 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
       },
       {
         kind: "exclude",
-        label: "Excluded: group max/min price ratio > " + INDIRECT_HARM_MAX_PRICE_RATIO + "\u00d7",
+        label: "Excluded: group max/min price ratio > " + INDIRECT_HARM_MAX_PRICE_RATIO + "\u00d7 (tightened from 100\u00d7)",
+        tooltip:
+          "Tightened from 100x to " + INDIRECT_HARM_MAX_PRICE_RATIO + "x after the Gibson Engineering / Jacobs Vehicle " +
+          "Systems noise case. A " + INDIRECT_HARM_MAX_PRICE_RATIO + "x intra-group spread is already at the edge of plausibility " +
+          "for genuine bulk-discount variance; anything beyond is overwhelmingly unit-of-measure mismatch, billing-unit " +
+          "difference, or wrong-part grouping. Rows attributed here had their (Part, Supplier, Site) -- or for Cat 2, " +
+          "(Part, Supplier) -- group fail this gate.",
         count: +(diag.groupExcludedByMaxRatioRowsCount || 0),
         spend: +(diag.groupExcludedByMaxRatioRowsSpendAbs || 0),
         spendSigned: +(diag.groupExcludedByMaxRatioRowsSpend || 0)
+      },
+      {
+        kind: "exclude",
+        label: "Excluded: group has quantity-band / price-band UoM mismatch fingerprint",
+        tooltip:
+          "Two bands of activity in the same (Part, Supplier, Site) -- or (Part, Supplier) -- group: a low-quantity " +
+          "cohort billed at very high unit prices, and a high-quantity cohort billed at much lower unit prices. " +
+          "Guard fires when BOTH (a) max txn qty / min txn qty > " + INDIRECT_HARM_MAX_QTY_RATIO + "x AND (b) the high-qty cohort's " +
+          "spend-weighted avg unit price is below 10% of the low-qty cohort's. This catches \"1 unit at $89K vs " +
+          "12 units at $1,260\" type patterns where the items being billed are clearly different even though they " +
+          "share a part key (e.g. one supplier line billed \"per system\" and another \"per piece\").",
+        count: +(diag.groupExcludedByQtyBandRowsCount || 0),
+        spend: +(diag.groupExcludedByQtyBandRowsSpendAbs || 0),
+        spendSigned: +(diag.groupExcludedByQtyBandRowsSpend || 0)
+      },
+      {
+        kind: "exclude",
+        label: "Excluded: benchmark anchored in < " + Math.round(INDIRECT_HARM_MIN_BENCHMARK_VOLUME_SHARE * 100) + "% of group volume",
+        tooltip:
+          "The benchmark price must come from transactions representing at least " +
+          Math.round(INDIRECT_HARM_MIN_BENCHMARK_VOLUME_SHARE * 100) + "% of the group's total quantity. If the benchmark " +
+          "is set by a tiny sliver of volume (e.g. one 12-unit invoice in a group dominated by 6 single-unit " +
+          "invoices at completely different price points), it isn't a defensible benchmark. For Cat 1 the benchmark " +
+          "cohort = rows whose unit price is within 1% of the minimum; for Cat 2 the cohort = all rows at the " +
+          "benchmark site.",
+        count: +(diag.groupExcludedByBenchShareRowsCount || 0),
+        spend: +(diag.groupExcludedByBenchShareRowsSpendAbs || 0),
+        spendSigned: +(diag.groupExcludedByBenchShareRowsSpend || 0)
       },
       {
         kind: "exclude",
@@ -12530,7 +12597,9 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
       { "Section": "Pre-clean — INDIRECT_HARM_MIN_UNIT_PRICE_USD", "Value": "$" + INDIRECT_HARM_MIN_UNIT_PRICE_USD + " (exclude transactions whose unit price is below this — dummy / placeholder filter)" },
       { "Section": "", "Value": "" },
       { "Section": "Group filter — INDIRECT_HARM_MIN_BENCHMARK_USD", "Value": "$" + INDIRECT_HARM_MIN_BENCHMARK_USD + " (group's benchmark unit price must be at least this)" },
-      { "Section": "Group filter — INDIRECT_HARM_MAX_PRICE_RATIO", "Value": String(INDIRECT_HARM_MAX_PRICE_RATIO) + "x (group's max/min unit price ratio must not exceed this)" },
+      { "Section": "Group filter — INDIRECT_HARM_MAX_PRICE_RATIO", "Value": String(INDIRECT_HARM_MAX_PRICE_RATIO) + "x (group's max/min unit price ratio must not exceed this; tightened from 100x to filter UoM mismatch / billing-unit differences)" },
+      { "Section": "Group filter — INDIRECT_HARM_MAX_QTY_RATIO", "Value": String(INDIRECT_HARM_MAX_QTY_RATIO) + "x (UoM-mismatch fingerprint: trips when max txn qty / min txn qty exceeds this AND the high-qty cohort's avg unit price is < 10% of the low-qty cohort's; catches \"1 unit at $89K vs 12 units at $1,260\" type patterns)" },
+      { "Section": "Group filter — INDIRECT_HARM_MIN_BENCHMARK_VOLUME_SHARE", "Value": String(Math.round(INDIRECT_HARM_MIN_BENCHMARK_VOLUME_SHARE * 100)) + "% (the benchmark unit price must come from transactions representing at least this fraction of group total quantity; for Cat 1 = rows within 1% of min UP, for Cat 2 = benchmark site's qty share)" },
       { "Section": "Group filter — INDIRECT_HARM_MIN_TRANSACTIONS", "Value": String(INDIRECT_HARM_MIN_TRANSACTIONS) + " (group must have at least this many transactions post-pre-clean)" },
       { "Section": "Group filter — INDIRECT_HARM_MIN_SAVINGS_USD", "Value": "$" + INDIRECT_HARM_MIN_SAVINGS_USD + " (group's POST-DEDUP total savings must be at least this)" },
       { "Section": "Group filter — INDIRECT_HARM_CAT2_MIN_BENCHMARK_SITE_TXNS", "Value": String(INDIRECT_HARM_CAT2_MIN_BENCHMARK_SITE_TXNS) + " (Cat 2 only: the benchmark site must itself have at least this many transactions in the group)" },
@@ -12549,6 +12618,12 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
       { "Section": "Diagnostics — fuzzy clusters formed", "Value": String(pd.fuzzyClustersFormed || 0) },
       { "Section": "Diagnostics — clusters split by similarity", "Value": String(pd.fuzzyClustersSplitBySimilarity || 0) },
       { "Section": "Diagnostics — transactions reassigned by dedup", "Value": String(d.dedupReassignmentsTotal || 0) + " (" + String(d.dedupReassignedToCat1 || 0) + " → Cat 1, " + String(d.dedupReassignedToCat2 || 0) + " → Cat 2)" },
+      { "Section": "Diagnostics — Cat 1 excluded: max/min price ratio > " + INDIRECT_HARM_MAX_PRICE_RATIO + "x", "Value": String(d.cat1ExcludedByMaxRatio || 0) },
+      { "Section": "Diagnostics — Cat 1 excluded: UoM-mismatch fingerprint", "Value": String(d.cat1ExcludedByQtyBand || 0) },
+      { "Section": "Diagnostics — Cat 1 excluded: benchmark < " + Math.round(INDIRECT_HARM_MIN_BENCHMARK_VOLUME_SHARE * 100) + "% of group volume", "Value": String(d.cat1ExcludedByBenchShare || 0) },
+      { "Section": "Diagnostics — Cat 2 excluded: max/min price ratio > " + INDIRECT_HARM_MAX_PRICE_RATIO + "x", "Value": String(d.cat2ExcludedByMaxRatio || 0) },
+      { "Section": "Diagnostics — Cat 2 excluded: UoM-mismatch fingerprint", "Value": String(d.cat2ExcludedByQtyBand || 0) },
+      { "Section": "Diagnostics — Cat 2 excluded: benchmark < " + Math.round(INDIRECT_HARM_MIN_BENCHMARK_VOLUME_SHARE * 100) + "% of group volume", "Value": String(d.cat2ExcludedByBenchShare || 0) },
       { "Section": "Diagnostics — Cat 1 kept opps", "Value": String(d.cat1GroupsKept || 0) },
       { "Section": "Diagnostics — Cat 1 total savings", "Value": "$" + Math.round(d.cat1TotalSavings || 0).toLocaleString() },
       { "Section": "Diagnostics — Cat 2 kept opps", "Value": String(d.cat2GroupsKept || 0) },

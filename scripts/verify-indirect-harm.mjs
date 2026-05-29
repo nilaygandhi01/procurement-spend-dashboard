@@ -35,7 +35,9 @@ const IDPMATH = indexMathMod && (indexMathMod.default || indexMathMod);
 // --- Constants (mirror INDIRECT_HARM_* in index.html) ----------------------
 const FUZZY_THRESHOLD = 0.80;
 const MIN_BENCHMARK_USD = 1.00;
-const MAX_PRICE_RATIO = 100;
+const MAX_PRICE_RATIO = 20;
+const MAX_QTY_RATIO = 10;
+const MIN_BENCHMARK_VOLUME_SHARE = 0.10;
 const MIN_TRANSACTIONS = 5;
 const MIN_SAVINGS_USD = 5000;
 const MIN_LINE_SPEND_USD = 50;
@@ -201,6 +203,8 @@ const out = compute(indirect, {
   minUnitPriceUsd: MIN_UNIT_PRICE_USD,
   minBenchmarkUsd: MIN_BENCHMARK_USD,
   maxPriceRatio: MAX_PRICE_RATIO,
+  maxQtyRatio: MAX_QTY_RATIO,
+  minBenchmarkVolumeShare: MIN_BENCHMARK_VOLUME_SHARE,
   minTransactions: MIN_TRANSACTIONS,
   minSavingsUsd: MIN_SAVINGS_USD,
   cat2MinBenchmarkSiteTxns: CAT2_MIN_BENCHMARK_SITE_TXNS
@@ -282,11 +286,19 @@ console.log("  · group benchmark < $" + MIN_BENCHMARK_USD + ":           ", fmt
 console.log("  · group max/min ratio > " + MAX_PRICE_RATIO + "x:        ", fmtInt(d.groupExcludedByMaxRatioRowsCount),
             "(|spend|", fmtUsd(d.groupExcludedByMaxRatioRowsSpendAbs),
             "; signed", fmtUsd(d.groupExcludedByMaxRatioRowsSpend) + ")");
+console.log("  · group UoM-mismatch fingerprint:        ", fmtInt(d.groupExcludedByQtyBandRowsCount),
+            "(|spend|", fmtUsd(d.groupExcludedByQtyBandRowsSpendAbs),
+            "; signed", fmtUsd(d.groupExcludedByQtyBandRowsSpend) + ")");
+console.log("  · group benchmark < " + Math.round(MIN_BENCHMARK_VOLUME_SHARE * 100) + "% of group vol:", fmtInt(d.groupExcludedByBenchShareRowsCount),
+            "(|spend|", fmtUsd(d.groupExcludedByBenchShareRowsSpendAbs),
+            "; signed", fmtUsd(d.groupExcludedByBenchShareRowsSpend) + ")");
 
 console.log("\n--- Group-level filter exclusions (Cat 1 group counts) ---");
 console.log("  · < " + MIN_TRANSACTIONS + " transactions:           ", fmtInt(d.cat1ExcludedByMinTransactions));
 console.log("  · benchmark < $" + MIN_BENCHMARK_USD + ":              ", fmtInt(d.cat1ExcludedByMinBenchmark));
 console.log("  · ratio > " + MAX_PRICE_RATIO + "x:               ", fmtInt(d.cat1ExcludedByMaxRatio));
+console.log("  · UoM-mismatch fingerprint:        ", fmtInt(d.cat1ExcludedByQtyBand));
+console.log("  · benchmark < " + Math.round(MIN_BENCHMARK_VOLUME_SHARE * 100) + "% of group vol:", fmtInt(d.cat1ExcludedByBenchShare));
 console.log("  · post-dedup savings < $" + MIN_SAVINGS_USD + ":  ", fmtInt(d.cat1ExcludedByMinSavings));
 
 console.log("\n--- Group-level filter exclusions (Cat 2 group counts) ---");
@@ -295,6 +307,8 @@ console.log("  · only one site:                     ", fmtInt(d.cat2ExcludedByO
 console.log("  · no benchmark site ≥ " + CAT2_MIN_BENCHMARK_SITE_TXNS + " txns:   ", fmtInt(d.cat2ExcludedByNoEligibleBenchmarkSite));
 console.log("  · benchmark < $" + MIN_BENCHMARK_USD + ":                     ", fmtInt(d.cat2ExcludedByMinBenchmark));
 console.log("  · ratio > " + MAX_PRICE_RATIO + "x:                      ", fmtInt(d.cat2ExcludedByMaxRatio));
+console.log("  · UoM-mismatch fingerprint:                  ", fmtInt(d.cat2ExcludedByQtyBand));
+console.log("  · benchmark < " + Math.round(MIN_BENCHMARK_VOLUME_SHARE * 100) + "% of group vol:        ", fmtInt(d.cat2ExcludedByBenchShare));
 console.log("  · post-dedup savings < $" + MIN_SAVINGS_USD + ":         ", fmtInt(d.cat2ExcludedByMinSavings));
 
 console.log("\n--- De-duplication ---");
@@ -369,10 +383,18 @@ const walkRows = [
    (d.groupExcludedByMinBenchmarkRowsCount || 0),
    (d.groupExcludedByMinBenchmarkRowsSpendAbs || 0), false,
    (d.groupExcludedByMinBenchmarkRowsSpend || 0)],
-  ["- Excluded: group max/min price ratio > " + MAX_PRICE_RATIO + "x",
+  ["- Excluded: group max/min price ratio > " + MAX_PRICE_RATIO + "x (tightened from 100x)",
    (d.groupExcludedByMaxRatioRowsCount || 0),
    (d.groupExcludedByMaxRatioRowsSpendAbs || 0), false,
    (d.groupExcludedByMaxRatioRowsSpend || 0)],
+  ["- Excluded: group has quantity-band / price-band UoM mismatch fingerprint",
+   (d.groupExcludedByQtyBandRowsCount || 0),
+   (d.groupExcludedByQtyBandRowsSpendAbs || 0), false,
+   (d.groupExcludedByQtyBandRowsSpend || 0)],
+  ["- Excluded: benchmark anchored in < " + Math.round(MIN_BENCHMARK_VOLUME_SHARE * 100) + "% of group volume",
+   (d.groupExcludedByBenchShareRowsCount || 0),
+   (d.groupExcludedByBenchShareRowsSpendAbs || 0), false,
+   (d.groupExcludedByBenchShareRowsSpend || 0)],
   ["- Excluded: fuzzy cluster failed similarity sanity-check",
    (d.excludedBySanitySplitRowsCount || 0),
    (d.excludedBySanitySplitRowsSpendAbs || 0), false,
@@ -427,5 +449,31 @@ console.log("\n[Reconciliation check]");
 console.log("  Sum(excluded counts) + analyzed - inScope (count):", reconCount === 0 ? "0 (reconciles)" : reconCount);
 console.log("  Sum(excluded signed spend) + analyzed - inScope (spend):",
   Math.abs(reconSpend) < 0.01 ? "$0 (reconciles)" : "$" + reconSpend.toFixed(2));
+
+// --- Gibson Engineering / Jacobs Vehicle Systems sanity check ---------------
+// The user reported that this Cat 1 group was surfacing a ~$87K noise
+// opportunity from a "1 unit at $89K vs 12 units at $1,260" UoM-mismatch
+// pattern. With the new MAX_PRICE_RATIO=20 + MAX_QTY_RATIO + benchmark
+// volume share guards, this group should no longer appear in cat1Opps.
+console.log("\n========== GIBSON ENGINEERING / JACOBS VEHICLE SYSTEMS DRILL-DOWN ==========");
+function _matchesGibsonJacobs(opp) {
+  const sup = (opp.suppliers && opp.suppliers[0]) ? String(opp.suppliers[0].supplier || "").toLowerCase() : "";
+  const site = (opp.suppliers && opp.suppliers[0]) ? String(opp.suppliers[0].site || "").toLowerCase() : "";
+  return sup.indexOf("gibson") !== -1 && site.indexOf("jacobs") !== -1;
+}
+const gibsonInCat1 = (out.cat1Opps || []).filter(_matchesGibsonJacobs);
+const gibsonInCat2 = (out.cat2Opps || []).filter(p => {
+  const sup = (p.suppliers && p.suppliers[0]) ? String(p.suppliers[0].supplier || "").toLowerCase() : "";
+  return sup.indexOf("gibson") !== -1;
+});
+console.log("Gibson Engineering @ Jacobs Vehicle Systems in Cat 1:", gibsonInCat1.length);
+for (const opp of gibsonInCat1) {
+  console.log("  ! still surfacing:", opp.item, "savings $" + Math.round(+opp.savings || 0).toLocaleString());
+  const sup = opp.suppliers || [];
+  for (const r of sup.slice(0, 10)) {
+    console.log("     row: qty=" + r.quantity + " @ $" + Number(r.unit_price).toFixed(2) + "/u, spend $" + Number(r.spend).toLocaleString() + " (assignedCat=" + r._assignedCat + ", row_sav=$" + Number(r._rowSavings).toLocaleString() + ")");
+  }
+}
+console.log("Gibson Engineering supplier in Cat 2:", gibsonInCat2.length);
 
 console.log("\nDONE.");
