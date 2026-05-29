@@ -9429,7 +9429,7 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
         if (li != null && !isNaN(li)) sumCatSav += li;
       }
     }
-    colSpan = harmKind === 2 ? 7 : harmKind === 4 ? 6 : 5;
+    colSpan = harmKind === 2 ? 7 : harmKind === 4 ? 6 : harmKind === 5 ? 6 : 5;
     secInner = document.createElement("div");
     secInner.className = "harmonization-section-inner";
     /* Section ID for the per-MECE KPI strip collapse toggle. Defaults
@@ -9506,7 +9506,9 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
             ]
           : harmKind === 4
             ? ["Part number", "Description", "Site", "Supplier", "Total savings", "View details"]
-            : ["Part number", "Description", "Supplier", "Total savings", "View details"];
+            : harmKind === 5
+              ? ["Part number", "Description", "Sites", "Supplier", "Total savings", "View details"]
+              : ["Part number", "Description", "Supplier", "Total savings", "View details"];
     for (li = 0; li < labels.length; li++) {
       th2 = document.createElement("th");
       th2.textContent = labels[li];
@@ -9537,6 +9539,7 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
             if (!p2) continue;
             (function (rowP, rowIdx) {
               var pkR, dimR, savR, mainTrR, detTrR, tdR, canvasIdR, td0R, vdetR, descTxt, siteDisp, supDisp;
+              var _ihFuzzy, _ihMoreCount, _ihDescTooltip;
               pkR = harmHarmonizationPartKey(rowP);
               descTxt = descMap[pkR] || "—";
               dimR = harmItemDimAfterBullet(rowP.item);
@@ -9544,6 +9547,24 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
                 var hs = harmSumExportSavings(rowP);
                 return hs != null && !isNaN(hs) ? fmtOppUSD(hs) : "—";
               })();
+              /* If the opp is keyed by a fuzzy cluster (IH#FUZZY#<n>),
+                 the descMap will not have it (those keys never appear
+                 in raw spend rows). Resolve via the cluster membership
+                 stashed on window._idpIhFuzzyMembersByKey: canonical
+                 = highest-spend transaction's description, with a
+                 "+N more" indicator and a hover tooltip showing the
+                 full merged list. */
+              _ihFuzzy = null;
+              _ihMoreCount = 0;
+              _ihDescTooltip = "";
+              if (pkR && typeof pkR === "string" && pkR.indexOf("IH#FUZZY#") === 0 && typeof _idpIhResolveFuzzyDesc === "function") {
+                _ihFuzzy = _idpIhResolveFuzzyDesc(pkR);
+                if (_ihFuzzy && _ihFuzzy.canonical) {
+                  descTxt = _ihFuzzy.canonical;
+                  _ihMoreCount = Math.max(0, (_ihFuzzy.distinctCount || 0) - 1);
+                  _ihDescTooltip = _idpIhFormatFuzzyDescTooltip(_ihFuzzy.allDescriptions);
+                }
+              }
               siteDisp =
                 rowP && rowP.display_site != null && String(rowP.display_site).trim() !== ""
                   ? String(rowP.display_site).trim()
@@ -9564,6 +9585,16 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
               mainTrR.appendChild(td0R);
               td0R = document.createElement("td");
               td0R.textContent = descTxt;
+              if (_ihMoreCount > 0) {
+                var _ihMoreSpan = document.createElement("span");
+                _ihMoreSpan.textContent = "  +" + _ihMoreCount + " more";
+                _ihMoreSpan.style.cssText = "color:#7c3aed;font-style:italic;font-size:11px;margin-left:4px;";
+                td0R.appendChild(_ihMoreSpan);
+              }
+              if (_ihDescTooltip) {
+                td0R.title = _ihDescTooltip;
+                td0R.style.cssText = (td0R.style.cssText || "") + "text-decoration:underline dotted #cbd5e1;text-underline-offset:3px;cursor:help;";
+              }
               mainTrR.appendChild(td0R);
               if (harmKind === 2) {
                 td0R = document.createElement("td");
@@ -9597,6 +9628,58 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
                 mainTrR.appendChild(td0R);
                 td0R = document.createElement("td");
                 td0R.textContent = cat4Sup;
+                mainTrR.appendChild(td0R);
+                td0R = document.createElement("td");
+                td0R.className = "idp-harm-num harm-opportunity";
+                td0R.textContent = savR;
+                mainTrR.appendChild(td0R);
+              } else if (harmKind === 5) {
+                /* IH Cat 2 row: Part / Description / Sites / Supplier /
+                   Total savings / View details. Cat 2 is by definition
+                   anchored on a single supplier across multiple sites,
+                   so the supplier value sits on every supRows entry —
+                   we lift it from the first. The "Sites" column shows
+                   the count (e.g. "3 sites") with the per-site list in
+                   a hover tooltip, since cross-site is the whole point
+                   of this category. */
+                var cat5Sites = [];
+                var cat5SiteCount = 0;
+                if (rowP && rowP.suppliers && rowP.suppliers.length) {
+                  var _seenSite = Object.create(null);
+                  var _si;
+                  for (_si = 0; _si < rowP.suppliers.length; _si++) {
+                    var _siteVal = rowP.suppliers[_si] && rowP.suppliers[_si].site != null
+                      ? String(rowP.suppliers[_si].site).trim() : "";
+                    if (_siteVal && !_seenSite[_siteVal]) {
+                      _seenSite[_siteVal] = 1;
+                      cat5Sites.push(_siteVal);
+                    }
+                  }
+                  cat5SiteCount = cat5Sites.length;
+                }
+                if (!cat5SiteCount && rowP && rowP.site_count != null && +rowP.site_count > 0) {
+                  cat5SiteCount = +rowP.site_count;
+                }
+                var cat5SitesLabel = cat5SiteCount > 0
+                  ? (cat5SiteCount === 1 ? "1 site" : (cat5SiteCount + " sites"))
+                  : (siteDisp || "—");
+                var cat5Sup = (rowP && rowP.suppliers && rowP.suppliers[0] && rowP.suppliers[0].supplier != null
+                  && String(rowP.suppliers[0].supplier).trim() !== "")
+                  ? String(rowP.suppliers[0].supplier).trim()
+                  : (rowP && rowP.display_supplier != null && String(rowP.display_supplier).trim() !== ""
+                    ? String(rowP.display_supplier).trim()
+                    : "—");
+                td0R = document.createElement("td");
+                td0R.textContent = cat5SitesLabel;
+                if (cat5Sites.length) {
+                  td0R.title = "Sites in this opportunity:\n\u2022 " +
+                    cat5Sites.slice(0, 15).join("\n\u2022 ") +
+                    (cat5Sites.length > 15 ? "\n\u2026(+" + (cat5Sites.length - 15) + " more)" : "");
+                  td0R.style.cssText = "text-decoration:underline dotted #cbd5e1;text-underline-offset:3px;cursor:help;";
+                }
+                mainTrR.appendChild(td0R);
+                td0R = document.createElement("td");
+                td0R.textContent = cat5Sup;
                 mainTrR.appendChild(td0R);
                 td0R = document.createElement("td");
                 td0R.className = "idp-harm-num harm-opportunity";
@@ -11794,6 +11877,82 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
     statusEl.classList.remove("hidden");
   }
 
+  /* Resolve a friendly description for an IH#FUZZY#<id> part key
+     using the cluster membership stashed at prep time. Returns null
+     for non-fuzzy keys so the caller can fall back to the standard
+     descMap lookup. Canonical = the description on the cluster
+     member with the largest |spend| (highest-spend transaction
+     wins; ties broken by member order). distinctCount = number of
+     case-folded distinct descriptions in the cluster, used to
+     render the "+N more" indicator next to the canonical text.
+     allDescriptions = the deduplicated list, used as the hover
+     tooltip on both the in-app Description cell and the "fuzzy"
+     badge in the first cell. */
+  function _idpIhResolveFuzzyDesc(partKey) {
+    if (!partKey || typeof partKey !== "string") return null;
+    if (partKey.indexOf("IH#FUZZY#") !== 0) return null;
+    var members = (typeof window !== "undefined" && window._idpIhFuzzyMembersByKey)
+      ? window._idpIhFuzzyMembersByKey[partKey] : null;
+    if (!members || !members.length) {
+      var metaOnly = (typeof window !== "undefined" && window._idpIhFuzzyMetaByKey)
+        ? window._idpIhFuzzyMetaByKey[partKey] : null;
+      if (metaOnly && metaOnly.merged_descriptions && metaOnly.merged_descriptions.length) {
+        return {
+          canonical: String(metaOnly.merged_descriptions[0] || ""),
+          distinctCount: metaOnly.merged_descriptions.length,
+          allDescriptions: metaOnly.merged_descriptions.slice()
+        };
+      }
+      return null;
+    }
+    var bestSpend = -Infinity;
+    var bestDesc = "";
+    var seen = Object.create(null);
+    var allDescs = [];
+    var i, m, rowRef, dsc, sp, spv, key;
+    for (i = 0; i < members.length; i++) {
+      m = members[i];
+      if (!m) continue;
+      rowRef = (m && m.row) ? m.row : null;
+      dsc = "";
+      if (m.description != null && String(m.description).trim()) {
+        dsc = String(m.description).trim();
+      } else if (rowRef && typeof psRowDescription === "function") {
+        dsc = psRowDescription(rowRef);
+      }
+      sp = 0;
+      if (rowRef) {
+        spv = +(rowRef.spend != null ? rowRef.spend : 0);
+        sp = isFinite(spv) ? Math.abs(spv) : 0;
+      }
+      if (dsc) {
+        key = dsc.toLowerCase();
+        if (!seen[key]) {
+          seen[key] = 1;
+          allDescs.push(dsc);
+        }
+      }
+      if (sp > bestSpend) { bestSpend = sp; bestDesc = dsc; }
+    }
+    if (!bestDesc && allDescs.length) bestDesc = allDescs[0];
+    return {
+      canonical: bestDesc || "",
+      distinctCount: allDescs.length,
+      allDescriptions: allDescs
+    };
+  }
+
+  /* Build the merged-descriptions hover tooltip text. Caps at 15
+     entries with a "+N more" suffix so a huge cluster doesn't
+     produce an unusable wall-of-text tooltip. */
+  function _idpIhFormatFuzzyDescTooltip(descList) {
+    if (!descList || !descList.length) return "";
+    var shown = descList.slice(0, 15);
+    var extra = descList.length - shown.length;
+    return "Merged descriptions in this fuzzy cluster:\n\u2022 " + shown.join("\n\u2022 ") +
+      (extra > 0 ? "\n\u2026(+" + extra + " more)" : "");
+  }
+
   /* Apply small italic violet "fuzzy" badge to rows in the rendered
      opportunity tables whose underlying opp was keyed by IH#FUZZY#.
      Runs after the unified renderer paints. Hover shows the merged
@@ -12505,7 +12664,8 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
       var p = opps[i];
       if (!p) continue;
       var partKey = p.item != null ? String(p.item) : "";
-      var keyedBy = (partKey.indexOf("IH#FUZZY#") === 0) ? "Fuzzy" : "Part #";
+      var isFuzzy = partKey.indexOf("IH#FUZZY#") === 0;
+      var keyedBy = isFuzzy ? "Fuzzy" : "Part #";
       var meta = fuzzyMetaByKey && fuzzyMetaByKey[partKey];
       var mergedDescs = meta && meta.merged_descriptions ? meta.merged_descriptions.join(" | ") : "";
       var sites = {};
@@ -12523,11 +12683,40 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
       }
       var siteList = Object.keys(sites).join(", ");
       var savingsPct = totalSpend > 0 ? Math.round(1000 * (100 * totalSavings / totalSpend)) / 1000 : null;
+      /* Canonical description matches what the on-screen table shows:
+         - For part-number-keyed rows, it's the underlying part's
+           description from the raw spend slice.
+         - For fuzzy-keyed rows, it's the description of the highest
+           |spend| transaction in the cluster (via _idpIhResolveFuzzyDesc).
+         "Merged Descriptions" is preserved for fuzzy rows so the
+         download still has the full deduplicated list. */
+      var canonicalDesc = "";
+      if (isFuzzy && typeof _idpIhResolveFuzzyDesc === "function") {
+        var _ihExFuzzy = _idpIhResolveFuzzyDesc(partKey);
+        if (_ihExFuzzy && _ihExFuzzy.canonical) {
+          canonicalDesc = _ihExFuzzy.canonical;
+          if (_ihExFuzzy.distinctCount > 1) {
+            canonicalDesc += "  +" + (_ihExFuzzy.distinctCount - 1) + " more";
+          }
+        }
+      } else if (!isFuzzy && typeof D !== "undefined" && D && D.rows && typeof idpHarmonizationItemKey === "function") {
+        for (sj = 0; sj < D.rows.length; sj++) {
+          var _exRow = D.rows[sj];
+          if (!_exRow) continue;
+          if (idpHarmonizationItemKey(_exRow) === partKey) {
+            if (typeof psRowDescription === "function") {
+              canonicalDesc = psRowDescription(_exRow);
+            }
+            if (canonicalDesc) break;
+          }
+        }
+      }
       out.push({
         "Category": categoryLabel,
         "Confidence": confidenceLabel,
         "Part Key": partKey,
         "Keyed By": keyedBy,
+        "Description": canonicalDesc,
         "Merged Descriptions": mergedDescs,
         "Site(s)": siteList,
         "Supplier": sup,

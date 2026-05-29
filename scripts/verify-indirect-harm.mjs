@@ -476,4 +476,58 @@ for (const opp of gibsonInCat1) {
 }
 console.log("Gibson Engineering supplier in Cat 2:", gibsonInCat2.length);
 
+// --- Description / Supplier wiring sanity check -----------------------------
+// Confirm that every Cat 2 opp has a supplier on its first supRows entry
+// (the cross-site rightsizing category is anchored on exactly one supplier
+// per opp, so this MUST be populated for the supplier column to render
+// non-"—" in the dashboard).
+console.log("\n========== CAT 2 SUPPLIER / DESCRIPTION WIRING SANITY ==========");
+const cat2Opps = out.cat2Opps || [];
+let c2BlankSup = 0;
+const c2FuzzyByKey = Object.create(null);
+for (const p of cat2Opps) {
+  const sup0 = (p.suppliers && p.suppliers[0]) ? String(p.suppliers[0].supplier || "").trim() : "";
+  if (!sup0) c2BlankSup++;
+  const k = String(p.item || "");
+  if (k.indexOf("IH#FUZZY#") === 0) {
+    if (!c2FuzzyByKey[k]) c2FuzzyByKey[k] = [];
+    c2FuzzyByKey[k].push({ supplier: sup0, savings: +p.savings || 0, sites: p.site_count });
+  }
+}
+console.log("Cat 2 opps total:", cat2Opps.length);
+console.log("Cat 2 opps with blank supplier (should be 0):", c2BlankSup);
+
+// Top 8 Cat 2 opps with their supplier - eyeball the bug fix
+const c2Sorted = cat2Opps.slice().sort((a, b) => (+b.savings || 0) - (+a.savings || 0));
+console.log("\nTop 8 Cat 2 opportunities (by savings, with supplier from suppliers[0]):");
+for (let ti = 0; ti < Math.min(8, c2Sorted.length); ti++) {
+  const p = c2Sorted[ti];
+  const sup = (p.suppliers && p.suppliers[0]) ? String(p.suppliers[0].supplier || "").trim() : "(blank)";
+  console.log("  " + (ti + 1) + ". " + String(p.item).padEnd(28) + " sup=" + sup.padEnd(40)
+    + " sites=" + p.site_count + " savings=$" + Math.round(+p.savings || 0).toLocaleString());
+}
+
+// Confirm any IH#FUZZY#<n> key appearing multiple times in Cat 2 is anchored
+// on a distinct supplier per occurrence (which is valid: same fuzzy cluster,
+// different supplier relationship). This is the "duplicate fuzzy key" check.
+console.log("\nFuzzy keys appearing multiple times in Cat 2 (should each be a different supplier):");
+let dupKeyCount = 0;
+let dupAllDifferent = true;
+for (const k in c2FuzzyByKey) {
+  const arr = c2FuzzyByKey[k];
+  if (arr.length < 2) continue;
+  dupKeyCount++;
+  const sups = new Set(arr.map(x => x.supplier.toLowerCase()));
+  if (sups.size !== arr.length) dupAllDifferent = false;
+  console.log("  " + k + " (" + arr.length + " occurrences):");
+  for (const occ of arr) {
+    console.log("     supplier=" + occ.supplier.padEnd(40) + " sites=" + occ.sites + " savings=$" + Math.round(occ.savings).toLocaleString());
+  }
+}
+if (dupKeyCount === 0) {
+  console.log("  (none - no fuzzy key appears more than once)");
+} else {
+  console.log("All duplicates anchored on different suppliers:", dupAllDifferent ? "YES (valid)" : "NO (BUG)");
+}
+
 console.log("\nDONE.");
