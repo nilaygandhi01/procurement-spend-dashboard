@@ -563,6 +563,365 @@ console.log("--- TEST: sidebar nav button DOM order ---");
   }
 }
 
+/* ===================== ASSUMPTION WALK ===================== */
+
+/**
+ * Walk reconciliation invariant — applied to the new 13-row walk:
+ *   inScopeRowsCount  = structuralExcluded + Σ pre-clean(1..4) +
+ *                       Σ group-buckets(5..8) + sanity-split(9) +
+ *                       singleton(10) + analyzedRowsCount
+ *   inScopeRowsSpend  = same identity on SIGNED spend (display uses
+ *                       absolute values; reconciliation is signed).
+ */
+function assertWalkReconciles(diag, label) {
+  const bucketCount =
+    (diag.structuralExcludedRowsCount || 0) +
+    (diag.preCleanExcludedByDummyWord || 0) +
+    (diag.preCleanExcludedByZeroQtyOrPrice || 0) +
+    (diag.preCleanExcludedByMinLineSpend || 0) +
+    (diag.preCleanExcludedByMinUnitPrice || 0) +
+    (diag.groupExcludedByMinTransactionsRowsCount || 0) +
+    (diag.groupExcludedByMinSavingsRowsCount || 0) +
+    (diag.groupExcludedByMinBenchmarkRowsCount || 0) +
+    (diag.groupExcludedByMaxRatioRowsCount || 0) +
+    (diag.excludedBySanitySplitRowsCount || 0) +
+    (diag.excludedAsSingletonRowsCount || 0);
+  const totalCount = bucketCount + (diag.analyzedRowsCount || 0);
+  eq(totalCount, diag.inScopeRowsCount || 0, label + ": invoice count reconciles");
+  const bucketSpend =
+    (diag.structuralExcludedRowsSpend || 0) +
+    (diag.preCleanExcludedByDummyWordSpend || 0) +
+    (diag.preCleanExcludedByZeroQtyOrPriceSpend || 0) +
+    (diag.preCleanExcludedByMinLineSpendSpend || 0) +
+    (diag.preCleanExcludedByMinUnitPriceSpend || 0) +
+    (diag.groupExcludedByMinTransactionsRowsSpend || 0) +
+    (diag.groupExcludedByMinSavingsRowsSpend || 0) +
+    (diag.groupExcludedByMinBenchmarkRowsSpend || 0) +
+    (diag.groupExcludedByMaxRatioRowsSpend || 0) +
+    (diag.excludedBySanitySplitRowsSpend || 0) +
+    (diag.excludedAsSingletonRowsSpend || 0);
+  const totalSpend = bucketSpend + (diag.analyzedRowsSpend || 0);
+  const diff = Math.abs(totalSpend - (diag.inScopeRowsSpend || 0));
+  truthy(diff < 0.01, label + ": signed spend reconciles (diff $" + diff.toFixed(2) + ")");
+}
+
+console.log("--- TEST: walk reconciles on the basic 5-txn Cat-1 case ---");
+{
+  const rows = [
+    row(2024, "P", "S", "A", 1000, 10),
+    row(2024, "P", "S", "A", 1000, 15),
+    row(2024, "P", "S", "A", 1000, 20),
+    row(2024, "P", "S", "A", 1000, 25),
+    row(2024, "P", "S", "A", 1000, 30)
+  ];
+  const out = idpComputeIndirectHarmFromRows(rows, defaultOpts());
+  eq(out.diagnostics.inScopeRowsCount, 5, "5 in-scope rows");
+  // 1000*10 + 1000*15 + 1000*20 + 1000*25 + 1000*30 = 100000
+  eq(Math.round(out.diagnostics.inScopeRowsSpend), 100000, "$100,000 in-scope spend");
+  eq(out.diagnostics.analyzedRowsCount, 5, "all 5 rows analyzed (group kept)");
+  eq(Math.round(out.diagnostics.analyzedRowsSpend), 100000, "all $100,000 analyzed");
+  assertWalkReconciles(out.diagnostics, "basic Cat 1 case");
+}
+
+console.log("--- TEST: walk attributes each pre-clean bucket's spend ---");
+{
+  // Mix one row of each pre-clean failure + 5 valid rows for a Cat 1 group.
+  const rows = [
+    row(2024, "P", "S", "A", 100, 10, { material: "TEST PART", lineSpend: 1234 }), // dummy word: $1,234
+    row(2024, "P", "S", "A", 0, 10),                                                // qty 0 spend $0
+    row(2024, "P", "S", "A", 100, 0.30, { lineSpend: 30 }),                         // line spend < $50 → $30
+    { year: 2024, part: "P", _idpIhKey: "P", supplier: "S", site: "A", quantity: 5000, spend: 200, material: "WIDGET", noun: "WIDGET" }, // up $0.04 < $0.05 → spend $200
+    row(2024, "P", "S", "A", 1000, 10),
+    row(2024, "P", "S", "A", 1000, 15),
+    row(2024, "P", "S", "A", 1000, 20),
+    row(2024, "P", "S", "A", 1000, 25),
+    row(2024, "P", "S", "A", 1000, 30)
+  ];
+  const out = idpComputeIndirectHarmFromRows(rows, defaultOpts());
+  eq(out.diagnostics.preCleanExcludedByDummyWord, 1, "1 dummy-word excluded");
+  eq(Math.round(out.diagnostics.preCleanExcludedByDummyWordSpend), 1234, "dummy spend $1,234");
+  eq(out.diagnostics.preCleanExcludedByZeroQtyOrPrice, 1, "1 zero-qty excluded");
+  eq(Math.round(out.diagnostics.preCleanExcludedByZeroQtyOrPriceSpend), 0, "zero-qty spend $0");
+  eq(out.diagnostics.preCleanExcludedByMinLineSpend, 1, "1 min-line-spend excluded");
+  eq(Math.round(out.diagnostics.preCleanExcludedByMinLineSpendSpend), 30, "min-line-spend $30");
+  eq(out.diagnostics.preCleanExcludedByMinUnitPrice, 1, "1 min-unit-price excluded");
+  eq(Math.round(out.diagnostics.preCleanExcludedByMinUnitPriceSpend), 200, "min-unit-price spend $200");
+  assertWalkReconciles(out.diagnostics, "mixed pre-clean buckets");
+}
+
+console.log("--- TEST: walk attributes 'group < 5 txns' bucket ---");
+{
+  // 4 txns at (P, S, A) — fails Cat 1 minTxn AND Cat 2 minTxn AND single-site.
+  const rows = [
+    row(2024, "P", "S", "A", 100, 10),
+    row(2024, "P", "S", "A", 100, 20),
+    row(2024, "P", "S", "A", 100, 30),
+    row(2024, "P", "S", "A", 100, 40)
+  ];
+  const out = idpComputeIndirectHarmFromRows(rows, defaultOpts({ minSavingsUsd: 0 }));
+  eq(out.diagnostics.groupExcludedByMinTransactionsRowsCount, 4, "4 rows attributed to min-txn bucket");
+  // (10+20+30+40)*100 = 10000
+  eq(Math.round(out.diagnostics.groupExcludedByMinTransactionsRowsSpend), 10000, "$10,000 min-txn spend");
+  eq(out.diagnostics.analyzedRowsCount, 0, "0 analyzed");
+  assertWalkReconciles(out.diagnostics, "group < 5 txns");
+}
+
+console.log("--- TEST: walk attributes 'group savings < $5K' bucket ---");
+{
+  // 5 txns with low post-dedup savings = $500 (well under $5K).
+  // bench $10, then 4 txns @ $11.25 qty 100 → savings (1.25*100)*4 = $500.
+  const rows = [
+    row(2024, "P", "S", "A", 100, 10),
+    row(2024, "P", "S", "A", 100, 11.25),
+    row(2024, "P", "S", "A", 100, 11.25),
+    row(2024, "P", "S", "A", 100, 11.25),
+    row(2024, "P", "S", "A", 100, 11.25)
+  ];
+  const out = idpComputeIndirectHarmFromRows(rows, defaultOpts());
+  eq(out.diagnostics.cat1ExcludedByMinSavings, 1, "1 group excluded by min savings");
+  eq(out.diagnostics.groupExcludedByMinSavingsRowsCount, 5, "5 rows attributed to min-savings bucket");
+  // (10 + 4*11.25)*100 = (10+45)*100 = 5500
+  eq(Math.round(out.diagnostics.groupExcludedByMinSavingsRowsSpend), 5500, "$5,500 min-savings spend");
+  assertWalkReconciles(out.diagnostics, "group savings < $5K");
+}
+
+console.log("--- TEST: walk: singleton row (key='', no fate) → bucket 11 ---");
+{
+  // Singleton row: key='' AND no _idpIhClusterFate flag set → defaults to singleton bucket.
+  // Other 5 rows form a valid Cat 1 group.
+  const lonely = { year: 2024, part: "", _idpIhKey: "", supplier: "S", site: "A", quantity: 100, spend: 500, material: "WIDGET", noun: "WIDGET" };
+  const rows = [
+    lonely,
+    row(2024, "P", "S", "A", 1000, 10),
+    row(2024, "P", "S", "A", 1000, 15),
+    row(2024, "P", "S", "A", 1000, 20),
+    row(2024, "P", "S", "A", 1000, 25),
+    row(2024, "P", "S", "A", 1000, 30)
+  ];
+  const out = idpComputeIndirectHarmFromRows(rows, defaultOpts());
+  eq(out.diagnostics.excludedAsSingletonRowsCount, 1, "1 singleton row");
+  eq(Math.round(out.diagnostics.excludedAsSingletonRowsSpend), 500, "singleton spend $500");
+  eq(out.diagnostics.excludedBySanitySplitRowsCount, 0, "no sanity-split rows");
+  assertWalkReconciles(out.diagnostics, "singleton case");
+}
+
+console.log("--- TEST: walk: sanity-split row (key='', fate='sanity_split') → bucket 10 ---");
+{
+  const dropped = { year: 2024, part: "", _idpIhKey: "", _idpIhClusterFate: "sanity_split", supplier: "S", site: "A", quantity: 100, spend: 750, material: "WIDGET", noun: "WIDGET" };
+  const rows = [
+    dropped,
+    row(2024, "P", "S", "A", 1000, 10),
+    row(2024, "P", "S", "A", 1000, 15),
+    row(2024, "P", "S", "A", 1000, 20),
+    row(2024, "P", "S", "A", 1000, 25),
+    row(2024, "P", "S", "A", 1000, 30)
+  ];
+  const out = idpComputeIndirectHarmFromRows(rows, defaultOpts());
+  eq(out.diagnostics.excludedBySanitySplitRowsCount, 1, "1 sanity-split row");
+  eq(Math.round(out.diagnostics.excludedBySanitySplitRowsSpend), 750, "sanity-split spend $750");
+  eq(out.diagnostics.excludedAsSingletonRowsCount, 0, "no singleton rows");
+  assertWalkReconciles(out.diagnostics, "sanity-split case");
+}
+
+console.log("--- TEST: walk: singleton+qty=0 attributed to qty bucket, not singleton bucket ---");
+{
+  // A singleton row whose qty is 0 — should land in pre-clean bucket 2 (qty/up≤0), NOT
+  // in the singleton bucket, because pre-clean rules run BEFORE the key check.
+  const singletonZero = { year: 2024, part: "", _idpIhKey: "", supplier: "S", site: "A", quantity: 0, spend: 100, material: "WIDGET", noun: "WIDGET" };
+  const rows = [
+    singletonZero,
+    row(2024, "P", "S", "A", 1000, 10),
+    row(2024, "P", "S", "A", 1000, 15),
+    row(2024, "P", "S", "A", 1000, 20),
+    row(2024, "P", "S", "A", 1000, 25),
+    row(2024, "P", "S", "A", 1000, 30)
+  ];
+  const out = idpComputeIndirectHarmFromRows(rows, defaultOpts());
+  eq(out.diagnostics.preCleanExcludedByZeroQtyOrPrice, 1, "qty-0 singleton → pre-clean bucket");
+  eq(out.diagnostics.excludedAsSingletonRowsCount, 0, "NOT counted as singleton (pre-clean first)");
+  assertWalkReconciles(out.diagnostics, "singleton+qty=0");
+}
+
+console.log("--- TEST: walk: a row in a kept Cat 1 group is analyzed, even at exactly benchmark price ---");
+{
+  // Cat 1 group is kept (savings ≥ $5K); a benchmark-price row contributes 0 savings
+  // but is STILL counted in analyzedRowsSpend (total_spend in the opp covers it).
+  const rows = [
+    row(2024, "P", "S", "A", 1000, 10),  // benchmark — $10K spend, 0 savings
+    row(2024, "P", "S", "A", 1000, 20),
+    row(2024, "P", "S", "A", 1000, 25),
+    row(2024, "P", "S", "A", 1000, 30),
+    row(2024, "P", "S", "A", 1000, 35)
+  ];
+  const out = idpComputeIndirectHarmFromRows(rows, defaultOpts());
+  eq(out.cat1Opps.length, 1, "1 Cat 1 opp emitted");
+  eq(out.diagnostics.analyzedRowsCount, 5, "all 5 rows analyzed (including bench)");
+  // (10+20+25+30+35) * 1000 = 120000
+  eq(Math.round(out.diagnostics.analyzedRowsSpend), 120000, "all $120K analyzed");
+  assertWalkReconciles(out.diagnostics, "kept-group with benchmark row");
+}
+
+console.log("--- TEST: walk: rows in BOTH a kept Cat 1 group AND kept Cat 2 group counted ONCE in analyzed ---");
+{
+  // Site A: 6 txns. Site B: 6 txns. Same (Part, Supplier) → Cat 2 group.
+  // Each (Part, Site, Supplier) → Cat 1 group with potential savings.
+  // We want BOTH Cat 1 AND Cat 2 to be kept and overlap on rows.
+  // Site A: bench $10 (qty 100), then 5 txns @ $20 (qty 1000) → Cat 1 savings = 5 × (20-10)*1000 = 50000.
+  // Site B: bench $5 (qty 100), then 5 txns @ $10 (qty 1000) → Cat 1 savings = 5 × (10-5)*1000 = 25000.
+  // Cat 2: Site A avg = (10*100+5*20*1000)/(100+5000) = (1000+100000)/5100 = $19.80
+  //        Site B avg = (5*100+5*10*1000)/(100+5000) = (500+50000)/5100 = $9.91
+  // Cat 2 bench = $9.91 (Site B). Site A txns @ $20 save (20-9.91)*1000 = $10,090 each.
+  // Per-txn: Cat 1 savings for Site A $20 = $10K, Cat 2 savings = $10,090. Cat 2 wins by $90.
+  // Final: Site A's 5 $20 txns go to Cat 2. Cat 1 at Site A has only the $10 bench row → 0 → dropped.
+  // Site B Cat 1 group: bench $5, 5 txns @ $10 contributing — but Site B is the Cat 2 benchmark site,
+  // so these rows aren't dual-eligible (Cat 2 = 0 at bench site). They go to Cat 1 cleanly. Savings $25K.
+  // ANALYZED rows: all 12 rows (since both groups kept). UNIQUE invoice spend.
+  // Total in scope: 12 invoices. Site A: 100 + 5*1000 = 5100. Site B: 100 + 5*1000 = 5100. Sum = 10200.
+  // Spend: Site A: 10*100 + 20*1000*5 = 1000 + 100000 = 101000. Site B: 5*100 + 10*1000*5 = 500 + 50000 = 50500.
+  // Total: $151,500. Should match analyzedRowsSpend exactly.
+  const rows = [
+    row(2024, "P", "S", "A", 100, 10),
+    row(2024, "P", "S", "A", 1000, 20),
+    row(2024, "P", "S", "A", 1000, 20),
+    row(2024, "P", "S", "A", 1000, 20),
+    row(2024, "P", "S", "A", 1000, 20),
+    row(2024, "P", "S", "A", 1000, 20),
+    row(2024, "P", "S", "B", 100, 5),
+    row(2024, "P", "S", "B", 1000, 10),
+    row(2024, "P", "S", "B", 1000, 10),
+    row(2024, "P", "S", "B", 1000, 10),
+    row(2024, "P", "S", "B", 1000, 10),
+    row(2024, "P", "S", "B", 1000, 10)
+  ];
+  const out = idpComputeIndirectHarmFromRows(rows, defaultOpts());
+  // Verify reconciliation regardless of which categories end up kept.
+  eq(out.diagnostics.inScopeRowsCount, 12, "12 in-scope rows");
+  // Sum of all rows' spend
+  // SiteA: 10*100 + 5*(20*1000) = 1000 + 100000 = 101000
+  // SiteB: 5*100 + 5*(10*1000) = 500 + 50000 = 50500
+  eq(Math.round(out.diagnostics.inScopeRowsSpend), 151500, "$151,500 in-scope spend");
+  // No double-counting in analyzed bucket — each row counted once max.
+  truthy(out.diagnostics.analyzedRowsCount <= 12, "analyzed count <= 12 (no double-count)");
+  truthy(out.diagnostics.analyzedRowsSpend <= 151500.01, "analyzed spend <= in-scope (no double-count)");
+  assertWalkReconciles(out.diagnostics, "overlap case");
+}
+
+console.log("--- TEST: walk: missing supplier → structural bucket (bucket 0) ---");
+{
+  // Row with no supplier — must be attributed to the structural bucket,
+  // NOT silently dropped before the walk's top bookend.
+  const noSupplier = { year: 2024, part: "P", _idpIhKey: "P", supplier: "", site: "A", quantity: 100, spend: 999, material: "WIDGET", noun: "WIDGET" };
+  const rows = [
+    noSupplier,
+    row(2024, "P", "S", "A", 1000, 10),
+    row(2024, "P", "S", "A", 1000, 15),
+    row(2024, "P", "S", "A", 1000, 20),
+    row(2024, "P", "S", "A", 1000, 25),
+    row(2024, "P", "S", "A", 1000, 30)
+  ];
+  const out = idpComputeIndirectHarmFromRows(rows, defaultOpts());
+  eq(out.diagnostics.inScopeRowsCount, 6, "all 6 rows count as in-scope (top bookend = raw)");
+  eq(out.diagnostics.structuralExcludedRowsCount, 1, "1 row attributed to structural bucket");
+  eq(Math.round(out.diagnostics.structuralExcludedRowsSpend), 999, "structural spend $999");
+  eq(out.diagnostics.preCleanExcludedByDummyWord, 0, "0 dummy-word (structural caught it first)");
+  assertWalkReconciles(out.diagnostics, "missing-supplier structural");
+}
+
+console.log("--- TEST: walk: missing site → structural bucket ---");
+{
+  const noSite = { year: 2024, part: "P", _idpIhKey: "P", supplier: "S", site: "", quantity: 100, spend: 444, material: "WIDGET", noun: "WIDGET" };
+  const rows = [
+    noSite,
+    row(2024, "P", "S", "A", 1000, 10),
+    row(2024, "P", "S", "A", 1000, 15),
+    row(2024, "P", "S", "A", 1000, 20),
+    row(2024, "P", "S", "A", 1000, 25),
+    row(2024, "P", "S", "A", 1000, 30)
+  ];
+  const out = idpComputeIndirectHarmFromRows(rows, defaultOpts());
+  eq(out.diagnostics.structuralExcludedRowsCount, 1, "1 row attributed to structural bucket");
+  eq(Math.round(out.diagnostics.structuralExcludedRowsSpend), 444, "structural spend $444");
+  assertWalkReconciles(out.diagnostics, "missing-site structural");
+}
+
+console.log("--- TEST: walk: year != target → structural bucket ---");
+{
+  // The auto-detected target year is the latest complete year (typically
+  // the most-populated year in the slice). A row with a different year
+  // must show up in the structural bucket.
+  const rows = [
+    row(2024, "P", "S", "A", 1000, 10),
+    row(2024, "P", "S", "A", 1000, 15),
+    row(2024, "P", "S", "A", 1000, 20),
+    row(2024, "P", "S", "A", 1000, 25),
+    row(2024, "P", "S", "A", 1000, 30),
+    row(2023, "P", "S", "A", 1000, 10) // wrong year — should be structural-excluded
+  ];
+  const out = idpComputeIndirectHarmFromRows(rows, defaultOpts());
+  // target_year picked from rows = 2024 (max). Row 2023 is structural.
+  eq(out.diagnostics.targetYear, 2024, "target year = 2024");
+  eq(out.diagnostics.structuralExcludedRowsCount, 1, "2023 row → structural bucket");
+  assertWalkReconciles(out.diagnostics, "wrong-year structural");
+}
+
+console.log("--- TEST: walk: bucket 2 credit-note vs zero-only sub-split ---");
+{
+  // 1 credit-note (qty = -5, sp = -50)
+  // 1 zero-qty row (qty = 0, sp = 100)
+  // 1 zero-spend row (qty = 100, sp = 0)
+  // Expect: 3 rows in bucket 2 total, 1 in credit-note sub-bucket, 2 in zero-only.
+  const rows = [
+    { year: 2024, part: "P", _idpIhKey: "P", supplier: "S", site: "A", quantity: -5, spend: -50, material: "WIDGET", noun: "WIDGET" }, // credit-note
+    { year: 2024, part: "P", _idpIhKey: "P", supplier: "S", site: "A", quantity: 0, spend: 100, material: "WIDGET", noun: "WIDGET" },   // zero-qty
+    { year: 2024, part: "P", _idpIhKey: "P", supplier: "S", site: "A", quantity: 100, spend: 0, material: "WIDGET", noun: "WIDGET" },   // zero-spend
+    row(2024, "P", "S", "A", 1000, 10),
+    row(2024, "P", "S", "A", 1000, 15),
+    row(2024, "P", "S", "A", 1000, 20),
+    row(2024, "P", "S", "A", 1000, 25),
+    row(2024, "P", "S", "A", 1000, 30)
+  ];
+  const out = idpComputeIndirectHarmFromRows(rows, defaultOpts());
+  eq(out.diagnostics.preCleanExcludedByZeroQtyOrPrice, 3, "3 rows in bucket 2");
+  eq(out.diagnostics.preCleanExcludedByCreditNoteCount, 1, "1 credit-note row");
+  eq(Math.round(out.diagnostics.preCleanExcludedByCreditNoteSpend), -50, "credit-note signed spend = -$50");
+  eq(Math.round(out.diagnostics.preCleanExcludedByCreditNoteSpendAbs), 50, "credit-note |spend| = $50");
+  eq(out.diagnostics.preCleanExcludedByZeroOnlyCount, 2, "2 zero-only rows");
+  eq(Math.round(out.diagnostics.preCleanExcludedByZeroOnlySpend), 100, "zero-only signed spend = $100");
+  eq(Math.round(out.diagnostics.preCleanExcludedByZeroOnlySpendAbs), 100, "zero-only |spend| = $100");
+  // Sub-buckets sum to bucket-2 totals (count + signed spend + |spend|).
+  eq(out.diagnostics.preCleanExcludedByCreditNoteCount + out.diagnostics.preCleanExcludedByZeroOnlyCount,
+     out.diagnostics.preCleanExcludedByZeroQtyOrPrice, "sub-buckets count sums to bucket-2 count");
+  eq(Math.round(out.diagnostics.preCleanExcludedByCreditNoteSpend + out.diagnostics.preCleanExcludedByZeroOnlySpend),
+     Math.round(out.diagnostics.preCleanExcludedByZeroQtyOrPriceSpend), "sub-buckets signed spend sums to bucket-2 spend");
+  eq(Math.round(out.diagnostics.preCleanExcludedByCreditNoteSpendAbs + out.diagnostics.preCleanExcludedByZeroOnlySpendAbs),
+     Math.round(out.diagnostics.preCleanExcludedByZeroQtyOrPriceSpendAbs), "sub-buckets |spend| sums to bucket-2 |spend|");
+  assertWalkReconciles(out.diagnostics, "bucket-2 sub-split");
+}
+
+console.log("--- TEST: walk: bucket-2 |spend| ≥ |signed spend| even on net-negative bucket ---");
+{
+  // 2 credit-notes (-$1000 each) and 1 small positive zero-qty row → signed sum
+  // = -$2000, but |signed| sum = $2000+ → ensures we won't show a positive number
+  // under a "− Excluded" header in the walk.
+  const rows = [
+    { year: 2024, part: "P", _idpIhKey: "P", supplier: "S", site: "A", quantity: -10, spend: -1000, material: "WIDGET", noun: "WIDGET" },
+    { year: 2024, part: "P", _idpIhKey: "P", supplier: "S", site: "A", quantity: -10, spend: -1000, material: "WIDGET", noun: "WIDGET" },
+    { year: 2024, part: "P", _idpIhKey: "P", supplier: "S", site: "A", quantity: 0, spend: 0, material: "WIDGET", noun: "WIDGET" },
+    row(2024, "P", "S", "A", 1000, 10),
+    row(2024, "P", "S", "A", 1000, 15),
+    row(2024, "P", "S", "A", 1000, 20),
+    row(2024, "P", "S", "A", 1000, 25),
+    row(2024, "P", "S", "A", 1000, 30)
+  ];
+  const out = idpComputeIndirectHarmFromRows(rows, defaultOpts());
+  const signed = out.diagnostics.preCleanExcludedByZeroQtyOrPriceSpend;
+  const abs = out.diagnostics.preCleanExcludedByZeroQtyOrPriceSpendAbs;
+  eq(Math.round(signed), -2000, "signed bucket-2 sum = -$2,000");
+  eq(Math.round(abs), 2000, "|spend| bucket-2 sum = $2,000");
+  truthy(abs >= Math.abs(signed), "|spend| ≥ |signed spend| (display can always be a clear subtraction)");
+  assertWalkReconciles(out.diagnostics, "net-negative bucket-2");
+}
+
 console.log("\n--- SUMMARY ---");
 console.log("Passed:", pass);
 console.log("Failed:", fail);

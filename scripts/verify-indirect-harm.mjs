@@ -8,8 +8,12 @@
 //   - Dedup reassignment counts
 //   - Fuzzy clusters formed + split by similarity check
 //   - Top 5 opportunities per category
+//   - The FULL Assumption Walk (12 rows, reconciles to the dollar)
 //
-// Fuzzy keying is done here (mirrors the browser-side prep). Run:
+// Fuzzy keying mirrors the browser-side prep, including the singleton-
+// vs-sanity-split distinction the in-app walk uses.
+//
+// Run:
 //   node --max-old-space-size=8192 scripts/verify-indirect-harm.mjs
 
 import fs from "node:fs";
@@ -46,15 +50,42 @@ const data = JSON.parse(fs.readFileSync(path.join(repoRoot, "src", "dashboard", 
 const rows = data.rows || [];
 console.log("Total rows:", rows.length, "(" + (Date.now() - start) + "ms)");
 
-// --- Filter to L1 = Indirect ------------------------------------------------
+// --- Filter to L1 = Indirect, Time = 2025 -----------------------------------
+// Mirror the live dashboard's filter state at the user's documented anchor
+// (Time = 2025, all category/region/supplier filters = "All"). The Time
+// filter is applied UPSTREAM in the dashboard, so `allRowsFiltered`
+// already excludes other years before the IH math runs. Replicating that
+// here is what makes the walk's top-bookend equal the Spend Overview KPI
+// tile ($388.1M / ~61.9k invoices) instead of the multi-year mix.
+function rowYearLocal(r) {
+  const y = +r.year;
+  if (y >= 1990 && y <= 2100) return y;
+  const ym = r.ym != null ? String(r.ym) : "";
+  let m = ym.match(/(20[0-2][0-9])/);
+  if (m) return +m[1];
+  const d = r.d;
+  if (d) { m = String(d).match(/(20[0-2][0-9])/); if (m) return +m[1]; }
+  return 0;
+}
+const TARGET_TIME_YEAR = 2025;
 const indirect = rows.filter(r => {
   if (!r) return false;
   const c1 = String(r.category_l1 != null ? r.category_l1 : r.c1 != null ? r.c1 : "").trim().toLowerCase();
-  return c1 === "indirect" || c1 === "indirects";
+  if (c1 !== "indirect" && c1 !== "indirects") return false;
+  return rowYearLocal(r) === TARGET_TIME_YEAR;
 });
-console.log("Indirect rows:", indirect.length);
+console.log("Indirect rows (Time=" + TARGET_TIME_YEAR + "):", indirect.length);
+let _indSpendSanity = 0;
+for (const r of indirect) {
+  const v = +(r.spend != null ? r.spend : 0);
+  if (Number.isFinite(v)) _indSpendSanity += v;
+}
+console.log("  signed spend:", "$" + Math.round(_indSpendSanity).toLocaleString(),
+            "(should match Spend Overview KPI tile)");
 
 // --- Build part keys: numeric-bearing Part Number wins; else fuzzy ----------
+// Mirrors src/dashboard/index.html → _idpIhBuildPrep precisely so that
+// the same singleton-vs-sanity-split attribution is applied here.
 const fuzzyCandidates = [];
 let keyedByPartNum = 0;
 for (let i = 0; i < indirect.length; i++) {
@@ -64,7 +95,7 @@ for (let i = 0; i < indirect.length; i++) {
     r._idpIhKey = part;
     keyedByPartNum++;
   } else {
-    r._idpIhKey = "";
+    r._idpIhKey = null;
     let name = "";
     if (r.noun) name = String(r.noun).trim();
     else if (r.material) name = String(r.material).trim();
@@ -76,7 +107,7 @@ for (let i = 0; i < indirect.length; i++) {
 console.log("Keyed by Part #:", keyedByPartNum);
 console.log("Fuzzy candidates:", fuzzyCandidates.length);
 
-// --- Fuzzy cluster + similarity sanity check --------------------------------
+// --- Fuzzy cluster + similarity sanity check (mirrors _idpIhBuildPrep) -------
 const tokenSets = fuzzyCandidates.map(c => IDPMATH.normalizeNameForFuzzy(c.name, { threshold: FUZZY_THRESHOLD }).tokens);
 const clusterRes = IDPMATH.fuzzyClusterNames(fuzzyCandidates, { threshold: FUZZY_THRESHOLD });
 let clustersFormed = 0, clustersSplit = 0;
@@ -85,7 +116,17 @@ for (let cl = 0; cl < clusters.length; cl++) {
   const c = clusters[cl];
   if (!c || !c.members || !c.members.length) continue;
   clustersFormed++;
+  /* Singleton clusters: don't key. Their rows fall through to the
+     Step 4 fallback below which tags them "singleton". */
+  if (c.members.length < 2) {
+    const sliceIdx = fuzzyCandidates[c.members[0]].id;
+    if (indirect[sliceIdx] && indirect[sliceIdx]._idpIhKey == null) {
+      indirect[sliceIdx]._idpIhClusterFate = "singleton";
+    }
+    continue;
+  }
   let members = c.members.slice();
+  const origSet = new Set(c.members);
   let split = false;
   let maxIters = members.length;
   while (members.length >= 2 && maxIters-- > 0) {
@@ -106,14 +147,49 @@ for (let cl = 0; cl < clusters.length; cl++) {
     split = true;
   }
   if (split) clustersSplit++;
+  const keptSet = new Set(members);
+  // Members dropped by sanity check → sanity_split fate.
+  for (const memberIdx of origSet) {
+    if (!keptSet.has(memberIdx)) {
+      const sliceIdx = fuzzyCandidates[memberIdx].id;
+      if (indirect[sliceIdx] && indirect[sliceIdx]._idpIhKey == null) {
+        indirect[sliceIdx]._idpIhClusterFate = "sanity_split";
+      }
+    }
+  }
+  // If cluster collapsed to <2 after sanity check, treat remaining
+  // members as sanity_split too (same as in _idpIhBuildPrep).
+  if (members.length < 2) {
+    for (const memberIdx of members) {
+      const sliceIdx = fuzzyCandidates[memberIdx].id;
+      if (indirect[sliceIdx] && indirect[sliceIdx]._idpIhKey == null) {
+        indirect[sliceIdx]._idpIhClusterFate = "sanity_split";
+      }
+    }
+    continue;
+  }
   const clusterKey = "IH#FUZZY#" + cl;
-  for (let mi = 0; mi < members.length; mi++) {
-    const sliceIdx = fuzzyCandidates[members[mi]].id;
+  for (const memberIdx of members) {
+    const sliceIdx = fuzzyCandidates[memberIdx].id;
     if (indirect[sliceIdx]) indirect[sliceIdx]._idpIhKey = clusterKey;
   }
 }
+// Step 4: anything still null is a singleton (no cluster created at all).
+let singletonsTagged = 0, sanitySplitTagged = 0;
+for (let i = 0; i < indirect.length; i++) {
+  const r = indirect[i];
+  if (!r) continue;
+  if (r._idpIhKey == null) {
+    if (!r._idpIhClusterFate) r._idpIhClusterFate = "singleton";
+    r._idpIhKey = "";
+  }
+  if (r._idpIhClusterFate === "singleton") singletonsTagged++;
+  else if (r._idpIhClusterFate === "sanity_split") sanitySplitTagged++;
+}
 console.log("Fuzzy clusters formed:", clustersFormed);
 console.log("Clusters split by similarity check:", clustersSplit);
+console.log("Singleton rows tagged:", singletonsTagged);
+console.log("Sanity-split rows tagged:", sanitySplitTagged);
 
 // --- Run math ---------------------------------------------------------------
 console.log("\nRunning idpComputeIndirectHarmFromRows...");
@@ -134,25 +210,56 @@ const d = out.diagnostics;
 
 function fmtUsd(n) { return "$" + Math.round(n).toLocaleString(); }
 function fmtInt(n) { return (n || 0).toLocaleString(); }
+function fmtNegInt(n) {
+  if (!n) return "0";
+  if (n > 0) return "-" + Math.round(n).toLocaleString();
+  return Math.round(n).toLocaleString();
+}
+function fmtNegUsd(n) {
+  if (!n) return "$0";
+  if (n > 0) return "-$" + Math.round(n).toLocaleString();
+  return "$" + Math.round(Math.abs(n)).toLocaleString();
+}
 
 console.log("\n========== VERIFICATION REPORT ==========");
 console.log("Target year:", d.targetYear);
 console.log("Rows fed to math:", fmtInt(d.rawRowsIn));
+console.log("In-scope rows (every indirect invoice, top bookend):",
+            fmtInt(d.inScopeRowsCount), "spend", fmtUsd(d.inScopeRowsSpend));
+console.log("Structural exclusions (missing supplier/site/year):",
+            fmtInt(d.structuralExcludedRowsCount), "|spend|", fmtUsd(d.structuralExcludedRowsSpendAbs),
+            "(signed", fmtUsd(d.structuralExcludedRowsSpend) + ")");
 
 console.log("\n--- Pre-clean exclusions ---");
-console.log("  · dummy/sample/test/etc word:   ", fmtInt(d.preCleanExcludedByDummyWord));
-console.log("  · qty ≤ 0 or unit price ≤ 0:    ", fmtInt(d.preCleanExcludedByZeroQtyOrPrice));
-console.log("  · line spend < $" + MIN_LINE_SPEND_USD + ":              ", fmtInt(d.preCleanExcludedByMinLineSpend));
-console.log("  · unit price < $" + MIN_UNIT_PRICE_USD + ":             ", fmtInt(d.preCleanExcludedByMinUnitPrice));
+console.log("  · dummy/sample/test/etc word:   ", fmtInt(d.preCleanExcludedByDummyWord),
+            "(|spend|", fmtUsd(d.preCleanExcludedByDummyWordSpendAbs), ")");
+console.log("  · qty ≤ 0 or unit price ≤ 0:    ", fmtInt(d.preCleanExcludedByZeroQtyOrPrice),
+            "(|spend|", fmtUsd(d.preCleanExcludedByZeroQtyOrPriceSpendAbs),
+            "; signed", fmtUsd(d.preCleanExcludedByZeroQtyOrPriceSpend) + ")");
+console.log("      of which credit-notes/returns: ",
+            fmtInt(d.preCleanExcludedByCreditNoteCount),
+            "(|spend|", fmtUsd(d.preCleanExcludedByCreditNoteSpendAbs), ")");
+console.log("      of which literal zero qty/price: ",
+            fmtInt(d.preCleanExcludedByZeroOnlyCount),
+            "(|spend|", fmtUsd(d.preCleanExcludedByZeroOnlySpendAbs), ")");
+console.log("  · line spend < $" + MIN_LINE_SPEND_USD + ":              ", fmtInt(d.preCleanExcludedByMinLineSpend),
+            "(|spend|", fmtUsd(d.preCleanExcludedByMinLineSpendSpendAbs), ")");
+console.log("  · unit price < $" + MIN_UNIT_PRICE_USD + ":             ", fmtInt(d.preCleanExcludedByMinUnitPrice),
+            "(|spend|", fmtUsd(d.preCleanExcludedByMinUnitPriceSpendAbs), ")");
 console.log("Rows surviving pre-clean:           ", fmtInt(d.rowsAfterPreClean));
 console.log("  · keyed by Part #:                ", fmtInt(d.rowsKeyedByPartNum));
 console.log("  · keyed by fuzzy desc:            ", fmtInt(d.rowsKeyedByFuzzy));
+console.log("  · sanity-split (no key):          ", fmtInt(d.excludedBySanitySplitRowsCount),
+            "(|spend|", fmtUsd(d.excludedBySanitySplitRowsSpendAbs), ")");
+console.log("  · singleton (no key):             ", fmtInt(d.excludedAsSingletonRowsCount),
+            "(|spend|", fmtUsd(d.excludedAsSingletonRowsSpendAbs), ")");
 
 console.log("\n--- Totals (post-dedup) ---");
 const totalOpps = (d.cat1GroupsKept || 0) + (d.cat2GroupsKept || 0);
 const totalSavings = (d.cat1TotalSavings || 0) + (d.cat2TotalSavings || 0);
 console.log("Total qualifying opportunities:", fmtInt(totalOpps));
 console.log("Total savings:                 ", fmtUsd(totalSavings));
+console.log("Analyzed rows (unique):        ", fmtInt(d.analyzedRowsCount), "spend", fmtUsd(d.analyzedRowsSpend));
 
 console.log("\n--- Per-category breakdown (post-dedup) ---");
 console.log("Cat 1 — Same Supplier, Same Site, Single-Invoice Rightsizing (high confidence):");
@@ -162,13 +269,27 @@ console.log("Cat 2 — Same Supplier, Different Sites, Cross-Site Rightsizing to
 console.log("  Opps:        ", fmtInt(d.cat2GroupsKept));
 console.log("  Savings:     ", fmtUsd(d.cat2TotalSavings));
 
-console.log("\n--- Group-level filter exclusions (Cat 1) ---");
+console.log("\n--- Group-level row attribution (per-row, post-emit, post-dedup) ---");
+console.log("  · group < " + MIN_TRANSACTIONS + " txns:                 ", fmtInt(d.groupExcludedByMinTransactionsRowsCount),
+            "(|spend|", fmtUsd(d.groupExcludedByMinTransactionsRowsSpendAbs),
+            "; signed", fmtUsd(d.groupExcludedByMinTransactionsRowsSpend) + ")");
+console.log("  · group savings < $" + MIN_SAVINGS_USD + ":           ", fmtInt(d.groupExcludedByMinSavingsRowsCount),
+            "(|spend|", fmtUsd(d.groupExcludedByMinSavingsRowsSpendAbs),
+            "; signed", fmtUsd(d.groupExcludedByMinSavingsRowsSpend) + ")");
+console.log("  · group benchmark < $" + MIN_BENCHMARK_USD + ":           ", fmtInt(d.groupExcludedByMinBenchmarkRowsCount),
+            "(|spend|", fmtUsd(d.groupExcludedByMinBenchmarkRowsSpendAbs),
+            "; signed", fmtUsd(d.groupExcludedByMinBenchmarkRowsSpend) + ")");
+console.log("  · group max/min ratio > " + MAX_PRICE_RATIO + "x:        ", fmtInt(d.groupExcludedByMaxRatioRowsCount),
+            "(|spend|", fmtUsd(d.groupExcludedByMaxRatioRowsSpendAbs),
+            "; signed", fmtUsd(d.groupExcludedByMaxRatioRowsSpend) + ")");
+
+console.log("\n--- Group-level filter exclusions (Cat 1 group counts) ---");
 console.log("  · < " + MIN_TRANSACTIONS + " transactions:           ", fmtInt(d.cat1ExcludedByMinTransactions));
 console.log("  · benchmark < $" + MIN_BENCHMARK_USD + ":              ", fmtInt(d.cat1ExcludedByMinBenchmark));
 console.log("  · ratio > " + MAX_PRICE_RATIO + "x:               ", fmtInt(d.cat1ExcludedByMaxRatio));
 console.log("  · post-dedup savings < $" + MIN_SAVINGS_USD + ":  ", fmtInt(d.cat1ExcludedByMinSavings));
 
-console.log("\n--- Group-level filter exclusions (Cat 2) ---");
+console.log("\n--- Group-level filter exclusions (Cat 2 group counts) ---");
 console.log("  · < " + MIN_TRANSACTIONS + " transactions:                  ", fmtInt(d.cat2ExcludedByMinTransactions));
 console.log("  · only one site:                     ", fmtInt(d.cat2ExcludedByOneSite));
 console.log("  · no benchmark site ≥ " + CAT2_MIN_BENCHMARK_SITE_TXNS + " txns:   ", fmtInt(d.cat2ExcludedByNoEligibleBenchmarkSite));
@@ -201,5 +322,106 @@ else t2Top.forEach((t, i) => {
 console.log("\n--- Fuzzy keying ---");
 console.log("Total fuzzy clusters formed:        ", fmtInt(clustersFormed));
 console.log("Clusters split by similarity check: ", fmtInt(clustersSplit));
+
+/* ============== FULL ASSUMPTION WALK ============== */
+console.log("\n========== ASSUMPTION WALK ==========");
+console.log("How we got from total indirect invoices (in scope) to analyzed spend.\n");
+/* Walk row tuple: [label, count (positive for bookends, positive
+   integer for exclusion rows — sign added at render time), |spend|,
+   isBookend, signedSpend (for reconciliation only)]. Exclusion rows
+   render |spend| as a negative subtraction so credit-notes don't
+   appear to grow the pool. */
+const walkRows = [
+  ["Total indirect invoices (in scope, post global filter)",
+   d.inScopeRowsCount, d.inScopeRowsSpend, true, d.inScopeRowsSpend],
+  ["- Excluded: missing supplier, missing site, or out-of-scope year (structural)",
+   (d.structuralExcludedRowsCount || 0),
+   (d.structuralExcludedRowsSpendAbs || 0), false,
+   (d.structuralExcludedRowsSpend || 0)],
+  ["- Excluded: dummy/sample/test/NCR/return/credit/adjustment/void/reversal/placeholder wording",
+   (d.preCleanExcludedByDummyWord || 0),
+   (d.preCleanExcludedByDummyWordSpendAbs || 0), false,
+   (d.preCleanExcludedByDummyWordSpend || 0)],
+  ["- Excluded: quantity <= 0 or unit price <= 0",
+   (d.preCleanExcludedByZeroQtyOrPrice || 0),
+   (d.preCleanExcludedByZeroQtyOrPriceSpendAbs || 0), false,
+   (d.preCleanExcludedByZeroQtyOrPriceSpend || 0)],
+  ["- Excluded: line spend < $" + MIN_LINE_SPEND_USD,
+   (d.preCleanExcludedByMinLineSpend || 0),
+   (d.preCleanExcludedByMinLineSpendSpendAbs || 0), false,
+   (d.preCleanExcludedByMinLineSpendSpend || 0)],
+  ["- Excluded: unit price < $" + MIN_UNIT_PRICE_USD,
+   (d.preCleanExcludedByMinUnitPrice || 0),
+   (d.preCleanExcludedByMinUnitPriceSpendAbs || 0), false,
+   (d.preCleanExcludedByMinUnitPriceSpend || 0)],
+  ["- Excluded: group had fewer than " + MIN_TRANSACTIONS + " transactions",
+   (d.groupExcludedByMinTransactionsRowsCount || 0),
+   (d.groupExcludedByMinTransactionsRowsSpendAbs || 0), false,
+   (d.groupExcludedByMinTransactionsRowsSpend || 0)],
+  ["- Excluded: group total savings < $" + MIN_SAVINGS_USD.toLocaleString(),
+   (d.groupExcludedByMinSavingsRowsCount || 0),
+   (d.groupExcludedByMinSavingsRowsSpendAbs || 0), false,
+   (d.groupExcludedByMinSavingsRowsSpend || 0)],
+  ["- Excluded: group benchmark < $" + MIN_BENCHMARK_USD.toFixed(2),
+   (d.groupExcludedByMinBenchmarkRowsCount || 0),
+   (d.groupExcludedByMinBenchmarkRowsSpendAbs || 0), false,
+   (d.groupExcludedByMinBenchmarkRowsSpend || 0)],
+  ["- Excluded: group max/min price ratio > " + MAX_PRICE_RATIO + "x",
+   (d.groupExcludedByMaxRatioRowsCount || 0),
+   (d.groupExcludedByMaxRatioRowsSpendAbs || 0), false,
+   (d.groupExcludedByMaxRatioRowsSpend || 0)],
+  ["- Excluded: fuzzy cluster failed similarity sanity-check",
+   (d.excludedBySanitySplitRowsCount || 0),
+   (d.excludedBySanitySplitRowsSpendAbs || 0), false,
+   (d.excludedBySanitySplitRowsSpend || 0)],
+  ["- Excluded: singleton (no Part #, no clusterable matches in description)",
+   (d.excludedAsSingletonRowsCount || 0),
+   (d.excludedAsSingletonRowsSpendAbs || 0), false,
+   (d.excludedAsSingletonRowsSpend || 0)],
+  ["Total analyzed (matches Total Spend KPI at top)",
+   d.analyzedRowsCount, d.analyzedRowsSpend, true, d.analyzedRowsSpend]
+];
+function padR(s, n) { s = String(s); return s.length >= n ? s : s + " ".repeat(n - s.length); }
+function padL(s, n) { s = String(s); return s.length >= n ? s : " ".repeat(n - s.length) + s; }
+const colLab = 96, colCnt = 18, colSp = 22;
+console.log(padR("Assumption", colLab) + padL("Invoices", colCnt) + padL("Spend ($)", colSp));
+console.log("-".repeat(colLab + colCnt + colSp));
+for (let wi = 0; wi < walkRows.length; wi++) {
+  const w = walkRows[wi];
+  const isBookend = w[3];
+  const lab = padR(isBookend ? w[0].toUpperCase() : w[0], colLab);
+  const cnt = padL(isBookend ? fmtInt(w[1]) : "-" + (w[1] || 0).toLocaleString(), colCnt);
+  const sp = padL(isBookend ? fmtUsd(w[2]) : "-$" + Math.round(w[2] || 0).toLocaleString(), colSp);
+  console.log(lab + cnt + sp);
+  /* Bucket-2 credit-notes vs zero-only sub-detail row. Insert as a
+     small indented annotation right after bucket-2 to mirror the
+     in-app render. */
+  if (w[0].indexOf("- Excluded: quantity") === 0) {
+    const cCnt = d.preCleanExcludedByCreditNoteCount || 0;
+    const cSp = d.preCleanExcludedByCreditNoteSpendAbs || 0;
+    const zCnt = d.preCleanExcludedByZeroOnlyCount || 0;
+    const zSp = d.preCleanExcludedByZeroOnlySpendAbs || 0;
+    if ((cCnt + zCnt) > 0) {
+      console.log("    of which credit-notes/returns: " + cCnt.toLocaleString()
+        + " invoices / $" + Math.round(cSp).toLocaleString()
+        + "; literal zero qty/price: " + zCnt.toLocaleString()
+        + " invoices / $" + Math.round(zSp).toLocaleString());
+    }
+  }
+}
+console.log("-".repeat(colLab + colCnt + colSp));
+console.log("Note 1: exclusions applied in the order shown; each invoice is attributed to the first rule that excludes it.");
+console.log("Note 2: Spend column shows |line_spend| of excluded rows. Top/bottom bookends are signed totals; bookends reconcile exactly.");
+console.log("        Intermediate row sums may exceed the bookend difference due to credit-note offsets.");
+
+// Reconciliation check — uses SIGNED spend on the excluded rows (not |spend|).
+const sumExclCount = walkRows.slice(1, -1).reduce((s, w) => s + (w[1] || 0), 0);
+const sumExclSpendSigned = walkRows.slice(1, -1).reduce((s, w) => s + (w[4] || 0), 0);
+const reconCount = (d.inScopeRowsCount || 0) - sumExclCount - (d.analyzedRowsCount || 0);
+const reconSpend = (d.inScopeRowsSpend || 0) - sumExclSpendSigned - (d.analyzedRowsSpend || 0);
+console.log("\n[Reconciliation check]");
+console.log("  Sum(excluded counts) + analyzed - inScope (count):", reconCount === 0 ? "0 (reconciles)" : reconCount);
+console.log("  Sum(excluded signed spend) + analyzed - inScope (spend):",
+  Math.abs(reconSpend) < 0.01 ? "$0 (reconciles)" : "$" + reconSpend.toFixed(2));
 
 console.log("\nDONE.");

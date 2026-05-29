@@ -11369,7 +11369,19 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
       rowsKeyedByPartNum: 0,
       rowsKeyedByFuzzy: 0,
       fuzzyClustersFormed: 0,
-      fuzzyClustersSplitBySimilarity: 0
+      fuzzyClustersSplitBySimilarity: 0,
+      /* Walk buckets 9 + 10 — fuzzy candidates that didn't produce a
+         usable key. Singletons = candidate had no clusterable match
+         (single-member cluster). SanitySplit = candidate WAS in a
+         multi-member cluster but got dropped by the pairwise sanity
+         check OR the entire cluster collapsed to <2 members after
+         the check. The IH module owns this split so the math layer
+         stays category-agnostic. Spend is summed from r.spend with
+         non-finite treated as 0 (consistent with math layer). */
+      excludedAsSingletonCount: 0,
+      excludedAsSingletonSpend: 0,
+      excludedBySanitySplitCount: 0,
+      excludedBySanitySplitSpend: 0
     };
     var rows = new Array(slice.length);
     /* Step 1: stamp _idpIhKey for Part-Number-keyed rows; collect
@@ -11418,19 +11430,80 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
       }
       var clusters = clusterRes.clusters || [];
       var cl;
+      /* Spend accessor used for bucket-9/10 spend tracking. */
+      function rSpendSafe(row) {
+        if (!row) return 0;
+        var v = +(row.spend != null ? row.spend : 0);
+        return isFinite(v) ? v : 0;
+      }
       for (cl = 0; cl < clusters.length; cl++) {
         var c = clusters[cl];
         if (!c || !c.members || !c.members.length) continue;
         diag.fuzzyClustersFormed++;
+        /* Singletons are clusters with exactly 1 member — by
+           definition they have no clusterable peer. We deliberately
+           DO NOT assign a fuzzy key to them; they fall through to
+           Step 4 with key="" and are attributed to walk bucket 10. */
+        if (c.members.length < 2) {
+          var ciSing = fuzzyCandidates[c.members[0]];
+          if (ciSing) {
+            var rowSing = rows[ciSing.id];
+            if (rowSing && rowSing._idpIhKey == null) {
+              rowSing._idpIhClusterFate = "singleton";
+              diag.excludedAsSingletonCount++;
+              diag.excludedAsSingletonSpend += rSpendSafe(rowSing);
+            }
+          }
+          continue;
+        }
         var splitRes = _idpIhSimilaritySanityCheck(c.members, tokenSets, INDIRECT_HARM_FUZZY_THRESHOLD);
         if (splitRes.split) diag.fuzzyClustersSplitBySimilarity++;
-        if (!splitRes.kept || !splitRes.kept.length) continue;
+        var keptIdxs = (splitRes.kept || []);
+        /* Track members that were dropped by the sanity check (or
+           that survive in a sub-cluster too small to be useful) for
+           walk bucket 9 attribution. */
+        var keptSet = Object.create(null);
+        var mki;
+        for (mki = 0; mki < keptIdxs.length; mki++) keptSet[keptIdxs[mki]] = 1;
+        var origMi;
+        for (origMi = 0; origMi < c.members.length; origMi++) {
+          if (!keptSet[c.members[origMi]]) {
+            var ciDrop = fuzzyCandidates[c.members[origMi]];
+            if (ciDrop) {
+              var rowDrop = rows[ciDrop.id];
+              if (rowDrop && rowDrop._idpIhKey == null) {
+                rowDrop._idpIhClusterFate = "sanity_split";
+                diag.excludedBySanitySplitCount++;
+                diag.excludedBySanitySplitSpend += rSpendSafe(rowDrop);
+              }
+            }
+          }
+        }
+        /* If the cluster collapsed to <2 members after sanity check,
+           treat ALL remaining members as sanity-split (a singleton
+           emerging from a sanity rejection is still a sanity-split
+           outcome, not a singleton in the bucket-10 sense). */
+        if (keptIdxs.length < 2) {
+          var miColl;
+          for (miColl = 0; miColl < keptIdxs.length; miColl++) {
+            var ciColl = fuzzyCandidates[keptIdxs[miColl]];
+            if (ciColl) {
+              var rowColl = rows[ciColl.id];
+              if (rowColl && rowColl._idpIhKey == null) {
+                rowColl._idpIhClusterFate = "sanity_split";
+                diag.excludedBySanitySplitCount++;
+                diag.excludedBySanitySplitSpend += rSpendSafe(rowColl);
+              }
+            }
+          }
+          continue;
+        }
         var clusterKey = "IH#FUZZY#" + cl;
         var mergedDescriptions = [];
         var membersOut = [];
         var mi;
-        for (mi = 0; mi < splitRes.kept.length; mi++) {
-          var memberItemIdx = splitRes.kept[mi]; // index into fuzzyCandidates
+        for (mi = 0; mi < keptIdxs.length; mi++) {
+          var memberItemIdx = keptIdxs[mi]; // index into fuzzyCandidates
           var ci2 = fuzzyCandidates[memberItemIdx];
           if (!ci2) continue;
           var sliceIdx = ci2.id; // index into slice
@@ -11456,11 +11529,22 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
         }
       }
     }
-    /* Step 4: rows whose fuzzy cluster was rejected by the sanity
-       check fall out of IH analysis. Stamp them with empty key so
-       partKeyFn returns "" and they're skipped by the math. */
+    /* Step 4: any row still without a key falls out of IH analysis.
+       This catches fuzzy candidates whose cluster was never created
+       (no overlap with any other token set — also a "singleton"
+       outcome) in addition to the explicit bucket-9/10 attributions
+       above. We default these to singleton (bucket 10) since the
+       sanity check never saw them. */
     for (i = 0; i < rows.length; i++) {
-      if (rows[i] && rows[i]._idpIhKey == null) rows[i]._idpIhKey = "";
+      if (rows[i] && rows[i]._idpIhKey == null) {
+        if (!rows[i]._idpIhClusterFate) {
+          rows[i]._idpIhClusterFate = "singleton";
+          diag.excludedAsSingletonCount++;
+          var spLeft = +(rows[i].spend != null ? rows[i].spend : 0);
+          diag.excludedAsSingletonSpend += isFinite(spLeft) ? spLeft : 0;
+        }
+        rows[i]._idpIhKey = "";
+      }
     }
     return {
       rows: rows,
@@ -11524,7 +11608,13 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
       span.textContent = text;
       statusEl.appendChild(span);
     }
-    addChip("Indirect rows in scope: " + _idpIhFmtInt(prepDiag.totalIndirectRows || 0));
+    addChip("Indirect rows in scope: " + _idpIhFmtInt(diagnostics.inScopeRowsCount || prepDiag.totalIndirectRows || 0));
+    /* Walk bucket 0 — structural drops (missing supplier/site/year).
+       Surfaced as its own chip so the user sees this exclusion in the
+       chip row in addition to the walk. */
+    if ((diagnostics.structuralExcludedRowsCount || 0) > 0) {
+      addChip("Structural excluded (missing supplier/site/year): " + _idpIhFmtInt(diagnostics.structuralExcludedRowsCount), "warn");
+    }
     /* Pre-clean breakdown — one chip per rule so the user can see
        exactly which rule is driving exclusions, in spec order. */
     var preCleanTotal =
@@ -11536,8 +11626,15 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
       addChip("Pre-clean excluded: " + _idpIhFmtInt(preCleanTotal), "warn");
       if ((diagnostics.preCleanExcludedByDummyWord || 0) > 0)
         addChip("  · dummy/sample/test/etc: " + _idpIhFmtInt(diagnostics.preCleanExcludedByDummyWord));
-      if ((diagnostics.preCleanExcludedByZeroQtyOrPrice || 0) > 0)
-        addChip("  · qty/price ≤ 0: " + _idpIhFmtInt(diagnostics.preCleanExcludedByZeroQtyOrPrice));
+      if ((diagnostics.preCleanExcludedByZeroQtyOrPrice || 0) > 0) {
+        var b2Lab = "  · qty/price \u2264 0: " + _idpIhFmtInt(diagnostics.preCleanExcludedByZeroQtyOrPrice);
+        var b2C = +(diagnostics.preCleanExcludedByCreditNoteCount || 0);
+        var b2Z = +(diagnostics.preCleanExcludedByZeroOnlyCount || 0);
+        if (b2C + b2Z > 0) {
+          b2Lab += " (credits: " + _idpIhFmtInt(b2C) + ", zero: " + _idpIhFmtInt(b2Z) + ")";
+        }
+        addChip(b2Lab);
+      }
       if ((diagnostics.preCleanExcludedByMinLineSpend || 0) > 0)
         addChip("  · line spend < $50: " + _idpIhFmtInt(diagnostics.preCleanExcludedByMinLineSpend));
       if ((diagnostics.preCleanExcludedByMinUnitPrice || 0) > 0)
@@ -11547,7 +11644,17 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
     addChip("Keyed by fuzzy desc: " + _idpIhFmtInt(prepDiag.rowsKeyedByFuzzy || 0));
     addChip("Fuzzy clusters: " + _idpIhFmtInt(prepDiag.fuzzyClustersFormed || 0));
     if ((prepDiag.fuzzyClustersSplitBySimilarity || 0) > 0) {
-      addChip(_idpIhFmtInt(prepDiag.fuzzyClustersSplitBySimilarity) + " split by similarity", "warn");
+      addChip(_idpIhFmtInt(prepDiag.fuzzyClustersSplitBySimilarity) + " clusters split by similarity", "warn");
+    }
+    /* Walk buckets 10 + 11 — invoices that survived pre-clean but
+       had no usable key. Sourced from the math layer's post-pre-clean
+       counts so the chip and the in-app walk reconcile to the same
+       invoices. */
+    if ((diagnostics.excludedBySanitySplitRowsCount || 0) > 0) {
+      addChip("Fuzzy sanity-split rows: " + _idpIhFmtInt(diagnostics.excludedBySanitySplitRowsCount), "warn");
+    }
+    if ((diagnostics.excludedAsSingletonRowsCount || 0) > 0) {
+      addChip("Singleton rows (no clusterable match): " + _idpIhFmtInt(diagnostics.excludedAsSingletonRowsCount), "warn");
     }
     /* Group-level filter breakdown (combined across categories) — one
        chip per filter to mirror the pre-clean transparency. */
@@ -11766,6 +11873,24 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
       },
       onAfterRender: function () {
         try { _idpIhDecorateFuzzyRows(prep.fuzzyMetaByKey); } catch (eDeco) {}
+        /* Override Total Spend KPI tile BEFORE appending the walk so
+           a user opening the page sees a reconciled overall figure
+           even if they never expand the walk. */
+        try {
+          _idpIhOverrideTotalSpendKpi(
+            mathOut.diagnostics && mathOut.diagnostics.analyzedRowsSpend,
+            "ih-"
+          );
+        } catch (eKpi) {}
+        try {
+          var fGridForWalk = document.getElementById("ih-comparison-grid");
+          if (fGridForWalk) {
+            _idpIhRenderAssumptionWalk(fGridForWalk, mathOut.diagnostics, "ih-");
+          }
+        } catch (eWalk) {
+          if (typeof console !== "undefined" && console.warn)
+            console.warn("[indirect-harm] assumption walk render failed:", eWalk && eWalk.message ? eWalk.message : eWalk);
+        }
         try {
           if (typeof window !== "undefined" && window.location &&
               /[?&]ihverify=1\b/.test(String(window.location.search || ""))) {
@@ -11890,6 +12015,293 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
         " (bench $" + ((+t.benchmark || 0).toFixed(2)) +
         (t.benchmark_site ? " @ " + t.benchmark_site : "") + ")";
       body.appendChild(line);
+    }
+  }
+
+  /* Build the 13-row Assumption Walk:
+       row 0:  bookend (top) — every indirect invoice in scope (signed)
+       row 1:  structural exclusion (missing supplier/site/year)
+       rows 2-5:  pre-clean exclusions (dummy / qty-up≤0 / line<$50 / up<$0.05)
+       rows 6-9:  group-level exclusions (minTxn / minSav / minBench / ratio)
+       row 10: fuzzy sanity-check split
+       row 11: singleton
+       row 12: bookend (bottom) — analyzed unique rows (signed, = KPI tile)
+     Exclusion rows store COUNT as a positive integer and SPEND as the
+     absolute |line_spend| of the excluded rows. The renderer prefixes
+     "−" so the column reads as a subtraction regardless of sign of the
+     underlying line_spend. The signed reconciliation invariant
+       inScopeRowsSpend = analyzedRowsSpend + Σ signed(excluded)
+     is still verifiable from the diagnostics' non-Abs fields; the
+     display uses |·| so credit-note rows (negative line_spend) don't
+     read as if the rule grew the pool. */
+  function _idpIhBuildAssumptionWalkRows(diag) {
+    if (!diag) return [];
+    var b2Credit = +(diag.preCleanExcludedByCreditNoteCount || 0);
+    var b2Zero = +(diag.preCleanExcludedByZeroOnlyCount || 0);
+    var b2CreditSpendAbs = +(diag.preCleanExcludedByCreditNoteSpendAbs || 0);
+    var b2ZeroSpendAbs = +(diag.preCleanExcludedByZeroOnlySpendAbs || 0);
+    var rows = [
+      {
+        kind: "bookend_top",
+        label: "Total indirect invoices (in scope, post global filter)",
+        count: +(diag.inScopeRowsCount || 0),
+        spend: +(diag.inScopeRowsSpend || 0)
+      },
+      {
+        kind: "exclude",
+        label: "Excluded: missing supplier, missing site, or out-of-scope year (structural)",
+        count: +(diag.structuralExcludedRowsCount || 0),
+        spend: +(diag.structuralExcludedRowsSpendAbs || 0),
+        spendSigned: +(diag.structuralExcludedRowsSpend || 0)
+      },
+      {
+        kind: "exclude",
+        label: "Excluded: dummy/sample/test/NCR/return/credit/adjustment/void/reversal/placeholder wording",
+        count: +(diag.preCleanExcludedByDummyWord || 0),
+        spend: +(diag.preCleanExcludedByDummyWordSpendAbs || 0),
+        spendSigned: +(diag.preCleanExcludedByDummyWordSpend || 0)
+      },
+      {
+        kind: "exclude",
+        label: "Excluded: quantity \u2264 0 or unit price \u2264 0",
+        count: +(diag.preCleanExcludedByZeroQtyOrPrice || 0),
+        spend: +(diag.preCleanExcludedByZeroQtyOrPriceSpendAbs || 0),
+        spendSigned: +(diag.preCleanExcludedByZeroQtyOrPriceSpend || 0),
+        /* Sub-detail rendered as a small italic annotation row under
+           this bucket so reviewers can see how much is "real junk" vs.
+           "legitimate credits we just can't analyze". */
+        annotation: (b2Credit + b2Zero) > 0
+          ? "(of which credit-notes/returns: " + b2Credit.toLocaleString()
+              + " invoices / " + _idpIhFmtAnnotationUsd(b2CreditSpendAbs)
+              + "; literal zero qty/price: " + b2Zero.toLocaleString()
+              + " invoices / " + _idpIhFmtAnnotationUsd(b2ZeroSpendAbs) + ")"
+          : ""
+      },
+      {
+        kind: "exclude",
+        label: "Excluded: line spend < $" + INDIRECT_HARM_MIN_LINE_SPEND_USD,
+        count: +(diag.preCleanExcludedByMinLineSpend || 0),
+        spend: +(diag.preCleanExcludedByMinLineSpendSpendAbs || 0),
+        spendSigned: +(diag.preCleanExcludedByMinLineSpendSpend || 0)
+      },
+      {
+        kind: "exclude",
+        label: "Excluded: unit price < $" + INDIRECT_HARM_MIN_UNIT_PRICE_USD,
+        count: +(diag.preCleanExcludedByMinUnitPrice || 0),
+        spend: +(diag.preCleanExcludedByMinUnitPriceSpendAbs || 0),
+        spendSigned: +(diag.preCleanExcludedByMinUnitPriceSpend || 0)
+      },
+      {
+        kind: "exclude",
+        label: "Excluded: group had fewer than " + INDIRECT_HARM_MIN_TRANSACTIONS + " transactions",
+        count: +(diag.groupExcludedByMinTransactionsRowsCount || 0),
+        spend: +(diag.groupExcludedByMinTransactionsRowsSpendAbs || 0),
+        spendSigned: +(diag.groupExcludedByMinTransactionsRowsSpend || 0)
+      },
+      {
+        kind: "exclude",
+        label: "Excluded: group total savings < $" + INDIRECT_HARM_MIN_SAVINGS_USD.toLocaleString(),
+        count: +(diag.groupExcludedByMinSavingsRowsCount || 0),
+        spend: +(diag.groupExcludedByMinSavingsRowsSpendAbs || 0),
+        spendSigned: +(diag.groupExcludedByMinSavingsRowsSpend || 0)
+      },
+      {
+        kind: "exclude",
+        label: "Excluded: group benchmark < $" + INDIRECT_HARM_MIN_BENCHMARK_USD.toFixed(2),
+        count: +(diag.groupExcludedByMinBenchmarkRowsCount || 0),
+        spend: +(diag.groupExcludedByMinBenchmarkRowsSpendAbs || 0),
+        spendSigned: +(diag.groupExcludedByMinBenchmarkRowsSpend || 0)
+      },
+      {
+        kind: "exclude",
+        label: "Excluded: group max/min price ratio > " + INDIRECT_HARM_MAX_PRICE_RATIO + "\u00d7",
+        count: +(diag.groupExcludedByMaxRatioRowsCount || 0),
+        spend: +(diag.groupExcludedByMaxRatioRowsSpendAbs || 0),
+        spendSigned: +(diag.groupExcludedByMaxRatioRowsSpend || 0)
+      },
+      {
+        kind: "exclude",
+        label: "Excluded: fuzzy cluster failed similarity sanity-check",
+        count: +(diag.excludedBySanitySplitRowsCount || 0),
+        spend: +(diag.excludedBySanitySplitRowsSpendAbs || 0),
+        spendSigned: +(diag.excludedBySanitySplitRowsSpend || 0)
+      },
+      {
+        kind: "exclude",
+        label: "Excluded: singleton (no Part #, no clusterable matches in description)",
+        count: +(diag.excludedAsSingletonRowsCount || 0),
+        spend: +(diag.excludedAsSingletonRowsSpendAbs || 0),
+        spendSigned: +(diag.excludedAsSingletonRowsSpend || 0)
+      },
+      {
+        kind: "bookend_bottom",
+        label: "Total analyzed (matches Total Spend KPI at top)",
+        count: +(diag.analyzedRowsCount || 0),
+        spend: +(diag.analyzedRowsSpend || 0)
+      }
+    ];
+    return rows;
+  }
+
+  function _idpIhFmtAnnotationUsd(v) {
+    var n = +v;
+    if (!isFinite(n)) return "\u2014";
+    if (n === 0) return "$0";
+    return "$" + Math.round(Math.abs(n)).toLocaleString();
+  }
+  function _idpIhFmtWalkInt(v, kind) {
+    var n = +v;
+    if (!isFinite(n)) return "\u2014";
+    if (kind === "exclude") {
+      /* Exclusion rows always render as a minus subtraction. */
+      if (n === 0) return "0";
+      return "\u2212" + Math.abs(Math.round(n)).toLocaleString();
+    }
+    if (n === 0) return "0";
+    if (n < 0) return "\u2212" + Math.abs(Math.round(n)).toLocaleString();
+    return Math.round(n).toLocaleString();
+  }
+  function _idpIhFmtWalkUsd(v, kind) {
+    var n = +v;
+    if (!isFinite(n)) return "\u2014";
+    if (kind === "exclude") {
+      if (n === 0) return "$0";
+      return "\u2212$" + Math.round(Math.abs(n)).toLocaleString();
+    }
+    if (n === 0) return "$0";
+    if (n < 0) return "\u2212$" + Math.round(Math.abs(n)).toLocaleString();
+    return "$" + Math.round(n).toLocaleString();
+  }
+
+  /* Render the Assumption Walk collapsible at the bottom of fGrid.
+     Visual style matches "Harmonization metrics by opportunity
+     category" — same harmBuildCollapsibleSection wrapper, default
+     variant, collapsed by default per user spec. */
+  function _idpIhRenderAssumptionWalk(fGrid, mathDiag, sectionIdPrefix) {
+    if (!fGrid || !mathDiag) return;
+    var walkRows = _idpIhBuildAssumptionWalkRows(mathDiag);
+    var prefix = sectionIdPrefix || "ih-";
+    var sectionId = prefix + "assumption-walk";
+    /* Force collapsed by default the first time the user sees this
+       section. harmCollapseStateExpanded defaults to expanded=true
+       otherwise, but per spec the walk is collapsed by default.
+       Stamp a "collapsed" preference into the shared collapse-state
+       JSON only when the user has no prior preference recorded for
+       this sectionId; otherwise respect the user's last toggle. */
+    try {
+      if (typeof localStorage !== "undefined") {
+        var rawSt = localStorage.getItem(HARM_COLLAPSE_STATE_KEY);
+        var stMap = {};
+        if (rawSt) {
+          try { stMap = JSON.parse(rawSt) || {}; } catch (eParseSt) { stMap = {}; }
+          if (typeof stMap !== "object" || stMap === null) stMap = {};
+        }
+        if (stMap[sectionId] !== "expanded" && stMap[sectionId] !== "collapsed") {
+          stMap[sectionId] = "collapsed";
+          localStorage.setItem(HARM_COLLAPSE_STATE_KEY, JSON.stringify(stMap));
+        }
+      }
+    } catch (eLs) {}
+    var inner = document.createElement("div");
+    inner.className = "harmonization-section-inner";
+    var tbl = document.createElement("table");
+    tbl.className = "ih-walk-table";
+    tbl.style.cssText = "width:100%;font-size:0.78rem;line-height:1.3;border-collapse:collapse;font-variant-numeric:tabular-nums;";
+    var thead = document.createElement("thead");
+    var thr = document.createElement("tr");
+    var thStyle = "text-align:left;font-weight:600;color:#374151;padding:6px 10px;border-bottom:1px solid #e5e7eb;background:#f9fafb;";
+    var thStyleR = thStyle + "text-align:right;";
+    var th1 = document.createElement("th"); th1.style.cssText = thStyle; th1.textContent = "Assumption"; thr.appendChild(th1);
+    var th2 = document.createElement("th"); th2.style.cssText = thStyleR; th2.textContent = "Invoices"; thr.appendChild(th2);
+    var th3 = document.createElement("th"); th3.style.cssText = thStyleR; th3.textContent = "Spend ($)"; thr.appendChild(th3);
+    thead.appendChild(thr);
+    tbl.appendChild(thead);
+    var tbody = document.createElement("tbody");
+    var i;
+    for (i = 0; i < walkRows.length; i++) {
+      var wr = walkRows[i];
+      var isBookend = wr.kind === "bookend_top" || wr.kind === "bookend_bottom";
+      var tr = document.createElement("tr");
+      var weight = isBookend ? "600" : "400";
+      var color = "#111";
+      var bg = isBookend ? "background:#f3f4f6;" : "";
+      var border = (i === 0) ? "" : "border-top:1px solid #f1f5f9;";
+      var cellLeft = "padding:5px 10px;color:" + color + ";font-weight:" + weight + ";" + bg + border;
+      var cellRight = cellLeft + "text-align:right;";
+      var tdLab = document.createElement("td"); tdLab.style.cssText = cellLeft; tdLab.textContent = wr.label;
+      var tdCnt = document.createElement("td"); tdCnt.style.cssText = cellRight; tdCnt.textContent = _idpIhFmtWalkInt(wr.count, wr.kind);
+      var tdSp = document.createElement("td"); tdSp.style.cssText = cellRight; tdSp.textContent = _idpIhFmtWalkUsd(wr.spend, wr.kind);
+      tr.appendChild(tdLab); tr.appendChild(tdCnt); tr.appendChild(tdSp);
+      tbody.appendChild(tr);
+      /* Bucket-2 sub-detail row (credit-notes vs zero-only). Annotation
+         is a small italic line that visually nests under bucket 2. */
+      if (wr.annotation) {
+        var trA = document.createElement("tr");
+        var tdA = document.createElement("td");
+        tdA.colSpan = 3;
+        tdA.style.cssText = "padding:0 10px 6px 26px;color:#6b7280;font-size:0.7rem;font-style:italic;line-height:1.3;border-top:none;";
+        tdA.textContent = wr.annotation;
+        trA.appendChild(tdA);
+        tbody.appendChild(trA);
+      }
+    }
+    tbl.appendChild(tbody);
+    inner.appendChild(tbl);
+    var footer = document.createElement("p");
+    footer.style.cssText = "margin-top:8px;font-size:0.7rem;color:#6b7280;line-height:1.4;";
+    /* Two-line footer: sequential-attribution note + spend-column
+       sign-convention note. Both anchor the reader on how the walk
+       reconciles. */
+    footer.innerHTML =
+      "Exclusions applied in the order shown; each invoice is attributed to the first rule that excludes it." +
+      "<br/>Spend column shows the absolute value of excluded line_spend (including negative-spend credits/returns). " +
+      "Top and bottom bookends are signed totals; bookends reconcile exactly. " +
+      "Intermediate row sums may exceed the bookend difference due to credit-note offsets.";
+    inner.appendChild(footer);
+    var wrapped = harmBuildCollapsibleSection(sectionId, {
+      title: "Assumption Walk \u2014 How we got from total indirect invoices to analyzed spend (click to expand)",
+      variant: "default"
+    }, inner);
+    wrapped.classList.add("harmonization-section");
+    /* Remove any prior render so re-renders don't stack. */
+    var prior = document.getElementById(sectionId + "-host");
+    if (prior && prior.parentNode) prior.parentNode.removeChild(prior);
+    var host = document.createElement("div");
+    host.id = sectionId + "-host";
+    host.appendChild(wrapped);
+    fGrid.appendChild(host);
+    return walkRows;
+  }
+
+  /* Override the Overall Summary's "Total Spend" KPI tile to show the
+     UNIQUE analyzed-row spend (each invoice counted once) instead of
+     the per-opp sum (which double-counts rows in BOTH Cat 1 and Cat 2
+     kept groups). Walk bottom row uses this same value so the two
+     reconcile to the dollar. Per-category strips are NOT changed —
+     within a category the opps are MECE on rows. */
+  function _idpIhOverrideTotalSpendKpi(analyzedRowsSpend, sectionIdPrefix) {
+    if (typeof document === "undefined") return;
+    if (analyzedRowsSpend == null || !isFinite(+analyzedRowsSpend)) return;
+    var prefix = sectionIdPrefix || "ih-";
+    /* The Overall Summary collapsible was built with section id
+       <prefix>overall-summary, so its content body is
+       content-<prefix>overall-summary and the KPI strip's blue 5-card
+       grid is inside that body. */
+    var body = document.getElementById("content-" + prefix + "overall-summary");
+    if (!body) return;
+    var cards = body.querySelectorAll(".idp-harm-summary-card");
+    var c;
+    for (c = 0; c < cards.length; c++) {
+      var card = cards[c];
+      var lbl = card.firstChild;
+      if (!lbl || !lbl.textContent) continue;
+      if (lbl.textContent.trim().toUpperCase() === "TOTAL SPEND") {
+        var valNode = card.children[1];
+        if (valNode) {
+          valNode.textContent = fmtOppUSD(analyzedRowsSpend);
+        }
+        break;
+      }
     }
   }
 
@@ -12023,6 +12435,55 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
     var wsM = XLSX.utils.json_to_sheet(methodologyRows);
     wsM["!cols"] = [{ wch: 56 }, { wch: 80 }];
     XLSX.utils.book_append_sheet(wb, wsM, "Methodology");
+    /* Spend Reconciliation sheet — mirror of the in-app Assumption
+       Walk. Bookends are signed; exclusion rows are written as
+       negative numbers (count + spend) so the column visually reads
+       as a subtraction in Excel. The spend value uses the absolute
+       magnitude of excluded line_spend, matching the in-app render. */
+    var walkRowsX = _idpIhBuildAssumptionWalkRows(d);
+    var reconRowsX = walkRowsX.map(function (wr) {
+      var sign = (wr.kind === "exclude") ? -1 : 1;
+      var cnt = sign * (+wr.count || 0);
+      var sp = sign * Math.round((+wr.spend || 0) * 100) / 100;
+      return {
+        "Assumption": wr.label,
+        "Invoices": cnt,
+        "Spend ($)": sp
+      };
+    });
+    /* Insert the bucket-2 credit-note/zero-only sub-row immediately
+       after bucket 2 (qty/price ≤ 0) so the Excel sheet matches the
+       in-app annotation. Locate the bucket by its label prefix. */
+    var b2Idx = -1;
+    for (var rxI = 0; rxI < reconRowsX.length; rxI++) {
+      if (String(reconRowsX[rxI]["Assumption"]).indexOf("Excluded: quantity") === 0) { b2Idx = rxI; break; }
+    }
+    if (b2Idx >= 0) {
+      var b2CCnt = +(d.preCleanExcludedByCreditNoteCount || 0);
+      var b2ZCnt = +(d.preCleanExcludedByZeroOnlyCount || 0);
+      var b2CSp = +(d.preCleanExcludedByCreditNoteSpendAbs || 0);
+      var b2ZSp = +(d.preCleanExcludedByZeroOnlySpendAbs || 0);
+      if (b2CCnt + b2ZCnt > 0) {
+        var note = "    of which credit-notes/returns: " + b2CCnt.toLocaleString()
+          + " invoices / $" + Math.round(b2CSp).toLocaleString()
+          + "; literal zero qty/price: " + b2ZCnt.toLocaleString()
+          + " invoices / $" + Math.round(b2ZSp).toLocaleString();
+        reconRowsX.splice(b2Idx + 1, 0, { "Assumption": note, "Invoices": "", "Spend ($)": "" });
+      }
+    }
+    reconRowsX.push({
+      "Assumption": "Exclusions applied in the order shown; each invoice is attributed to the first rule that excludes it.",
+      "Invoices": "",
+      "Spend ($)": ""
+    });
+    reconRowsX.push({
+      "Assumption": "Spend column shows the absolute value of excluded line_spend (including negative-spend credits/returns). Top and bottom bookends are signed totals; bookends reconcile exactly. Intermediate row sums may exceed the bookend difference due to credit-note offsets.",
+      "Invoices": "",
+      "Spend ($)": ""
+    });
+    var wsR = XLSX.utils.json_to_sheet(reconRowsX);
+    wsR["!cols"] = [{ wch: 86 }, { wch: 14 }, { wch: 18 }];
+    XLSX.utils.book_append_sheet(wb, wsR, "Spend Reconciliation");
     var ts = new Date().toISOString().slice(0, 10);
     XLSX.writeFile(wb, "Indirect_Harmonization_Opportunities_" + ts + ".xlsx");
   }

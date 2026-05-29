@@ -1140,11 +1140,56 @@
     }
     var diag = {
       rawRowsIn: rows ? rows.length : 0,
+      /* Walk top-bookend — every indirect invoice in the input slice.
+         The walk reconciles from this raw total down to analyzedRowsSpend
+         (bottom bookend), with every drop made visible. Bookends use
+         SIGNED spend; intermediate exclusion buckets are tracked both
+         signed and absolute (the in-app walk renders absolute so
+         credit-note exclusions show as a clear "minus"). */
+      inScopeRowsCount: 0,
+      inScopeRowsSpend: 0,
+      /* Walk bucket 0 — structural drops: row missing the analysis
+         year OR missing supplier OR missing site. Made explicit so the
+         walk no longer silently swallows ~75% of indirect rows. */
+      structuralExcludedRowsCount: 0,
+      structuralExcludedRowsSpend: 0,
+      structuralExcludedRowsSpendAbs: 0,
       preCleanExcludedByDummyWord: 0,
+      preCleanExcludedByDummyWordSpend: 0,
+      preCleanExcludedByDummyWordSpendAbs: 0,
       preCleanExcludedByZeroQtyOrPrice: 0,
+      preCleanExcludedByZeroQtyOrPriceSpend: 0,
+      preCleanExcludedByZeroQtyOrPriceSpendAbs: 0,
+      /* Bucket 2 sub-breakdown (credit-notes/returns vs. literal zero
+         qty-or-price). Lets the walk annotate how much of the bucket-2
+         exclusion is "legitimate credits we can't analyze" vs. "real
+         junk rows". */
+      preCleanExcludedByCreditNoteCount: 0,
+      preCleanExcludedByCreditNoteSpend: 0,
+      preCleanExcludedByCreditNoteSpendAbs: 0,
+      preCleanExcludedByZeroOnlyCount: 0,
+      preCleanExcludedByZeroOnlySpend: 0,
+      preCleanExcludedByZeroOnlySpendAbs: 0,
       preCleanExcludedByMinLineSpend: 0,
+      preCleanExcludedByMinLineSpendSpend: 0,
+      preCleanExcludedByMinLineSpendSpendAbs: 0,
       preCleanExcludedByMinUnitPrice: 0,
+      preCleanExcludedByMinUnitPriceSpend: 0,
+      preCleanExcludedByMinUnitPriceSpendAbs: 0,
       rowsAfterPreClean: 0,
+      /* In-scope rows that survived pre-clean but had no part key.
+         Split between bucket 10 (sanity-check splits) and bucket 11
+         (singletons — no clusterable peer) based on the row's
+         `_idpIhClusterFate` flag stamped by _idpIhBuildPrep. Tracking
+         these only post-pre-clean (rather than off the raw slice) is
+         how the walk stays MECE — a singleton with qty=0 is bucket 2
+         (qty/up≤0), not bucket 11. */
+      excludedBySanitySplitRowsCount: 0,
+      excludedBySanitySplitRowsSpend: 0,
+      excludedBySanitySplitRowsSpendAbs: 0,
+      excludedAsSingletonRowsCount: 0,
+      excludedAsSingletonRowsSpend: 0,
+      excludedAsSingletonRowsSpendAbs: 0,
       targetYear: null,
       rowsKeyedByPartNum: 0,
       rowsKeyedByFuzzy: 0,
@@ -1171,58 +1216,193 @@
       dedupReassignmentsTotal: 0,
       dedupReassignedToCat1: 0,
       dedupReassignedToCat2: 0,
-      dedupTiesResolvedToCat1: 0
+      dedupTiesResolvedToCat1: 0,
+      /* Walk buckets 5-8 — per-row attribution after group filters and
+         post-dedup. Each row's Cat 1 group is checked in display order
+         (minTxn → minSavings → minBenchmark → maxRatio); a row whose
+         Cat 1 group OR Cat 2 group is kept is "analyzed" instead. */
+      groupExcludedByMinTransactionsRowsCount: 0,
+      groupExcludedByMinTransactionsRowsSpend: 0,
+      groupExcludedByMinTransactionsRowsSpendAbs: 0,
+      groupExcludedByMinSavingsRowsCount: 0,
+      groupExcludedByMinSavingsRowsSpend: 0,
+      groupExcludedByMinSavingsRowsSpendAbs: 0,
+      groupExcludedByMinBenchmarkRowsCount: 0,
+      groupExcludedByMinBenchmarkRowsSpend: 0,
+      groupExcludedByMinBenchmarkRowsSpendAbs: 0,
+      groupExcludedByMaxRatioRowsCount: 0,
+      groupExcludedByMaxRatioRowsSpend: 0,
+      groupExcludedByMaxRatioRowsSpendAbs: 0,
+      /* Walk bottom-bookend — UNIQUE rows in at least one kept opp. */
+      analyzedRowsCount: 0,
+      analyzedRowsSpend: 0
     };
     if (!rows || !rows.length) return { cat1Opps: [], cat2Opps: [], diagnostics: diag };
-    if (rows.length > MAX_CLIENT_HARM_INPUT_ROWS) {
-      diag._truncatedInputBelow = MAX_CLIENT_HARM_INPUT_ROWS;
-      rows = rows.slice(0, MAX_CLIENT_HARM_INPUT_ROWS);
-    }
-    /* PRE-CLEAN + NORMALIZE pass. Rules in order: dummy word → qty/up <= 0 →
-       min line spend → min unit price. Each row is excluded by the FIRST
-       rule it violates (so the counts are MECE — a single row can't
-       inflate two buckets at once). */
-    var work = [];
+    /* No upstream truncation here — Indirect Harm runs in <1s on
+       300k rows in benchmark, and the Assumption Walk's top-bookend
+       must equal the Spend Overview KPI tile by spec. The legacy
+       MAX_CLIENT_HARM_INPUT_ROWS cap belongs only to standard
+       Harmonization (calculateFromRows). */
+    /* PASS 1: structural sanity (year in range, supplier+site present)
+       AND target-year determination. Rows that fail structural sanity
+       are out of the walk's "in-scope" universe — they're not counted
+       in any walk bucket (the walk reconciles within the analysis
+       target year only, matching the rest of the tab's KPIs). */
     var nowY = new Date().getFullYear();
     var i, r, yr, partKey, sup, site, sp, q, up;
+    var yearsSeen = [];
+    var yComplete = [];
+    var maxInData = -Infinity;
     for (i = 0; i < rows.length; i++) {
       r = rows[i];
       if (!r) continue;
-      partKey = partKeyFn(r);
-      if (!partKey) continue;
       yr = rowYear(r);
       if (!yr || yr < 1990 || yr > 2100) continue;
       sup = r.supplier != null ? String(r.supplier).trim() : "";
       site = r.site != null ? String(r.site).trim() : "";
       if (!sup || !site) continue;
+      if (yr > maxInData) maxInData = yr;
+      if (yr < nowY) yComplete.push(yr);
+      yearsSeen.push(yr);
+    }
+    var target_year;
+    if (forcedYear != null && forcedYear >= 1990 && forcedYear <= 2100) {
+      target_year = forcedYear;
+    } else if (yearsSeen.length) {
+      if (yComplete.length) {
+        /* Math.max.apply blows the call stack on 100k+ entries; loop
+           is O(N) and safe for the in-scope-sized inputs we now allow. */
+        var maxC = -Infinity;
+        for (var yi = 0; yi < yComplete.length; yi++) {
+          if (yComplete[yi] > maxC) maxC = yComplete[yi];
+        }
+        target_year = maxC;
+      } else {
+        target_year = Math.min(maxInData, nowY);
+      }
+    } else {
+      target_year = 0;
+    }
+    diag.targetYear = target_year || null;
+    if (!target_year) return { cat1Opps: [], cat2Opps: [], diagnostics: diag };
+
+    /* PASS 2: walk over EVERY indirect input row so the top bookend
+       matches the Spend Overview KPI tile. Attribute each row to
+       exactly one bucket in display order:
+         0. structural (year != target / missing supplier / missing site)
+         1. dummy word
+         2. qty ≤ 0 or unit price ≤ 0 (signed sub-split: credit-note vs zero-only)
+         3. line spend < $50
+         4. unit price < $0.05
+         5–8. group filters (attributed later, post-emit)
+         9. fuzzy sanity-check split
+        10. singleton (no Part #, no clusterable peer)
+        11. analyzed
+       Pre-clean rules use first-failing-rule attribution to stay MECE. */
+    var work = [];
+    for (i = 0; i < rows.length; i++) {
+      r = rows[i];
+      if (!r) continue;
+      /* For walk in-scope spend, treat non-finite spend as 0 so the
+         total is a valid number; the row still counts as in-scope (an
+         invoice with garbage spend is structurally present). */
+      sp = +(r.spend != null ? r.spend : 0);
+      if (!isFinite(sp)) sp = 0;
+      diag.inScopeRowsCount++;
+      diag.inScopeRowsSpend += sp;
+      /* Bucket 0: structural — year missing/out-of-range, year !=
+         target, or supplier/site blank. Surfaced as a real exclusion
+         row in the walk (was previously a silent drop). */
+      yr = rowYear(r);
+      sup = r.supplier != null ? String(r.supplier).trim() : "";
+      site = r.site != null ? String(r.site).trim() : "";
+      if (!yr || yr < 1990 || yr > 2100 || yr !== target_year || !sup || !site) {
+        diag.structuralExcludedRowsCount++;
+        diag.structuralExcludedRowsSpend += sp;
+        diag.structuralExcludedRowsSpendAbs += Math.abs(sp);
+        continue;
+      }
+      /* Bucket 1: dummy word in r.material or r.noun. */
       if (dummyRegex) {
         var descA = r.material != null ? String(r.material) : "";
         var descB = r.noun != null ? String(r.noun) : "";
         if (dummyRegex.test(descA) || dummyRegex.test(descB)) {
           diag.preCleanExcludedByDummyWord++;
+          diag.preCleanExcludedByDummyWordSpend += sp;
+          diag.preCleanExcludedByDummyWordSpendAbs += Math.abs(sp);
           continue;
         }
       }
-      sp = +(r.spend != null ? r.spend : 0);
+      /* Bucket 2: qty ≤ 0 or unit price ≤ 0. Sub-split:
+           - credit-note / return: qty < 0 OR sp < 0
+           - literal zero: qty == 0 OR sp == 0 (and neither is negative) */
       q = +(r.quantity != null ? r.quantity : r.qty != null ? r.qty : 0);
-      if (!isFinite(sp) || !isFinite(q) || q <= 0 || sp <= 0) {
+      if (!isFinite(q)) q = 0;
+      if (q <= 0 || sp <= 0) {
         diag.preCleanExcludedByZeroQtyOrPrice++;
+        diag.preCleanExcludedByZeroQtyOrPriceSpend += sp;
+        diag.preCleanExcludedByZeroQtyOrPriceSpendAbs += Math.abs(sp);
+        if (q < 0 || sp < 0) {
+          diag.preCleanExcludedByCreditNoteCount++;
+          diag.preCleanExcludedByCreditNoteSpend += sp;
+          diag.preCleanExcludedByCreditNoteSpendAbs += Math.abs(sp);
+        } else {
+          diag.preCleanExcludedByZeroOnlyCount++;
+          diag.preCleanExcludedByZeroOnlySpend += sp;
+          diag.preCleanExcludedByZeroOnlySpendAbs += Math.abs(sp);
+        }
         continue;
       }
+      /* Bucket 3: line spend < $50. */
       if (sp < minLineSpendUsd) {
         diag.preCleanExcludedByMinLineSpend++;
+        diag.preCleanExcludedByMinLineSpendSpend += sp;
+        diag.preCleanExcludedByMinLineSpendSpendAbs += Math.abs(sp);
         continue;
       }
       up = sp / q;
       if (!isFinite(up) || up <= 0) {
+        /* Defensive — by definition impossible here (sp>0 ∧ q>0), but
+           bucket 2 owns this case if the floating-point divide
+           produces a non-finite or non-positive up. Counts as zero-only
+           since signs were both positive on entry. */
         diag.preCleanExcludedByZeroQtyOrPrice++;
+        diag.preCleanExcludedByZeroQtyOrPriceSpend += sp;
+        diag.preCleanExcludedByZeroQtyOrPriceSpendAbs += Math.abs(sp);
+        diag.preCleanExcludedByZeroOnlyCount++;
+        diag.preCleanExcludedByZeroOnlySpend += sp;
+        diag.preCleanExcludedByZeroOnlySpendAbs += Math.abs(sp);
         continue;
       }
+      /* Bucket 4: unit price < $0.05. */
       if (up < minUnitPriceUsd) {
         diag.preCleanExcludedByMinUnitPrice++;
+        diag.preCleanExcludedByMinUnitPriceSpend += sp;
+        diag.preCleanExcludedByMinUnitPriceSpendAbs += Math.abs(sp);
         continue;
       }
       diag.rowsAfterPreClean++;
+      /* Key check AFTER pre-clean so a singleton/sanity-split row
+         with (say) qty<=0 is correctly attributed to bucket 2 rather
+         than bucket 9/10. The fate flag is stamped by the IH module's
+         _idpIhBuildPrep. */
+      partKey = partKeyFn(r);
+      if (!partKey) {
+        var fate = r._idpIhClusterFate;
+        if (fate === "sanity_split") {
+          diag.excludedBySanitySplitRowsCount++;
+          diag.excludedBySanitySplitRowsSpend += sp;
+          diag.excludedBySanitySplitRowsSpendAbs += Math.abs(sp);
+        } else {
+          /* Default to singleton — covers "singleton" tag explicitly
+             AND any fuzzy candidate that never got a fate set
+             (defensive). */
+          diag.excludedAsSingletonRowsCount++;
+          diag.excludedAsSingletonRowsSpend += sp;
+          diag.excludedAsSingletonRowsSpendAbs += Math.abs(sp);
+        }
+        continue;
+      }
       work.push({
         yr: yr,
         part: partKey,
@@ -1233,29 +1413,12 @@
         qty: q,
         unit_price: up,
         _rawIdx: i,
+        _origRow: r,
         _keyedByFuzzy: partKey.indexOf("IH#FUZZY#") === 0
       });
       if (partKey.indexOf("IH#FUZZY#") === 0) diag.rowsKeyedByFuzzy++;
       else diag.rowsKeyedByPartNum++;
     }
-    if (!work.length) return { cat1Opps: [], cat2Opps: [], diagnostics: diag };
-    /* Pick target year (forced or latest complete; same policy as
-       buildBaseTable so this function picks the same year as Cat 1/3
-       when invoked on an unfiltered slice). */
-    var target_year;
-    if (forcedYear != null && forcedYear >= 1990 && forcedYear <= 2100) {
-      target_year = forcedYear;
-    } else {
-      var maxInData = -Infinity;
-      var yComplete = [];
-      for (i = 0; i < work.length; i++) {
-        if (work[i].yr > maxInData) maxInData = work[i].yr;
-        if (work[i].yr < nowY) yComplete.push(work[i].yr);
-      }
-      target_year = yComplete.length ? Math.max.apply(null, yComplete) : Math.min(maxInData, nowY);
-    }
-    diag.targetYear = target_year;
-    work = work.filter(function (w) { return w.yr === target_year; });
     if (!work.length) return { cat1Opps: [], cat2Opps: [], diagnostics: diag };
     /* Build Cat 1 groups: (key, site, supplier). Each transaction lands
        in exactly one Cat 1 group. Cat 2 groups: (key, supplier). */
@@ -1274,24 +1437,28 @@
     }
     /* Cat 1 group eligibility — MIN_TRANSACTIONS, MIN_BENCHMARK,
        MAX_RATIO. Cat 1 benchmark = MIN unit price across the group's
-       transactions. minSavingsUsd is enforced LATER post-dedup. */
+       transactions. minSavingsUsd is enforced LATER post-dedup.
+       c1Fail[gk] = failure reason ("minTxn"|"minBenchmark"|"maxRatio"|
+       "minSavings" set later by emit) so the walk attribution loop
+       can blame the right rule. */
     var c1Filt = { minTxn: 0, minBenchmark: 0, maxRatio: 0 };
     var c1Stats = Object.create(null);
+    var c1Fail = Object.create(null);
     var gk;
     for (gk in cat1Groups) {
       if (!Object.prototype.hasOwnProperty.call(cat1Groups, gk)) continue;
       diag.cat1GroupsTotal++;
       var g1 = cat1Groups[gk];
-      if (g1.rows.length < minTransactions) { c1Filt.minTxn++; continue; }
+      if (g1.rows.length < minTransactions) { c1Filt.minTxn++; c1Fail[gk] = "minTxn"; continue; }
       var c1Min = Infinity, c1Max = -Infinity;
       for (var di = 0; di < g1.rows.length; di++) {
         var upi = g1.rows[di].unit_price;
         if (upi < c1Min) c1Min = upi;
         if (upi > c1Max) c1Max = upi;
       }
-      if (c1Min < minBenchmarkUsd) { c1Filt.minBenchmark++; continue; }
+      if (c1Min < minBenchmarkUsd) { c1Filt.minBenchmark++; c1Fail[gk] = "minBenchmark"; continue; }
       var c1Ratio = c1Min > 0 ? (c1Max / c1Min) : Infinity;
-      if (c1Ratio > maxPriceRatio) { c1Filt.maxRatio++; continue; }
+      if (c1Ratio > maxPriceRatio) { c1Filt.maxRatio++; c1Fail[gk] = "maxRatio"; continue; }
       c1Stats[gk] = { minUP: c1Min, maxUP: c1Max, ratio: c1Ratio };
     }
     diag.cat1ExcludedByMinTransactions = c1Filt.minTxn;
@@ -1424,7 +1591,7 @@
         if (!stat) continue;
         var g = cat1Groups[kk];
         var grpTotal = totals[kk] ? totals[kk].sav : 0;
-        if (grpTotal < minSavingsUsd) { diag.cat1ExcludedByMinSavings++; continue; }
+        if (grpTotal < minSavingsUsd) { diag.cat1ExcludedByMinSavings++; c1Fail[kk] = "minSavings"; continue; }
         var benchmark = stat.minUP;
         var sortedRows = g.rows.slice().sort(function (a, b) { return b.unit_price - a.unit_price; });
         var supRows = [];
@@ -1481,7 +1648,8 @@
           analysis_year: target_year,
           year: target_year,
           bar_label_field: "label",
-          _keyedByFuzzy: g.key.indexOf("IH#FUZZY#") === 0
+          _keyedByFuzzy: g.key.indexOf("IH#FUZZY#") === 0,
+          _c1Key: kk
         });
       }
       return out;
@@ -1578,7 +1746,8 @@
           export_rows: exportRows,
           analysis_year: target_year,
           year: target_year,
-          _keyedByFuzzy: g.key.indexOf("IH#FUZZY#") === 0
+          _keyedByFuzzy: g.key.indexOf("IH#FUZZY#") === 0,
+          _c2Key: kk
         });
       }
       return out;
@@ -1599,6 +1768,56 @@
     diag.cat2GroupsKept = cat2Opps.length;
     diag.cat1TotalSavings = cat1Opps.reduce(function (s, p) { return s + (+p.savings || 0); }, 0);
     diag.cat2TotalSavings = cat2Opps.reduce(function (s, p) { return s + (+p.savings || 0); }, 0);
+    /* Walk attribution pass — per-row, post-emit. A row is "analyzed"
+       iff its Cat 1 group OR its Cat 2 group emitted an opportunity
+       (each group's total_spend includes ALL its rows, dedup or not).
+       Otherwise we attribute to Cat 1's failure reason in the
+       user-spec display order (minTxn → minSavings → minBenchmark →
+       maxRatio). Cat 1 always has a group; if c1Fail[k] is missing
+       the row's Cat 1 group must have been kept (so c1Kept catches
+       it); we never fall through to the safety net in practice. */
+    var c1Kept = Object.create(null);
+    var c2Kept = Object.create(null);
+    var oi;
+    for (oi = 0; oi < cat1Opps.length; oi++) {
+      if (cat1Opps[oi] && cat1Opps[oi]._c1Key) c1Kept[cat1Opps[oi]._c1Key] = 1;
+    }
+    for (oi = 0; oi < cat2Opps.length; oi++) {
+      if (cat2Opps[oi] && cat2Opps[oi]._c2Key) c2Kept[cat2Opps[oi]._c2Key] = 1;
+    }
+    var wi, wr, failReason;
+    for (wi = 0; wi < work.length; wi++) {
+      wr = work[wi];
+      if (c1Kept[wr._c1Key] || c2Kept[wr._c2Key]) {
+        diag.analyzedRowsCount++;
+        diag.analyzedRowsSpend += wr.spend;
+        continue;
+      }
+      failReason = c1Fail[wr._c1Key];
+      var wrAbs = Math.abs(wr.spend);
+      if (failReason === "minTxn") {
+        diag.groupExcludedByMinTransactionsRowsCount++;
+        diag.groupExcludedByMinTransactionsRowsSpend += wr.spend;
+        diag.groupExcludedByMinTransactionsRowsSpendAbs += wrAbs;
+      } else if (failReason === "minSavings") {
+        diag.groupExcludedByMinSavingsRowsCount++;
+        diag.groupExcludedByMinSavingsRowsSpend += wr.spend;
+        diag.groupExcludedByMinSavingsRowsSpendAbs += wrAbs;
+      } else if (failReason === "minBenchmark") {
+        diag.groupExcludedByMinBenchmarkRowsCount++;
+        diag.groupExcludedByMinBenchmarkRowsSpend += wr.spend;
+        diag.groupExcludedByMinBenchmarkRowsSpendAbs += wrAbs;
+      } else if (failReason === "maxRatio") {
+        diag.groupExcludedByMaxRatioRowsCount++;
+        diag.groupExcludedByMaxRatioRowsSpend += wr.spend;
+        diag.groupExcludedByMaxRatioRowsSpendAbs += wrAbs;
+      } else {
+        /* Safety net — should be unreachable in practice. */
+        diag.groupExcludedByMinSavingsRowsCount++;
+        diag.groupExcludedByMinSavingsRowsSpend += wr.spend;
+        diag.groupExcludedByMinSavingsRowsSpendAbs += wrAbs;
+      }
+    }
     diag.cat1Top5 = cat1Opps.slice(0, 5).map(function (p) {
       return {
         item: p.item,
