@@ -11291,13 +11291,24 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
   }
 
   /* Return only the rows currently visible after the global Spend
-     Review filter bar, additionally restricted to L1 = Indirect. */
+     Review filter bar, additionally restricted to L1 = Indirect.
+     Source of truth = getFilteredRowObjects() (same call Spend
+     Overview, Harmonization, and every other tab uses). Previous
+     attempt at reading a `allRowsFiltered` window-global was a typo
+     — no such variable is ever assigned anywhere in the dashboard,
+     which is why the IH tab was rendering empty under default
+     filters while Spend Overview's KPI tile correctly showed
+     $388.1M for the same global state. */
   function _idpIhGetIndirectRows() {
-    if (typeof allRowsFiltered === "undefined" || !allRowsFiltered || !allRowsFiltered.length) return [];
+    var src = null;
+    try {
+      if (typeof getFilteredRowObjects === "function") src = getFilteredRowObjects();
+    } catch (eGfr) { src = null; }
+    if (!src || !src.length) return [];
     var out = [];
     var i;
-    for (i = 0; i < allRowsFiltered.length; i++) {
-      var r = allRowsFiltered[i];
+    for (i = 0; i < src.length; i++) {
+      var r = src[i];
       if (!r) continue;
       var c1 = String(r.category_l1 != null ? r.category_l1 : r.c1 != null ? r.c1 : "").trim().toLowerCase();
       if (c1 === "indirect" || c1 === "indirects") out.push(r);
@@ -11608,7 +11619,14 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
       span.textContent = text;
       statusEl.appendChild(span);
     }
-    addChip("Indirect rows in scope: " + _idpIhFmtInt(diagnostics.inScopeRowsCount || prepDiag.totalIndirectRows || 0));
+    /* Headline chip — mirrors the walk's top-bookend label exactly so
+       a reader scanning the chip row gets the same scope tag (year +
+       "line items") they'll see in the walk and the Excel reconciliation
+       sheet. Avoids any "are these invoices or rows?" confusion when
+       comparing against numbers pulled from raw-data exploration. */
+    var _ihTy = (diagnostics.targetYear != null && +diagnostics.targetYear > 0) ? +diagnostics.targetYear : null;
+    var _ihYrTag = _ihTy ? " (year " + _ihTy + ")" : "";
+    addChip("Indirect line items in scope" + _ihYrTag + ": " + _idpIhFmtInt(diagnostics.inScopeRowsCount || prepDiag.totalIndirectRows || 0));
     /* Walk bucket 0 — structural drops (missing supplier/site/year).
        Surfaced as its own chip so the user sees this exclusion in the
        chip row in addition to the walk. */
@@ -11725,7 +11743,16 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
     if (typeof currentAppView !== "undefined" && currentAppView !== "indirect-harm") return;
     var statusEl = $("ih-status");
     if (statusEl) statusEl.classList.add("hidden");
-    if (typeof allRowsFiltered === "undefined" || !allRowsFiltered || !allRowsFiltered.length) {
+    /* Pull the post-global-filter slice via _idpIhGetIndirectRows,
+       which now reads from getFilteredRowObjects() — the same source
+       Spend Overview uses. Two distinct empty states are still
+       reported so the user can tell whether the global filters wiped
+       everything out vs. only the L1 = Indirect predicate did. */
+    var globalSrc = null;
+    try {
+      if (typeof getFilteredRowObjects === "function") globalSrc = getFilteredRowObjects();
+    } catch (eGfrTop) { globalSrc = null; }
+    if (!globalSrc || !globalSrc.length) {
       _idpIhLastResult = null;
       var fGridEmpty = $("ih-comparison-grid");
       if (fGridEmpty) {
@@ -12040,10 +12067,25 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
     var b2Zero = +(diag.preCleanExcludedByZeroOnlyCount || 0);
     var b2CreditSpendAbs = +(diag.preCleanExcludedByCreditNoteSpendAbs || 0);
     var b2ZeroSpendAbs = +(diag.preCleanExcludedByZeroOnlySpendAbs || 0);
+    /* Year scope is the math layer's target_year, which equals the
+       Time filter set by the user (or the latest complete year in
+       the slice when no Time filter is set). Stating it explicitly
+       in both bookend labels stops any confusion with an all-years
+       count obtained by exploring the raw dataset — e.g., the 2025
+       indirect line-item count is 61,881 while the 2024+2025+2026
+       indirect line-item count is 143,246, and both numbers look
+       like "indirect line items" out of context. */
+    var ty = (diag.targetYear != null && +diag.targetYear > 0) ? +diag.targetYear : null;
+    var yrTag = ty ? " · year " + ty : "";
     var rows = [
       {
         kind: "bookend_top",
-        label: "Total indirect invoices (in scope, post global filter)",
+        label: "Total indirect line items (in scope" + yrTag + ", post global Spend Review filters)",
+        tooltip:
+          "Counts every L1 = Indirect row in the dataset that survives the global Spend Review filter bar, " +
+          "restricted to the analysis target year" + (ty ? " (" + ty + ")" : "") + ". " +
+          "Each ERP line item counts once; a multi-line PO invoice contributes multiple line items. " +
+          "Spend = signed sum of line_spend over the same rows; equals the Spend Overview \"Total Spend\" KPI tile for the same filter state.",
         count: +(diag.inScopeRowsCount || 0),
         spend: +(diag.inScopeRowsSpend || 0)
       },
@@ -12072,9 +12114,9 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
            "legitimate credits we just can't analyze". */
         annotation: (b2Credit + b2Zero) > 0
           ? "(of which credit-notes/returns: " + b2Credit.toLocaleString()
-              + " invoices / " + _idpIhFmtAnnotationUsd(b2CreditSpendAbs)
+              + " line items / " + _idpIhFmtAnnotationUsd(b2CreditSpendAbs)
               + "; literal zero qty/price: " + b2Zero.toLocaleString()
-              + " invoices / " + _idpIhFmtAnnotationUsd(b2ZeroSpendAbs) + ")"
+              + " line items / " + _idpIhFmtAnnotationUsd(b2ZeroSpendAbs) + ")"
           : ""
       },
       {
@@ -12135,7 +12177,12 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
       },
       {
         kind: "bookend_bottom",
-        label: "Total analyzed (matches Total Spend KPI at top)",
+        label: "Total analyzed line items (unique" + yrTag + " · matches IH \"Total Spend\" KPI at top)",
+        tooltip:
+          "Unique L1 = Indirect line items that landed in at least one kept Cat 1 or Cat 2 opportunity " +
+          "after pre-clean, group-level filters, and Cat 1↔Cat 2 de-duplication. Each line item counts once " +
+          "even if it appears in both a Cat 1 and a Cat 2 group (dedup assigns to the larger-savings side). " +
+          "Spend = signed sum of line_spend over these unique line items; equals the IH \"Total Spend\" KPI tile.",
         count: +(diag.analyzedRowsCount || 0),
         spend: +(diag.analyzedRowsSpend || 0)
       }
@@ -12212,7 +12259,10 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
     var thStyle = "text-align:left;font-weight:600;color:#374151;padding:6px 10px;border-bottom:1px solid #e5e7eb;background:#f9fafb;";
     var thStyleR = thStyle + "text-align:right;";
     var th1 = document.createElement("th"); th1.style.cssText = thStyle; th1.textContent = "Assumption"; thr.appendChild(th1);
-    var th2 = document.createElement("th"); th2.style.cssText = thStyleR; th2.textContent = "Invoices"; thr.appendChild(th2);
+    var th2 = document.createElement("th"); th2.style.cssText = thStyleR;
+    th2.textContent = "Line items";
+    th2.title = "Count of ERP line items (rows in data.json) in scope. One multi-line PO invoice contributes multiple line items.";
+    thr.appendChild(th2);
     var th3 = document.createElement("th"); th3.style.cssText = thStyleR; th3.textContent = "Spend ($)"; thr.appendChild(th3);
     thead.appendChild(thr);
     tbl.appendChild(thead);
@@ -12229,6 +12279,13 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
       var cellLeft = "padding:5px 10px;color:" + color + ";font-weight:" + weight + ";" + bg + border;
       var cellRight = cellLeft + "text-align:right;";
       var tdLab = document.createElement("td"); tdLab.style.cssText = cellLeft; tdLab.textContent = wr.label;
+      /* Bookend tooltip — explains exactly what the count and spend
+         columns mean for the top/bottom anchor rows. Subtle dotted
+         underline cue so the user can see the cell is interactive. */
+      if (wr.tooltip) {
+        tdLab.title = wr.tooltip;
+        tdLab.style.cssText += "text-decoration:underline dotted #cbd5e1;text-underline-offset:3px;cursor:help;";
+      }
       var tdCnt = document.createElement("td"); tdCnt.style.cssText = cellRight; tdCnt.textContent = _idpIhFmtWalkInt(wr.count, wr.kind);
       var tdSp = document.createElement("td"); tdSp.style.cssText = cellRight; tdSp.textContent = _idpIhFmtWalkUsd(wr.spend, wr.kind);
       tr.appendChild(tdLab); tr.appendChild(tdCnt); tr.appendChild(tdSp);
@@ -12253,13 +12310,19 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
        sign-convention note. Both anchor the reader on how the walk
        reconciles. */
     footer.innerHTML =
-      "Exclusions applied in the order shown; each invoice is attributed to the first rule that excludes it." +
+      "Counts above are ERP line items (rows in data.json), not deduplicated PO invoices &mdash; " +
+      "one multi-line PO invoice contributes multiple line items. The top bookend equals the Spend Overview " +
+      "\"Total Spend\" KPI tile for the same global filter state; the bottom bookend equals the IH \"Total Spend\" KPI tile." +
+      "<br/>Exclusions applied in the order shown; each line item is attributed to the first rule that excludes it." +
       "<br/>Spend column shows the absolute value of excluded line_spend (including negative-spend credits/returns). " +
       "Top and bottom bookends are signed totals; bookends reconcile exactly. " +
       "Intermediate row sums may exceed the bookend difference due to credit-note offsets.";
     inner.appendChild(footer);
+    var ty = (mathDiag.targetYear != null && +mathDiag.targetYear > 0) ? +mathDiag.targetYear : null;
+    var walkTitle = "Assumption Walk \u2014 How we got from total indirect line items" +
+      (ty ? " (year " + ty + ")" : "") + " to analyzed spend (click to expand)";
     var wrapped = harmBuildCollapsibleSection(sectionId, {
-      title: "Assumption Walk \u2014 How we got from total indirect invoices to analyzed spend (click to expand)",
+      title: walkTitle,
       variant: "default"
     }, inner);
     wrapped.classList.add("harmonization-section");
@@ -12447,7 +12510,7 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
       var sp = sign * Math.round((+wr.spend || 0) * 100) / 100;
       return {
         "Assumption": wr.label,
-        "Invoices": cnt,
+        "Line items": cnt,
         "Spend ($)": sp
       };
     });
@@ -12465,20 +12528,25 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
       var b2ZSp = +(d.preCleanExcludedByZeroOnlySpendAbs || 0);
       if (b2CCnt + b2ZCnt > 0) {
         var note = "    of which credit-notes/returns: " + b2CCnt.toLocaleString()
-          + " invoices / $" + Math.round(b2CSp).toLocaleString()
+          + " line items / $" + Math.round(b2CSp).toLocaleString()
           + "; literal zero qty/price: " + b2ZCnt.toLocaleString()
-          + " invoices / $" + Math.round(b2ZSp).toLocaleString();
-        reconRowsX.splice(b2Idx + 1, 0, { "Assumption": note, "Invoices": "", "Spend ($)": "" });
+          + " line items / $" + Math.round(b2ZSp).toLocaleString();
+        reconRowsX.splice(b2Idx + 1, 0, { "Assumption": note, "Line items": "", "Spend ($)": "" });
       }
     }
     reconRowsX.push({
-      "Assumption": "Exclusions applied in the order shown; each invoice is attributed to the first rule that excludes it.",
-      "Invoices": "",
+      "Assumption": "Counts above are ERP line items (rows in data.json), not deduplicated PO invoices. One multi-line PO invoice contributes multiple line items.",
+      "Line items": "",
+      "Spend ($)": ""
+    });
+    reconRowsX.push({
+      "Assumption": "Exclusions applied in the order shown; each line item is attributed to the first rule that excludes it.",
+      "Line items": "",
       "Spend ($)": ""
     });
     reconRowsX.push({
       "Assumption": "Spend column shows the absolute value of excluded line_spend (including negative-spend credits/returns). Top and bottom bookends are signed totals; bookends reconcile exactly. Intermediate row sums may exceed the bookend difference due to credit-note offsets.",
-      "Invoices": "",
+      "Line items": "",
       "Spend ($)": ""
     });
     var wsR = XLSX.utils.json_to_sheet(reconRowsX);

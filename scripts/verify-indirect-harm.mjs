@@ -325,14 +325,17 @@ console.log("Clusters split by similarity check: ", fmtInt(clustersSplit));
 
 /* ============== FULL ASSUMPTION WALK ============== */
 console.log("\n========== ASSUMPTION WALK ==========");
-console.log("How we got from total indirect invoices (in scope) to analyzed spend.\n");
+console.log("How we got from total indirect line items (year " + (d.targetYear || "?") + ", post global filter) to analyzed spend.");
+console.log("Counts are ERP line items (rows in data.json), not deduplicated PO invoices.\n");
 /* Walk row tuple: [label, count (positive for bookends, positive
    integer for exclusion rows — sign added at render time), |spend|,
    isBookend, signedSpend (for reconciliation only)]. Exclusion rows
    render |spend| as a negative subtraction so credit-notes don't
    appear to grow the pool. */
+const _vTy = (d.targetYear != null && +d.targetYear > 0) ? +d.targetYear : null;
+const _vYrTag = _vTy ? " · year " + _vTy : "";
 const walkRows = [
-  ["Total indirect invoices (in scope, post global filter)",
+  ["Total indirect line items (in scope" + _vYrTag + ", post global Spend Review filters)",
    d.inScopeRowsCount, d.inScopeRowsSpend, true, d.inScopeRowsSpend],
   ["- Excluded: missing supplier, missing site, or out-of-scope year (structural)",
    (d.structuralExcludedRowsCount || 0),
@@ -378,13 +381,13 @@ const walkRows = [
    (d.excludedAsSingletonRowsCount || 0),
    (d.excludedAsSingletonRowsSpendAbs || 0), false,
    (d.excludedAsSingletonRowsSpend || 0)],
-  ["Total analyzed (matches Total Spend KPI at top)",
+  ["Total analyzed line items (unique" + _vYrTag + " · matches IH Total Spend KPI at top)",
    d.analyzedRowsCount, d.analyzedRowsSpend, true, d.analyzedRowsSpend]
 ];
 function padR(s, n) { s = String(s); return s.length >= n ? s : s + " ".repeat(n - s.length); }
 function padL(s, n) { s = String(s); return s.length >= n ? s : " ".repeat(n - s.length) + s; }
 const colLab = 96, colCnt = 18, colSp = 22;
-console.log(padR("Assumption", colLab) + padL("Invoices", colCnt) + padL("Spend ($)", colSp));
+console.log(padR("Assumption", colLab) + padL("Line items", colCnt) + padL("Spend ($)", colSp));
 console.log("-".repeat(colLab + colCnt + colSp));
 for (let wi = 0; wi < walkRows.length; wi++) {
   const w = walkRows[wi];
@@ -403,15 +406,16 @@ for (let wi = 0; wi < walkRows.length; wi++) {
     const zSp = d.preCleanExcludedByZeroOnlySpendAbs || 0;
     if ((cCnt + zCnt) > 0) {
       console.log("    of which credit-notes/returns: " + cCnt.toLocaleString()
-        + " invoices / $" + Math.round(cSp).toLocaleString()
+        + " line items / $" + Math.round(cSp).toLocaleString()
         + "; literal zero qty/price: " + zCnt.toLocaleString()
-        + " invoices / $" + Math.round(zSp).toLocaleString());
+        + " line items / $" + Math.round(zSp).toLocaleString());
     }
   }
 }
 console.log("-".repeat(colLab + colCnt + colSp));
-console.log("Note 1: exclusions applied in the order shown; each invoice is attributed to the first rule that excludes it.");
-console.log("Note 2: Spend column shows |line_spend| of excluded rows. Top/bottom bookends are signed totals; bookends reconcile exactly.");
+console.log("Note 1: counts are ERP line items (rows in data.json), not deduplicated PO invoices; one multi-line invoice contributes multiple line items.");
+console.log("Note 2: exclusions applied in the order shown; each line item is attributed to the first rule that excludes it.");
+console.log("Note 3: Spend column shows |line_spend| of excluded rows. Top/bottom bookends are signed totals; bookends reconcile exactly.");
 console.log("        Intermediate row sums may exceed the bookend difference due to credit-note offsets.");
 
 // Reconciliation check — uses SIGNED spend on the excluded rows (not |spend|).
