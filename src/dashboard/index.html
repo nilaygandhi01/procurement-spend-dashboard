@@ -11324,6 +11324,57 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
     return out;
   }
 
+  /* On IH tab activation, auto-apply L1 = Indirect to the global
+     Spend Review filter bar so the tab's "Indirect only" assumption
+     is visible in the chip row instead of being a hidden math-layer
+     filter. The user can then drill down with L2 / L3 / L4 / BU /
+     Country / Site / Supplier / RAP Category / Time via the same
+     global bar -- every filter change flows back through
+     runWithCharts() -> renderAllCharts() -> idpIhRender() so the
+     IH tab re-renders against the new slice. Returns true if the
+     filter state was actually mutated (caller should run the full
+     re-render pipeline so other tabs' caches stay in sync), false
+     if L1 already had exactly { Indirect } selected. */
+  function _idpIhForceL1Indirect() {
+    if (typeof dicts === "undefined" || !dicts || !dicts.category_l1) return false;
+    var dict = dicts.category_l1;
+    var targetIx = -1;
+    for (var i = 0; i < dict.length; i++) {
+      if (String(dict[i] == null ? "" : dict[i]).trim().toLowerCase() === "indirect") { targetIx = i; break; }
+    }
+    if (targetIx < 0) return false;
+    var panel = (typeof ffGetPanel === "function") ? ffGetPanel("f-c1") : null;
+    if (!panel) return false;
+    var cbs = panel.querySelectorAll(".ff-opts .ff-cb");
+    if (!cbs || !cbs.length) return false;
+    /* No-op if exactly one box is checked and it's the Indirect box.
+       Honors the user's choice if they manually broaden the L1
+       filter while ON the IH tab -- this auto-apply only fires on
+       tab navigation (see the nav handler in nav()). */
+    var anyChecked = 0;
+    var onlyIndirect = true;
+    for (var j = 0; j < cbs.length; j++) {
+      if (cbs[j].checked) {
+        anyChecked++;
+        if (+cbs[j].getAttribute("data-ix") !== targetIx) onlyIndirect = false;
+      }
+    }
+    if (anyChecked === 1 && onlyIndirect) return false;
+    for (var k = 0; k < cbs.length; k++) {
+      cbs[k].checked = (+cbs[k].getAttribute("data-ix") === targetIx);
+    }
+    if (typeof ffSyncSelectAll === "function") {
+      try { ffSyncSelectAll(panel); } catch (eSa) {}
+    }
+    if (typeof readFiltersFromForm === "function") {
+      try { readFiltersFromForm(); } catch (eRd) {}
+    }
+    if (typeof updateFilterButtonLabels === "function") {
+      try { updateFilterButtonLabels(); } catch (eUl) {}
+    }
+    return true;
+  }
+
   /* True if a Part Number is "numeric-bearing" — same rule the
      standard Harmonization tab uses via harmonizationItemKey (any
      digit present anywhere in the string). Blank, whitespace-only,
@@ -18771,8 +18822,22 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
       if (bIharm) bIharm.classList.remove("is-active");
       if (bPE) bPE.classList.remove("is-active");
       if (bIharm) bIharm.classList.add("is-active");
+      /* Auto-apply L1 = Indirect to the global Spend Review filter
+         bar so the tab's defining assumption is visible in the chip
+         row (and so the user can clearly see what to drill down
+         INTO via L2/L3/L4/BU/Country/Site/Supplier/RAP/Time). If
+         this mutates state we run the full re-render pipeline
+         (runWithCharts) instead of bare idpIhRender so the Spend
+         Overview / Harmonization / Index Opp caches don't go stale
+         in the background; otherwise just re-render IH. */
+      var _ihL1Changed = false;
+      try { _ihL1Changed = _idpIhForceL1Indirect(); } catch (eL1) { _ihL1Changed = false; }
       try {
-        idpIhRender();
+        if (_ihL1Changed && typeof runWithCharts === "function") {
+          runWithCharts();
+        } else {
+          idpIhRender();
+        }
       } catch (eIhTab) {
         if (typeof console !== "undefined" && console.error) console.error("[indirect-harm tab]", eIhTab);
       }
