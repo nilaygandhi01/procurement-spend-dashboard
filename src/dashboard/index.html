@@ -385,7 +385,15 @@
         border-right: 1px solid #dee2e6 !important;
         display: flex;
         flex-direction: column;
-        min-height: 100%;
+        /* Anchor to viewport height directly. The previous `min-height: 100%`
+           resolved against the parent's min-height (not its height), so it
+           collapsed to 0 and the sidebar visually ended at its last nav
+           button instead of stretching to the viewport bottom. align-items:
+           stretch on #app-layout-inner now has a definite cross-axis to
+           stretch into, but the explicit 100vh here is the belt-and-
+           suspenders fix that works in every browser regardless of
+           percentage-resolution quirks. */
+        min-height: 100vh;
         color: #333;
       }
       #app-main-wrap {
@@ -3281,7 +3289,7 @@
     </div>
 
     <div id="app-layout" class="w-full" role="navigation" aria-label="App layout">
-      <div id="app-layout-inner" class="mx-auto flex w-full max-w-[100vw] items-stretch" style="min-height: min(100vh, 100%)">
+      <div id="app-layout-inner" class="mx-auto flex w-full max-w-[100vw] items-stretch" style="min-height: 100vh">
         <aside
           id="app-sidebar"
           class="z-[150] flex flex-col"
