@@ -1,0 +1,81 @@
+{
+  "name": "Adjusted Indirect Scope",
+  "description": "User-defined indirect spend scope, walking from $388.1M total 2025 indirect to ~$194.8M adjusted via supplier + category exclusions. Rules use the real category names from data.json (some differ in wording from the walk write-up but produce the dollar deltas the user specified). All matchers are case-insensitive on string values. A row is excluded if ANY rule matches (OR semantics).",
+  "applies_when": {
+    "category_l1_equals_ci": ["Indirect"]
+  },
+  "exclusions": [
+    {
+      "id": "kpit_supplier",
+      "label": "KPIT supplier",
+      "expected_delta_usd_m": 26.79,
+      "match": { "supplier_contains_ci": ["kpit"] }
+    },
+    {
+      "id": "software_l4",
+      "label": "Software L4 (non-KPIT)",
+      "expected_delta_usd_m": 7.86,
+      "notes": "Walk write-up says L4='Software'; the matching real data value is L4='Software/Undefined' which removes exactly $7.86M (matches expected delta to the cent).",
+      "match": { "category_l4_equals_ci": ["Software/Undefined"] }
+    },
+    {
+      "id": "capex_l3",
+      "label": "Machinery (Capex) L3",
+      "expected_delta_usd_m": 43.55,
+      "notes": "Walk write-up says L3='Mechanical Supplies (CAPEX)'; the matching real data value is L3='Machinery (Capex)' which removes exactly $43.55M.",
+      "match": { "category_l3_equals_ci": ["Machinery (Capex)"] }
+    },
+    {
+      "id": "transport_logistics",
+      "label": "Supply Chain transportation/logistics",
+      "expected_delta_usd_m": 33.55,
+      "notes": "Restricted to L2='Supply Chain'; matches the user's name list against EITHER L3 or L4 (data places some of these at L3, others at L4).",
+      "match": {
+        "category_l2_equals_ci": ["Supply Chain"],
+        "category_l3_or_l4_in_ci": [
+          "Air",
+          "Ocean",
+          "Parcel",
+          "Road (Truck and Rail)",
+          "Shelve and Storage",
+          "Trade Facilitation",
+          "Transportation 3PL",
+          "Transportation/Undefined",
+          "Warehousing 3PL Services",
+          "Warehousing"
+        ]
+      }
+    },
+    {
+      "id": "utilities_l4",
+      "label": "Utilities L4",
+      "expected_delta_usd_m": 6.20,
+      "notes": "Walk write-up says L4='Utilities'; the matching real data value is L4='Energy And Utilities' which removes exactly $6.20M.",
+      "match": { "category_l4_equals_ci": ["Energy And Utilities"] }
+    },
+    {
+      "id": "eng_consulting_l3",
+      "label": "Engineering Consulting L3",
+      "expected_delta_usd_m": 32.11,
+      "notes": "Rule removes L3='Engineering Consulting' ($53.62M in isolation). User's expected $32.11M is the walk-incremental impact after the KPIT supplier rule has already fired (KPIT \u2229 Eng Consulting overlap = $21.51M).",
+      "match": { "category_l3_equals_ci": ["Engineering Consulting"] }
+    },
+    {
+      "id": "eng_services_subset",
+      "label": "Engineering Services subset",
+      "expected_delta_usd_m": 43.28,
+      "notes": "Includes L3='Machinery (Capex)' which overlaps with the capex_l3 rule. OR-semantics handles this: the row is excluded once. The expected $43.28M is the walk-incremental impact (= non-CAPEX portion of the subset).",
+      "match": {
+        "category_l3_in_ci": [
+          "Engineering Research Services",
+          "External Product Testing",
+          "Machine Tools",
+          "Machinery (Capex)"
+        ]
+      }
+    }
+  ],
+  "target_adjusted_total_usd_m": 194.8,
+  "starting_total_usd_m": 388.1,
+  "starting_scope_description": "2025 indirect spend (L1=Indirect, Year=2025)"
+}

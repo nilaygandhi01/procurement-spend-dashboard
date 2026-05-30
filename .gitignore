@@ -9,6 +9,9 @@ src/dashboard/data.json.gz
 *.xls
 *.csv
 
+# Application config (static rules / lookups) — explicitly tracked
+!src/dashboard/config/*.json
+
 # Python bytecode / cache (also see standard Python section below)
 __pycache__/
 pycache/

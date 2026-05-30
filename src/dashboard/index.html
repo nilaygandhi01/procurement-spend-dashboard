@@ -3662,6 +3662,41 @@
             <select id="f-rapcat" class="f-select sr-only" multiple size="0" aria-hidden="true" tabindex="-1"></select>
           </div>
         </div>
+        <div class="ff-group relative shrink-0" data-ff="f-scope">
+          <p class="mb-0.5 pl-0.5 text-[0.65rem] font-medium uppercase tracking-wide idp-muted">Scope</p>
+          <button type="button" class="ff-btn flex w-[11rem] max-w-[13vw] min-w-[9rem] items-stretch overflow-hidden rounded-lg border border-emerald-500/45 bg-slate-900/90 text-left shadow" aria-haspopup="listbox" aria-expanded="false" id="ff-btn-scope">
+            <span class="ff-ic flex w-7 shrink-0 items-center justify-center border-r border-slate-700/80 text-emerald-300" aria-hidden="true"><svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3v18"/></svg></span>
+            <span class="ff-val min-w-0 flex-1 truncate py-1.5 pl-1.5 pr-0.5 text-xs text-slate-200" id="ff-summ-scope" data-ff-summ>Total</span>
+            <span class="ff-caret flex w-4 shrink-0 items-center text-slate-500">▾</span>
+          </button>
+          <div
+            class="ff-panel pointer-events-auto absolute left-0 top-full z-[9999] mt-1 flex hidden min-w-0 flex-col overflow-x-visible overflow-y-visible rounded-lg border border-slate-600 bg-slate-900 shadow-2xl"
+            id="ff-panel-scope"
+            role="group"
+            aria-label="Spend scope"
+            style="width:18rem;"
+          >
+            <div class="flex flex-col gap-1 p-3">
+              <label class="flex cursor-pointer select-none items-start gap-2 rounded px-2 py-2 text-sm text-slate-200 hover:bg-slate-800/60">
+                <input type="radio" name="f-scope-radio" value="total" class="mt-0.5 h-3.5 w-3.5 shrink-0" checked />
+                <span class="flex flex-col leading-tight">
+                  <span class="font-medium">Total</span>
+                  <span class="mt-0.5 text-[0.7rem] text-slate-400">Full dataset \u2014 no scope exclusions applied.</span>
+                </span>
+              </label>
+              <label class="flex cursor-pointer select-none items-start gap-2 rounded px-2 py-2 text-sm text-slate-200 hover:bg-slate-800/60">
+                <input type="radio" name="f-scope-radio" value="adjusted" class="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                <span class="flex flex-col leading-tight">
+                  <span class="font-medium">Adjusted (Indirect)</span>
+                  <span class="mt-0.5 text-[0.7rem] text-slate-400">Indirect spend after KPIT, Software, CAPEX, transport/logistics, Utilities, and Engineering exclusions.</span>
+                </span>
+              </label>
+            </div>
+            <div class="shrink-0 border-t border-slate-600/80 p-2">
+              <button type="button" class="ff-apply w-full rounded-md bg-blue-600 px-3 py-1.5 text-sm font-semibold text-white hover:bg-blue-500">Apply</button>
+            </div>
+          </div>
+        </div>
         <div class="ff-group relative shrink-0" data-ff="period">
           <p class="mb-0.5 pl-0.5 text-[0.65rem] font-medium uppercase tracking-wide idp-muted">Time</p>
           <button type="button" class="ff-btn flex w-[12rem] max-w-[16vw] min-w-[9rem] items-stretch overflow-hidden rounded-lg border border-cyan-500/45 bg-slate-900/90 text-left shadow" aria-haspopup="listbox" aria-expanded="false" id="ff-btn-period">
@@ -5271,7 +5306,7 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
     sortedYms = Array.from(s).sort(function (a, b) { return ymKey(a) - ymKey(b); });
     ymStrRank = new Map();
     sortedYms.forEach(function (st, r) { ymStrRank.set(st, r); });
-    fState = { bu: new Set(), c1: new Set(), c2: new Set(), c3: new Set(), c4: new Set(), co: new Set(), site: new Set(), suSet: new Set(), rapCat: new Set(), r0: 0, r1: Math.max(0, Math.max(0, sortedYms.length - 1)), timeMode: "all" };
+    fState = { bu: new Set(), c1: new Set(), c2: new Set(), c3: new Set(), c4: new Set(), co: new Set(), site: new Set(), suSet: new Set(), rapCat: new Set(), r0: 0, r1: Math.max(0, Math.max(0, sortedYms.length - 1)), timeMode: "all", scope: "total" };
   }
   /** Keep n, dicts, sortedYms in sync with D when startProcurementDashboard() runs again (e.g. reload spend file) — event handlers keep first closure otherwise. */
   function syncSliceFromD() {
@@ -5410,6 +5445,240 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
     }
     return idpGetRapCategoryForFilter(l1, l2, l3);
   }
+  /* ----------------------------------------------------------------
+     Adjusted-Scope filter (loaded from src/dashboard/config/adjusted-scope-rules.json).
+     The rules JSON is fetched once at app init (with a static inlined
+     fallback so the offline single-file Cummins_IDP_Dashboard.html
+     keeps working). When fState.scope === "adjusted", a precomputed
+     Uint8Array mask flags rows that match ANY exclusion rule with OR
+     semantics. The mask is rebuilt lazily on first read after the
+     rules or the underlying dataset change, and cached thereafter so
+     repeated rowOk() calls stay O(1). Per-rule diagnostics (rows /
+     spend dropped, walk-incremental impact) are exposed on
+     window._idpAdjustedScopeDiag for the verification tooling. */
+  var _idpAdjustedScopeRules = null;
+  var _idpAdjustedScopeMask = null;
+  var _idpAdjustedScopeMaskSig = "";
+  var _idpAdjustedScopeDiag = null;
+  function _idpAdjScopeInlinedRules() {
+    return {
+      name: "Adjusted Indirect Scope",
+      applies_when: { category_l1_equals_ci: ["Indirect"] },
+      exclusions: [
+        { id: "kpit_supplier", label: "KPIT supplier", expected_delta_usd_m: 26.79, match: { supplier_contains_ci: ["kpit"] } },
+        { id: "software_l4", label: "Software L4 (non-KPIT)", expected_delta_usd_m: 7.86, match: { category_l4_equals_ci: ["Software/Undefined"] } },
+        { id: "capex_l3", label: "Machinery (Capex) L3", expected_delta_usd_m: 43.55, match: { category_l3_equals_ci: ["Machinery (Capex)"] } },
+        { id: "transport_logistics", label: "Supply Chain transportation/logistics", expected_delta_usd_m: 33.55, match: { category_l2_equals_ci: ["Supply Chain"], category_l3_or_l4_in_ci: ["Air", "Ocean", "Parcel", "Road (Truck and Rail)", "Shelve and Storage", "Trade Facilitation", "Transportation 3PL", "Transportation/Undefined", "Warehousing 3PL Services", "Warehousing"] } },
+        { id: "utilities_l4", label: "Utilities L4", expected_delta_usd_m: 6.20, match: { category_l4_equals_ci: ["Energy And Utilities"] } },
+        { id: "eng_consulting_l3", label: "Engineering Consulting L3", expected_delta_usd_m: 32.11, match: { category_l3_equals_ci: ["Engineering Consulting"] } },
+        { id: "eng_services_subset", label: "Engineering Services subset", expected_delta_usd_m: 43.28, match: { category_l3_in_ci: ["Engineering Research Services", "External Product Testing", "Machine Tools", "Machinery (Capex)"] } }
+      ]
+    };
+  }
+  function _idpAdjScopeLowerSet(list) {
+    var s = Object.create(null);
+    if (!list || !list.length) return s;
+    var i;
+    for (i = 0; i < list.length; i++) {
+      var v = list[i] == null ? "" : String(list[i]).trim().toLowerCase();
+      if (v) s[v] = 1;
+    }
+    return s;
+  }
+  /* Pre-resolve each rule's value lists to {lowercased} sets and to
+     interned dict-index sets for the dicts we know about (so per-row
+     evaluation is an O(1) integer lookup instead of repeated string
+     work). Called once per (rules, dicts) pair. */
+  function _idpAdjScopeCompileRules(rules) {
+    if (!rules || !rules.exclusions) return [];
+    var out = [], i;
+    var d = (typeof D !== "undefined" && D && D.dicts) ? D.dicts : null;
+    function ixSetForDict(dictArr, namesSet) {
+      var setIx = Object.create(null);
+      if (!dictArr || !namesSet) return setIx;
+      var j;
+      for (j = 0; j < dictArr.length; j++) {
+        var sv = dictArr[j] == null ? "" : String(dictArr[j]).trim().toLowerCase();
+        if (sv && namesSet[sv]) setIx[j] = 1;
+      }
+      return setIx;
+    }
+    function ixSetForDictContains(dictArr, tokens) {
+      var setIx = Object.create(null);
+      if (!dictArr || !tokens || !tokens.length) return setIx;
+      var lower = [];
+      for (var t = 0; t < tokens.length; t++) {
+        var tok = tokens[t] == null ? "" : String(tokens[t]).trim().toLowerCase();
+        if (tok) lower.push(tok);
+      }
+      if (!lower.length) return setIx;
+      var j;
+      for (j = 0; j < dictArr.length; j++) {
+        var sv = dictArr[j] == null ? "" : String(dictArr[j]).trim().toLowerCase();
+        if (!sv) continue;
+        for (var k = 0; k < lower.length; k++) {
+          if (sv.indexOf(lower[k]) !== -1) { setIx[j] = 1; break; }
+        }
+      }
+      return setIx;
+    }
+    for (i = 0; i < rules.exclusions.length; i++) {
+      var rule = rules.exclusions[i];
+      if (!rule || !rule.match) continue;
+      var m = rule.match;
+      var compiled = { id: rule.id || ("rule_" + i), label: rule.label || rule.id || ("rule_" + i) };
+      if (m.supplier_contains_ci && d) {
+        compiled.supIx = ixSetForDictContains(d.supplier, m.supplier_contains_ci);
+      }
+      if (m.category_l1_equals_ci && d) {
+        compiled.c1Ix = ixSetForDict(d.category_l1, _idpAdjScopeLowerSet(m.category_l1_equals_ci));
+      }
+      if (m.category_l2_equals_ci && d) {
+        compiled.c2Ix = ixSetForDict(d.category_l2, _idpAdjScopeLowerSet(m.category_l2_equals_ci));
+      }
+      if (m.category_l3_equals_ci && d) {
+        compiled.c3Ix = ixSetForDict(d.category_l3, _idpAdjScopeLowerSet(m.category_l3_equals_ci));
+      }
+      if (m.category_l3_in_ci && d) {
+        compiled.c3Ix = ixSetForDict(d.category_l3, _idpAdjScopeLowerSet(m.category_l3_in_ci));
+      }
+      if (m.category_l4_equals_ci && d) {
+        compiled.c4Ix = ixSetForDict(d.category_l4, _idpAdjScopeLowerSet(m.category_l4_equals_ci));
+      }
+      if (m.category_l4_in_ci && d) {
+        compiled.c4Ix = ixSetForDict(d.category_l4, _idpAdjScopeLowerSet(m.category_l4_in_ci));
+      }
+      if (m.category_l3_or_l4_in_ci && d) {
+        var combined = _idpAdjScopeLowerSet(m.category_l3_or_l4_in_ci);
+        compiled.c3Ix = ixSetForDict(d.category_l3, combined);
+        compiled.c4Ix = ixSetForDict(d.category_l4, combined);
+        compiled.c3OrC4 = true;
+      }
+      out.push(compiled);
+    }
+    return out;
+  }
+  /* Build the mask in one pass over D. Each row gets bit 0 set iff
+     ANY compiled rule matches. The applies_when clause (e.g. L1 =
+     Indirect) gates the rule set: rows outside it are NEVER excluded
+     by Adjusted scope, so e.g. selecting Adjusted with L1 = Direct
+     produces the same view as Total. */
+  function _idpAdjScopeBuildMask() {
+    var sig = (typeof D !== "undefined" && D ? (D.n || 0) : 0) + "|" + (_idpAdjustedScopeRules ? JSON.stringify(_idpAdjustedScopeRules.exclusions || []).length : 0);
+    if (_idpAdjustedScopeMask && _idpAdjustedScopeMaskSig === sig) return _idpAdjustedScopeMask;
+    var nR = (typeof D !== "undefined" && D && typeof D.n === "number") ? D.n : 0;
+    var mask = new Uint8Array(nR);
+    if (!_idpAdjustedScopeRules || !_idpAdjustedScopeRules.exclusions || !nR) {
+      _idpAdjustedScopeMask = mask;
+      _idpAdjustedScopeMaskSig = sig;
+      return mask;
+    }
+    var compiled = _idpAdjScopeCompileRules(_idpAdjustedScopeRules);
+    var aw = _idpAdjustedScopeRules.applies_when || null;
+    var awC1Ix = null;
+    if (aw && aw.category_l1_equals_ci && D.dicts && D.dicts.category_l1) {
+      var nameSet = _idpAdjScopeLowerSet(aw.category_l1_equals_ci);
+      awC1Ix = Object.create(null);
+      var z;
+      for (z = 0; z < D.dicts.category_l1.length; z++) {
+        var sv = D.dicts.category_l1[z] == null ? "" : String(D.dicts.category_l1[z]).trim().toLowerCase();
+        if (sv && nameSet[sv]) awC1Ix[z] = 1;
+      }
+    }
+    var diag = { rules: {}, totalExcludedRows: 0, totalExcludedSpend: 0 };
+    var i, j, rule, hit, ruleHit;
+    for (i = 0; i < compiled.length; i++) {
+      diag.rules[compiled[i].id] = { rows: 0, spend: 0, walk_rows: 0, walk_spend: 0, label: compiled[i].label };
+    }
+    for (i = 0; i < nR; i++) {
+      if (awC1Ix) {
+        var c1i = D.iC1[i];
+        if (!awC1Ix[c1i]) continue;
+      }
+      hit = false;
+      var firstRuleId = null;
+      for (j = 0; j < compiled.length; j++) {
+        rule = compiled[j];
+        ruleHit = true;
+        if (rule.supIx) { if (!rule.supIx[D.iSu[i]]) { ruleHit = false; } }
+        if (ruleHit && rule.c1Ix) { if (!rule.c1Ix[D.iC1[i]]) { ruleHit = false; } }
+        if (ruleHit && rule.c2Ix) { if (!rule.c2Ix[D.iC2[i]]) { ruleHit = false; } }
+        if (ruleHit && rule.c3OrC4) {
+          if (!(rule.c3Ix[D.iC3[i]] || rule.c4Ix[D.iC4[i]])) ruleHit = false;
+        } else {
+          if (ruleHit && rule.c3Ix) { if (!rule.c3Ix[D.iC3[i]]) { ruleHit = false; } }
+          if (ruleHit && rule.c4Ix) { if (!rule.c4Ix[D.iC4[i]]) { ruleHit = false; } }
+        }
+        if (ruleHit) {
+          var sp = +(D.spend && D.spend[i] != null ? D.spend[i] : 0);
+          if (!isFinite(sp)) sp = 0;
+          diag.rules[rule.id].rows++;
+          diag.rules[rule.id].spend += sp;
+          if (!hit) { firstRuleId = rule.id; hit = true; }
+        }
+      }
+      if (hit) {
+        mask[i] = 1;
+        var spR = +(D.spend && D.spend[i] != null ? D.spend[i] : 0);
+        if (!isFinite(spR)) spR = 0;
+        diag.totalExcludedRows++;
+        diag.totalExcludedSpend += spR;
+        if (firstRuleId && diag.rules[firstRuleId]) {
+          diag.rules[firstRuleId].walk_rows++;
+          diag.rules[firstRuleId].walk_spend += spR;
+        }
+      }
+    }
+    _idpAdjustedScopeMask = mask;
+    _idpAdjustedScopeMaskSig = sig;
+    _idpAdjustedScopeDiag = diag;
+    try { if (typeof window !== "undefined") window._idpAdjustedScopeDiag = diag; } catch (eDg) {}
+    return mask;
+  }
+  function _idpAdjScopeIsExcluded(i) {
+    if (!fState || String(fState.scope || "total") !== "adjusted") return false;
+    var m = _idpAdjScopeBuildMask();
+    return !!(m && m[i]);
+  }
+  function _idpAdjScopeInvalidate() {
+    _idpAdjustedScopeMask = null;
+    _idpAdjustedScopeMaskSig = "";
+    _idpAdjustedScopeDiag = null;
+  }
+  function _idpAdjScopeSetRules(rules) {
+    _idpAdjustedScopeRules = rules || null;
+    _idpAdjScopeInvalidate();
+    try { if (typeof window !== "undefined") window._idpAdjustedScopeRules = _idpAdjustedScopeRules; } catch (eSr) {}
+  }
+  /* Load the rules JSON from src/dashboard/config/adjusted-scope-rules.json
+     on app boot. If the fetch fails (e.g. opening the offline
+     Cummins_IDP_Dashboard.html from disk via file://), fall back to the
+     inlined ruleset above so the filter still works. */
+  function _idpAdjScopeFetchRules() {
+    if (typeof window === "undefined" || typeof fetch !== "function") {
+      _idpAdjScopeSetRules(_idpAdjScopeInlinedRules());
+      return;
+    }
+    try {
+      var url = new URL("config/adjusted-scope-rules.json", window.location.href).href;
+      fetch(url, { cache: "no-cache" })
+        .then(function (r) { if (!r || !r.ok) throw new Error("HTTP " + (r ? r.status : "?")); return r.json(); })
+        .then(function (j) {
+          if (j && j.exclusions) {
+            _idpAdjScopeSetRules(j);
+            if (typeof console !== "undefined" && console.log) console.log("[adjusted-scope] loaded " + (j.exclusions.length || 0) + " rules from", url);
+          } else {
+            _idpAdjScopeSetRules(_idpAdjScopeInlinedRules());
+          }
+        })
+        .catch(function () {
+          _idpAdjScopeSetRules(_idpAdjScopeInlinedRules());
+        });
+    } catch (eFR) {
+      _idpAdjScopeSetRules(_idpAdjScopeInlinedRules());
+    }
+  }
+
   function rowOk(i, skipRapCat) {
     if (!inYm(i)) {
       return false;
@@ -5441,6 +5710,9 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
     if (!skipRapCat && fState.rapCat && fState.rapCat.size > 0 && !fState.rapCat.has(idpGetRapCategoryForRowIx(i))) {
       return false;
     }
+    if (_idpAdjScopeIsExcluded(i)) {
+      return false;
+    }
     return true;
   }
   /**
@@ -5462,6 +5734,7 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
     if (!sel(fState.co, dicts.country, D.iCo[i])) return false;
     if (!sel(fState.site, dicts.site, D.iSite[i])) return false;
     if (fState.rapCat && fState.rapCat.size > 0 && !fState.rapCat.has(idpGetRapCategoryForRowIx(i))) return false;
+    if (_idpAdjScopeIsExcluded(i)) return false;
     return true;
   }
   /** Harmonization base slice — must honour every Spend Review filter
@@ -5483,6 +5756,7 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
     if (!sel(fState.co, dicts.country, D.iCo[i])) return false;
     if (!sel(fState.site, dicts.site, D.iSite[i])) return false;
     if (fState.rapCat && fState.rapCat.size > 0 && !fState.rapCat.has(idpGetRapCategoryForRowIx(i))) return false;
+    if (_idpAdjScopeIsExcluded(i)) return false;
     return true;
   }
   function getFiltered() {
@@ -6716,11 +6990,21 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
     fState.site = new Set();
     fState.suSet = new Set();
     fState.rapCat = new Set();
+    fState.scope = "total";
     timeQuickSet("2025");
     spendTimeAggregation = "monthly";
     if ($("spend-over-time-aggregation")) $("spend-over-time-aggregation").value = "monthly";
     closeAllFfPanelsEverywhere();
     populateFilterSelectsFromData();
+    /* Restore the Scope radio panel back to "Total" so the on-screen
+       state matches fState after a reset. */
+    (function () {
+      var radios = document.querySelectorAll("#ff-panel-scope input[name=\"f-scope-radio\"]");
+      var i;
+      for (i = 0; i < radios.length; i++) {
+        radios[i].checked = String(radios[i].value || "total") === "total";
+      }
+    })();
     readFiltersFromForm();
     updateFilterButtonLabels();
     markTimeQuick();
@@ -19276,6 +19560,17 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
     fState.site = getStrSetFromChk("f-site", "site");
     fState.suSet = getSuSetFromChk();
     fState.rapCat = getRapCatSetFromChk();
+    /* Scope (Total vs Adjusted Indirect): selected via the radio group
+       in the Scope filter pill. Defaults to "total" when no radio is
+       checked. Mask cache stays valid across reads because it's keyed
+       on D.n + the rules JSON shape, not on this state. */
+    var scopeRadios = document.querySelectorAll("#ff-panel-scope input[name=\"f-scope-radio\"]");
+    var scopeVal = "total";
+    var rIx;
+    for (rIx = 0; rIx < scopeRadios.length; rIx++) {
+      if (scopeRadios[rIx].checked) { scopeVal = String(scopeRadios[rIx].value || "total"); break; }
+    }
+    fState.scope = scopeVal === "adjusted" ? "adjusted" : "total";
     a0 = $("f-ym0") ? +$("f-ym0").value : 0; a1 = $("f-ym1") ? +$("f-ym1").value : 0;
     fState.r0 = isNaN(a0) ? 0 : a0; fState.r1 = isNaN(a1) ? 0 : a1;
     if (fState.r0 > fState.r1) { t0 = fState.r0; fState.r0 = fState.r1; fState.r1 = t0; }
@@ -19309,7 +19604,8 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
       rapCat: idpCloneSpendReviewSet(fState.rapCat),
       r0: fState.r0,
       r1: fState.r1,
-      timeMode: String(fState.timeMode || "all")
+      timeMode: String(fState.timeMode || "all"),
+      scope: String(fState.scope || "total")
     };
   }
   function idpRestoreSpendReviewFilterSnapshot(snap) {
@@ -19326,6 +19622,7 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
     fState.r0 = snap.r0;
     fState.r1 = snap.r1;
     fState.timeMode = String(snap.timeMode != null ? snap.timeMode : "2025");
+    fState.scope = snap.scope === "adjusted" ? "adjusted" : "total";
   }
   function idpSyncSpendReviewFilterPanelsFromFState() {
     var specs = [
@@ -19572,6 +19869,15 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
       var bper = document.getElementById("ff-btn-period"), vper = document.getElementById("ff-summ-period");
       if (!bper || !vper) return;
       if ((vper.textContent || "").trim() === "All time") bper.classList.remove("ff-filter-active"); else bper.classList.add("ff-filter-active");
+    })();
+    (function () {
+      var bScope = document.getElementById("ff-btn-scope");
+      var vScope = document.getElementById("ff-summ-scope");
+      if (!bScope || !vScope) return;
+      var isAdj = fState && String(fState.scope || "total") === "adjusted";
+      vScope.textContent = isAdj ? "Adjusted (Indirect)" : "Total";
+      if (isAdj) bScope.classList.add("ff-filter-active");
+      else bScope.classList.remove("ff-filter-active");
     })();
   }
   function initFfDropdowns() {
@@ -20131,6 +20437,11 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
     idpWireSpendOverTimeAggregationSelectOnce();
     initHarmFfDropdowns();
     populateFilterSelectsFromData();
+    /* Kick off the Adjusted-Scope rules fetch. Falls back silently to
+       an inlined ruleset (matching the JSON in src/dashboard/config/)
+       so the offline single-file Cummins_IDP_Dashboard.html still
+       works when opened directly from disk. */
+    try { _idpAdjScopeFetchRules(); } catch (eAS) { try { _idpAdjScopeSetRules(_idpAdjScopeInlinedRules()); } catch (eAS2) {} }
     (function () {
       var dln = $("data-line");
       if (dln) dln.textContent = D.n ? "" : (location.protocol !== "file:" ? "No dataset. Open this page from a local web server after building spend data." : "");
