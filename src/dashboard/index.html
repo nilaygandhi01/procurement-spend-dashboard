@@ -9069,7 +9069,7 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
       _ihDdBadge.style.cssText = "color:#7c3aed;font-style:italic;font-size:11px;margin-left:8px;padding:1px 6px;border:1px solid #ddd6fe;border-radius:3px;background:#f5f3ff;font-weight:normal;";
       hdrLeft.appendChild(_ihDdBadge);
       var _ihDdTip = typeof _idpIhFormatFuzzyDescTooltip === "function"
-        ? _idpIhFormatFuzzyDescTooltip(_ihDdFuzzyResolved.allDescriptions) : "";
+        ? _idpIhFormatFuzzyDescTooltip(_ihDdFuzzyResolved.allDescriptions, pk) : "";
       if (_ihDdTip) hdrLeft.title = _ihDdTip;
     } else {
       hdrLeft.textContent = pk;
@@ -9891,7 +9891,7 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
                 if (_ihFuzzy && _ihFuzzy.canonical) {
                   descTxt = _ihFuzzy.canonical;
                   _ihMoreCount = Math.max(0, (_ihFuzzy.distinctCount || 0) - 1);
-                  _ihDescTooltip = _idpIhFormatFuzzyDescTooltip(_ihFuzzy.allDescriptions);
+                  _ihDescTooltip = _idpIhFormatFuzzyDescTooltip(_ihFuzzy.allDescriptions, pkR);
                 }
               }
               siteDisp =
@@ -10488,23 +10488,41 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
         harmAppendCategoryRollupTable(fGrid, sortedBucketByKind[1] || [], sortedBucketByKind[2] || [], sortedBucketByKind[3] || [], ctx.sectionIdPrefix);
       }
       /* Render each category section in the order defined by ctx.
-         Apply the rendering cap from INDIRECT_HARM_MAX_RENDERED_OPPS
-         for harm_mece 4 / 5 sections (IH tab), and unconditionally for
-         any other kind that the ctx flags via def.applyMaxRenderedCap.
-         The Excel export is uncapped — caps are rendering-only. */
+         For IH categories (kind 4 / 5) we apply TWO caps:
+           * INDIRECT_HARM_TABLE_TOP_N (=20) — visible rows in the
+             initial table, top by savings. Keeps the per-tab render
+             under ~1s even when the math layer surfaces 350+
+             qualifying opportunities (each fuzzy row triggers
+             cluster-wide description resolution + DOM creation;
+             rendering all 350 was freezing the browser even WITH the
+             _idpIhResolveFuzzyDesc cache, because the DOM cost alone
+             was prohibitive for low-end machines).
+           * INDIRECT_HARM_MAX_RENDERED_OPPS (=500) — hard ceiling
+             retained from the previous spec; only kicks in if the
+             math layer ever surfaces more than 500 opportunities at
+             once (it currently caps itself at 500 per category, so
+             this guard is largely defensive).
+         The Excel export remains uncapped — caps are rendering-only,
+         and the user gets the full list (now expanded to one row per
+         line item) via the download button. */
       var kindI, def, oppsBucket, finalOpps, truncated, sectionDescription, finalTitle;
       for (kindI = 0; kindI < categoryDefs.length; kindI++) {
         def = categoryDefs[kindI];
         oppsBucket = sortedBucketByKind[def.kind] || [];
         finalOpps = oppsBucket;
         truncated = 0;
-        if ((def.kind === 4 || def.kind === 5 || def.applyMaxRenderedCap) && oppsBucket.length > INDIRECT_HARM_MAX_RENDERED_OPPS) {
+        var _isIhKind = (def.kind === 4 || def.kind === 5);
+        if (_isIhKind && oppsBucket.length > INDIRECT_HARM_TABLE_TOP_N) {
+          finalOpps = oppsBucket.slice(0, INDIRECT_HARM_TABLE_TOP_N);
+          truncated = oppsBucket.length - INDIRECT_HARM_TABLE_TOP_N;
+        } else if (def.applyMaxRenderedCap && oppsBucket.length > INDIRECT_HARM_MAX_RENDERED_OPPS) {
           finalOpps = oppsBucket.slice(0, INDIRECT_HARM_MAX_RENDERED_OPPS);
           truncated = oppsBucket.length - INDIRECT_HARM_MAX_RENDERED_OPPS;
         }
         sectionDescription = def.description || "";
         if (truncated > 0) {
-          sectionDescription += " Showing top " + INDIRECT_HARM_MAX_RENDERED_OPPS + " of " + oppsBucket.length + " qualifying opportunities; the Excel download includes the full list.";
+          var _capUsed = _isIhKind ? INDIRECT_HARM_TABLE_TOP_N : INDIRECT_HARM_MAX_RENDERED_OPPS;
+          sectionDescription += " Showing top " + _capUsed + " of " + oppsBucket.length + " qualifying opportunities by total savings; the Excel download includes the full list.";
         }
         finalTitle = String(def.titleTemplate || ("CATEGORY " + def.kind)).replace(/\$YEAR/g, String(yYear || ""));
         harmRenderCategoryOpportunitySection(fGrid, {
@@ -12258,22 +12276,43 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
      render the "+N more" indicator next to the canonical text.
      allDescriptions = the deduplicated list, used as the hover
      tooltip on both the in-app Description cell and the "fuzzy"
-     badge in the first cell. */
+     badge in the first cell.
+
+     CACHED per partKey for the lifetime of one prep build (the
+     Indirect Harmonization renderer can call this function once per
+     opportunity per render — with 350+ fuzzy opps and clusters that
+     range up to 12,594 transactions, an uncached implementation
+     iterated ~millions of times per tab activation and froze the
+     browser. Cache invalidated via _idpIhInvalidateFuzzyDescCache()
+     called from idpIhRender right before mathOut is consumed, so
+     stale entries can't survive a filter change. */
+  var _idpIhFuzzyDescCache = Object.create(null);
+  var _idpIhFuzzyTipCache = Object.create(null);
+  function _idpIhInvalidateFuzzyDescCache() {
+    _idpIhFuzzyDescCache = Object.create(null);
+    _idpIhFuzzyTipCache = Object.create(null);
+  }
   function _idpIhResolveFuzzyDesc(partKey) {
     if (!partKey || typeof partKey !== "string") return null;
     if (partKey.indexOf("IH#FUZZY#") !== 0) return null;
+    if (_idpIhFuzzyDescCache[partKey] !== undefined) {
+      return _idpIhFuzzyDescCache[partKey];
+    }
     var members = (typeof window !== "undefined" && window._idpIhFuzzyMembersByKey)
       ? window._idpIhFuzzyMembersByKey[partKey] : null;
     if (!members || !members.length) {
       var metaOnly = (typeof window !== "undefined" && window._idpIhFuzzyMetaByKey)
         ? window._idpIhFuzzyMetaByKey[partKey] : null;
       if (metaOnly && metaOnly.merged_descriptions && metaOnly.merged_descriptions.length) {
-        return {
+        var resFromMeta = {
           canonical: String(metaOnly.merged_descriptions[0] || ""),
           distinctCount: metaOnly.merged_descriptions.length,
           allDescriptions: metaOnly.merged_descriptions.slice()
         };
+        _idpIhFuzzyDescCache[partKey] = resFromMeta;
+        return resFromMeta;
       }
+      _idpIhFuzzyDescCache[partKey] = null;
       return null;
     }
     var bestSpend = -Infinity;
@@ -12306,22 +12345,35 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
       if (sp > bestSpend) { bestSpend = sp; bestDesc = dsc; }
     }
     if (!bestDesc && allDescs.length) bestDesc = allDescs[0];
-    return {
+    var res = {
       canonical: bestDesc || "",
       distinctCount: allDescs.length,
       allDescriptions: allDescs
     };
+    _idpIhFuzzyDescCache[partKey] = res;
+    return res;
   }
 
   /* Build the merged-descriptions hover tooltip text. Caps at 15
      entries with a "+N more" suffix so a huge cluster doesn't
-     produce an unusable wall-of-text tooltip. */
-  function _idpIhFormatFuzzyDescTooltip(descList) {
-    if (!descList || !descList.length) return "";
+     produce an unusable wall-of-text tooltip. CACHED by partKey
+     (cluster identity is stable for a single prep build), keyed on
+     the same scope as _idpIhFuzzyDescCache so a single
+     _idpIhInvalidateFuzzyDescCache() call clears both. */
+  function _idpIhFormatFuzzyDescTooltip(descList, partKey) {
+    if (partKey && _idpIhFuzzyTipCache[partKey] !== undefined) {
+      return _idpIhFuzzyTipCache[partKey];
+    }
+    if (!descList || !descList.length) {
+      if (partKey) _idpIhFuzzyTipCache[partKey] = "";
+      return "";
+    }
     var shown = descList.slice(0, 15);
     var extra = descList.length - shown.length;
-    return "Merged descriptions in this fuzzy cluster:\n\u2022 " + shown.join("\n\u2022 ") +
+    var out = "Merged descriptions in this fuzzy cluster:\n\u2022 " + shown.join("\n\u2022 ") +
       (extra > 0 ? "\n\u2026(+" + extra + " more)" : "");
+    if (partKey) _idpIhFuzzyTipCache[partKey] = out;
+    return out;
   }
 
   /* Smart Title-Case for IH site names.
@@ -12568,6 +12620,16 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
     }
     if (mathOut.cat2Opps && mathOut.cat2Opps.length) {
       for (_ppI = 0; _ppI < mathOut.cat2Opps.length; _ppI++) _idpIhPrettifyOppDisplayFields(mathOut.cat2Opps[_ppI]);
+    }
+    /* Invalidate the per-prep fuzzy-description cache before the
+       renderer starts iterating opps — the slice may have changed
+       since the last render (filter change, scope toggle, etc.) and
+       the underlying _idpIhFuzzyMembersByKey was rebuilt above. The
+       cache is keyed by partKey alone and contains row references
+       from the previous prep build that would otherwise become
+       silent stale data. */
+    if (typeof _idpIhInvalidateFuzzyDescCache === "function") {
+      _idpIhInvalidateFuzzyDescCache();
     }
     _idpIhLastResult = {
       cat1Opps: mathOut.cat1Opps,
