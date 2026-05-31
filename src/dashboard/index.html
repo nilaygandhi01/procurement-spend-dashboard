@@ -9038,7 +9038,42 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
     hdr.className = "idp-harm-detail-hdr";
     hdrLeft = document.createElement("div");
     hdrLeft.className = "idp-harm-detail-title";
-    hdrLeft.textContent = pk;
+    /* For IH opportunities (harm_mece 4 or 5) that were keyed by a
+       fuzzy description cluster (pk starts with IH#FUZZY#), surface
+       the canonical Part Description in the 3-card header instead of
+       the synthetic cluster ID — the user sees a meaningful name,
+       not internal plumbing. The raw IH#FUZZY#<n> reference is still
+       emitted as a small italic "Cluster ref" footer line at the
+       bottom of the detail wrap (added below, after the chart) for
+       debugging traceability. Part-keyed rows and the standard Harm
+       tab pks are unchanged. */
+    var _ihDdHarmKind = +(p && p.harm_mece);
+    var _ihDdIsFuzzy = (_ihDdHarmKind === 4 || _ihDdHarmKind === 5)
+      && pk && typeof pk === "string" && pk.indexOf("IH#FUZZY#") === 0;
+    var _ihDdFuzzyResolved = null;
+    if (_ihDdIsFuzzy && typeof _idpIhResolveFuzzyDesc === "function") {
+      _ihDdFuzzyResolved = _idpIhResolveFuzzyDesc(pk);
+    }
+    if (_ihDdFuzzyResolved && _ihDdFuzzyResolved.canonical) {
+      var _ihDdTitleStr = _ihDdFuzzyResolved.canonical;
+      var _ihDdMore = Math.max(0, (_ihDdFuzzyResolved.distinctCount || 0) - 1);
+      hdrLeft.textContent = _ihDdTitleStr;
+      if (_ihDdMore > 0) {
+        var _ihDdMoreSpan = document.createElement("span");
+        _ihDdMoreSpan.textContent = "  +" + _ihDdMore + " more";
+        _ihDdMoreSpan.style.cssText = "color:#7c3aed;font-style:italic;font-size:12px;margin-left:6px;font-weight:normal;";
+        hdrLeft.appendChild(_ihDdMoreSpan);
+      }
+      var _ihDdBadge = document.createElement("span");
+      _ihDdBadge.textContent = "fuzzy";
+      _ihDdBadge.style.cssText = "color:#7c3aed;font-style:italic;font-size:11px;margin-left:8px;padding:1px 6px;border:1px solid #ddd6fe;border-radius:3px;background:#f5f3ff;font-weight:normal;";
+      hdrLeft.appendChild(_ihDdBadge);
+      var _ihDdTip = typeof _idpIhFormatFuzzyDescTooltip === "function"
+        ? _idpIhFormatFuzzyDescTooltip(_ihDdFuzzyResolved.allDescriptions) : "";
+      if (_ihDdTip) hdrLeft.title = _ihDdTip;
+    } else {
+      hdrLeft.textContent = pk;
+    }
     closeBtn = document.createElement("button");
     closeBtn.type = "button";
     closeBtn.className = "idp-harm-detail-close";
@@ -9116,6 +9151,16 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
           ? "supplier count " + (p && p.suppliers ? p.suppliers.length : 0) + ", chart tranches " + w.length + "."
           : "Open with ?idpdiag=1 for console details.");
       wrap.appendChild(noWf);
+    }
+    /* Cluster ref footer — only emitted for IH fuzzy opportunities,
+       solely for debugging traceability. Kept small/italic/muted so
+       it never competes with the primary identifier in the title. */
+    if (_ihDdIsFuzzy) {
+      var _ihDdRef = document.createElement("p");
+      _ihDdRef.className = "mt-2 text-xs idp-muted";
+      _ihDdRef.style.cssText = "font-style:italic;color:#94a3b8;";
+      _ihDdRef.textContent = "Cluster ref: " + pk;
+      wrap.appendChild(_ihDdRef);
     }
     td.appendChild(wrap);
   }
@@ -9789,9 +9834,9 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
               "View details"
             ]
           : harmKind === 4
-            ? ["Part number", "Description", "Site", "Supplier", "Total savings", "View details"]
+            ? ["Part / Description", "Description", "Site", "Supplier", "Total savings", "View details"]
             : harmKind === 5
-              ? ["Part number", "Description", "Sites", "Supplier", "Total savings", "View details"]
+              ? ["Part / Description", "Description", "Sites", "Supplier", "Total savings", "View details"]
               : ["Part number", "Description", "Supplier", "Total savings", "View details"];
     for (li = 0; li < labels.length; li++) {
       th2 = document.createElement("th");
@@ -9864,8 +9909,50 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
               mainTrR.setAttribute("data-harm-table", tableKey);
               mainTrR.setAttribute("data-harm-local-idx", String(rowIdx));
               mainTrR.id = "harm-" + tableKey + "-main-" + rowIdx;
+              /* First column — "Part / Description" for IH tables (harmKind 4/5),
+                 "Part number" for everything else.
+
+                   * Part-number-keyed rows: show the actual Part Number,
+                     no badge. The synthetic IH#FUZZY#<n> cluster ID
+                     never appears for these rows.
+                   * Fuzzy-keyed rows (pkR starts with IH#FUZZY#): show
+                     the canonical Part Description (highest-spend
+                     transaction in the cluster), append "+N more" if
+                     the cluster spans multiple distinct descriptions,
+                     and tag a small italic violet "fuzzy" badge so the
+                     reader can see at-a-glance this row was grouped by
+                     description instead of by part number. Hovering
+                     the cell reveals the full merged-descriptions list.
+
+                 The "Description" column to the right still shows the
+                 canonical description for both row types, which is
+                 mildly redundant for fuzzy rows but keeps the Cat 1
+                 layout consistent with the standard Harm tab. */
               td0R = document.createElement("td");
-              td0R.textContent = pkR;
+              var _ihIsIhTbl = (harmKind === 4 || harmKind === 5);
+              var _ihIsFuzzyRow = _ihIsIhTbl && pkR && typeof pkR === "string" && pkR.indexOf("IH#FUZZY#") === 0;
+              if (_ihIsFuzzyRow) {
+                /* descTxt is already the canonical description because
+                   the fuzzy-resolution block above (line 9844+) ran
+                   for every IH#FUZZY# row before this td was built. */
+                td0R.textContent = descTxt || pkR;
+                if (_ihMoreCount > 0) {
+                  var _ihPkMoreSpan = document.createElement("span");
+                  _ihPkMoreSpan.textContent = "  +" + _ihMoreCount + " more";
+                  _ihPkMoreSpan.style.cssText = "color:#7c3aed;font-style:italic;font-size:11px;margin-left:4px;";
+                  td0R.appendChild(_ihPkMoreSpan);
+                }
+                var _ihFuzzyBadge = document.createElement("span");
+                _ihFuzzyBadge.textContent = "fuzzy";
+                _ihFuzzyBadge.style.cssText = "color:#7c3aed;font-style:italic;font-size:10px;margin-left:6px;padding:1px 5px;border:1px solid #ddd6fe;border-radius:3px;background:#f5f3ff;";
+                td0R.appendChild(_ihFuzzyBadge);
+                if (_ihDescTooltip) {
+                  td0R.title = _ihDescTooltip;
+                  td0R.style.cssText = "text-decoration:underline dotted #cbd5e1;text-underline-offset:3px;cursor:help;";
+                }
+              } else {
+                td0R.textContent = pkR;
+              }
               mainTrR.appendChild(td0R);
               td0R = document.createElement("td");
               td0R.textContent = descTxt;
@@ -13198,6 +13285,16 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
         ? Math.round(1000 * (100 * totalSavings / totalSpend)) / 1000
         : null;
       var canonicalDesc = _idpIhOppCanonicalDescription(partKey, isFuzzy);
+      /* "Part / Description" column mirrors the on-screen IH table:
+         - Part-keyed rows: the actual part number.
+         - Fuzzy-keyed rows: the canonical Part Description with a
+           "+N more" suffix when the cluster spans multiple distinct
+           descriptions. The synthetic IH#FUZZY#<n> cluster ID never
+           appears in this column; it's still available for downstream
+           traceability in the separate "Cluster Ref" column. */
+      var partOrDesc = partKey;
+      if (isFuzzy && canonicalDesc) partOrDesc = canonicalDesc;
+      var clusterRef = isFuzzy ? partKey : "";
       var oppKey = catNum === 1 ? p._c1Key : p._c2Key;
       var lines = (oppKey && idx[oppKey]) ? idx[oppKey].slice() : [];
       /* Defensive fallback: if no attributed rows came back (e.g.
@@ -13211,8 +13308,9 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
         out.push({
           "Category": categoryLabel,
           "Confidence": confidenceLabel,
-          "Part Key": partKey,
+          "Part / Description": partOrDesc,
           "Keyed By": keyedBy,
+          "Cluster Ref": clusterRef,
           "Opp Description": canonicalDesc,
           "Merged Descriptions": mergedDescs,
           "Opp Site(s)": oppSiteJoined,
@@ -13258,8 +13356,9 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
         out.push({
           "Category": categoryLabel,
           "Confidence": confidenceLabel,
-          "Part Key": partKey,
+          "Part / Description": partOrDesc,
           "Keyed By": keyedBy,
+          "Cluster Ref": clusterRef,
           "Opp Description": canonicalDesc,
           "Merged Descriptions": mergedDescs,
           "Opp Site(s)": oppSiteJoined,
@@ -13326,12 +13425,14 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
     var wsAll = XLSX.utils.json_to_sheet(allRows.length ? allRows : [{ "Category": "(no opportunities for the current global filters)" }]);
     /* Column widths roughly tuned to the longest values you'd
        reasonably expect in each column. Opp-level columns come first
-       (positions 1-13), line-item columns to the right (positions 14-
-       22). */
+       (positions 1-14), line-item columns to the right (positions
+       15-23). Position 5 = "Cluster Ref" — narrow because it's only
+       populated for fuzzy rows (synthetic IH#FUZZY#<n>); part-keyed
+       rows leave it blank. */
     wsAll["!cols"] = allRows.length ? [
-      { wch: 56 }, { wch: 11 }, { wch: 18 }, { wch: 10 }, { wch: 60 },
-      { wch: 60 }, { wch: 38 }, { wch: 28 }, { wch: 14 }, { wch: 16 },
-      { wch: 16 }, { wch: 16 }, { wch: 11 },
+      { wch: 56 }, { wch: 11 }, { wch: 60 }, { wch: 10 }, { wch: 16 },
+      { wch: 60 }, { wch: 60 }, { wch: 38 }, { wch: 28 }, { wch: 14 },
+      { wch: 16 }, { wch: 16 }, { wch: 16 }, { wch: 11 },
       { wch: 22 }, { wch: 60 }, { wch: 38 }, { wch: 32 },
       { wch: 12 }, { wch: 12 }, { wch: 14 }, { wch: 12 }, { wch: 22 }
     ] : [{ wch: 80 }];
