@@ -12237,6 +12237,141 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
       (extra > 0 ? "\n\u2026(+" + extra + " more)" : "");
   }
 
+  /* Smart Title-Case for IH site names.
+
+     Why this exists: the spend data pipeline (src/scripts/refresh_data.py
+     line ~388) lower-cases the CMI Location Name column before
+     emitting data.json, so every site value reaching the dashboard
+     looks like "jacobs vehicle systems, inc." or "cummins-scania xpi
+     manufacturing, llc". The Indirect Harmonization tab needs to
+     display these in the casing the source spreadsheet had ("Jacobs
+     Vehicle Systems, Inc.", "Cummins-Scania XPI Manufacturing, LLC"),
+     but the lower-casing is one-way (we can't reconstruct the exact
+     original capitalization for every word).
+
+     Strategy: pass through any string that already contains uppercase
+     letters (so a future fix to refresh_data.py that preserves casing
+     becomes a no-op here). For an all-lowercase string, walk it
+     character-by-character and uppercase the first alphabetic char of
+     each word (a word boundary is start-of-string or any
+     non-alphanumeric+non-apostrophe character). Then force the
+     known-acronym whitelist (LLC, INC, LTD, USA, CFS, XPI, CPIF,
+     HUDFLD, CTT, R&D, NV, UK, IT, etc.) back to uppercase, and
+     lowercase a small whitelist of joining words ("of", "and",
+     "the", "in", "on", "at", "to", "for", "de", "da") unless they
+     start the string. This produces visually-correct output for the
+     24 distinct site values currently in data.json without requiring
+     a per-site lookup table.
+
+     Match / group logic uses the RAW lower-cased value; only display
+     surfaces call this prettifier. */
+  var _IDP_IH_SITE_ACRONYMS = (function () {
+    var arr = ["llc", "inc", "ltd", "ltda", "pvt", "co", "nv", "bv", "ag", "sa", "gmbh", "jv",
+      "usa", "us", "uk", "eu", "uae", "rsa",
+      "cfs", "cmi", "xpi", "cpif", "cp", "hudfld", "ctt", "cpf", "mro", "ats", "bof", "msc",
+      "r&d", "rd", "it", "ai", "hr", "qc", "qa", "tc",
+      "&", "ii", "iii", "iv"];
+    var s = Object.create(null);
+    for (var i = 0; i < arr.length; i++) s[arr[i]] = arr[i].toUpperCase();
+    return s;
+  })();
+  var _IDP_IH_SITE_LOWERS = (function () {
+    var arr = ["of", "and", "the", "in", "on", "at", "to", "for", "de", "da", "del", "y", "e"];
+    var s = Object.create(null);
+    for (var i = 0; i < arr.length; i++) s[arr[i]] = 1;
+    return s;
+  })();
+  function _idpIhPrettifySite(raw) {
+    if (raw == null) return "";
+    var s = String(raw);
+    if (!s) return "";
+    /* If the input already has any uppercase letter, treat it as
+       already-cased and return verbatim (idempotent + future-proof). */
+    if (/[A-Z]/.test(s)) return s;
+    var out = "";
+    var i, ch, lastWordStart = 0, atWordStart = true, isFirstWord = true;
+    function flushWordCheck(endIx) {
+      var word = out.slice(lastWordStart, endIx);
+      if (!word) return;
+      var lc = word.toLowerCase();
+      if (_IDP_IH_SITE_ACRONYMS[lc]) {
+        out = out.slice(0, lastWordStart) + _IDP_IH_SITE_ACRONYMS[lc];
+      } else if (!isFirstWord && _IDP_IH_SITE_LOWERS[lc]) {
+        out = out.slice(0, lastWordStart) + lc;
+      }
+      isFirstWord = false;
+    }
+    for (i = 0; i < s.length; i++) {
+      ch = s.charAt(i);
+      var isAlnum = /[A-Za-z0-9'&]/.test(ch);
+      if (isAlnum) {
+        if (atWordStart) {
+          lastWordStart = out.length;
+          out += ch.toUpperCase();
+          atWordStart = false;
+        } else {
+          out += ch;
+        }
+      } else {
+        if (!atWordStart) flushWordCheck(out.length);
+        out += ch;
+        atWordStart = true;
+      }
+    }
+    if (!atWordStart) flushWordCheck(out.length);
+    return out;
+  }
+  /* Format a list of raw site values as a comma-joined string with
+     each entry passed through the prettifier. Used for Cat 2's
+     opportunity-level "Sites" cell in the Excel export. */
+  function _idpIhPrettifySites(rawArr) {
+    if (!rawArr || !rawArr.length) return "";
+    var seen = Object.create(null), out = [];
+    var i, raw, pretty;
+    for (i = 0; i < rawArr.length; i++) {
+      raw = rawArr[i];
+      if (raw == null) continue;
+      var rawKey = String(raw).trim().toLowerCase();
+      if (!rawKey || seen[rawKey]) continue;
+      seen[rawKey] = 1;
+      pretty = _idpIhPrettifySite(raw);
+      if (pretty) out.push(pretty);
+    }
+    return out.join(", ");
+  }
+  /* Walk an opportunity in-place and convert every visible site
+     reference to prettified casing — keeps the math layer / matching
+     code untouched while ensuring every UI surface (opportunity
+     table rows, drill-down tables via export_rows, the Cat 2
+     per-site bar chart labels, the per-site sites tooltip) renders
+     correctly. Called once per opp right after the math returns and
+     before the renderer is invoked. */
+  function _idpIhPrettifyOppDisplayFields(opp) {
+    if (!opp) return;
+    var i;
+    if (opp.suppliers && opp.suppliers.length) {
+      for (i = 0; i < opp.suppliers.length; i++) {
+        var s = opp.suppliers[i];
+        if (s && s.site != null) s.site = _idpIhPrettifySite(s.site);
+      }
+    }
+    /* Cat 2 uses site names as bar chart labels (see
+       harmonization-client.js emitCat2Opps). Cat 1 uses tranche
+       labels ("Tranche #1") and is unaffected by this remap. */
+    if (opp.harm_mece === 5 && opp.chart && Array.isArray(opp.chart.labels)) {
+      for (i = 0; i < opp.chart.labels.length; i++) {
+        opp.chart.labels[i] = _idpIhPrettifySite(opp.chart.labels[i]);
+      }
+    }
+    if (opp.export_rows && opp.export_rows.length) {
+      for (i = 0; i < opp.export_rows.length; i++) {
+        var er = opp.export_rows[i];
+        if (er && er.Site != null) er.Site = _idpIhPrettifySite(er.Site);
+      }
+    }
+    if (opp.benchmark_site != null) opp.benchmark_site = _idpIhPrettifySite(opp.benchmark_site);
+  }
+
   /* Apply small italic violet "fuzzy" badge to rows in the rendered
      opportunity tables whose underlying opp was keyed by IH#FUZZY#.
      Runs after the unified renderer paints. Hover shows the merged
@@ -12334,6 +12469,19 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
       }
       return;
     }
+    /* Apply raw-casing prettify pass to every visible site reference
+       on each opportunity. Math layer ran against lowercased site
+       values (matching/grouping uses the canonical lowercase form);
+       this pass swaps in proper-cased labels for everything the user
+       sees (Cat 1 / Cat 2 tables, drill-down tables, Cat 2 bar
+       chart labels, Excel export rows). */
+    var _ppI;
+    if (mathOut.cat1Opps && mathOut.cat1Opps.length) {
+      for (_ppI = 0; _ppI < mathOut.cat1Opps.length; _ppI++) _idpIhPrettifyOppDisplayFields(mathOut.cat1Opps[_ppI]);
+    }
+    if (mathOut.cat2Opps && mathOut.cat2Opps.length) {
+      for (_ppI = 0; _ppI < mathOut.cat2Opps.length; _ppI++) _idpIhPrettifyOppDisplayFields(mathOut.cat2Opps[_ppI]);
+    }
     _idpIhLastResult = {
       cat1Opps: mathOut.cat1Opps,
       cat2Opps: mathOut.cat2Opps,
@@ -12341,7 +12489,8 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
       prepDiagnostics: prep.diagnostics,
       fuzzyMembersByKey: prep.fuzzyMembersByKey,
       fuzzyMetaByKey: prep.fuzzyMetaByKey,
-      sliceLength: slice.length
+      sliceLength: slice.length,
+      prepRows: prep.rows
     };
     if (typeof window !== "undefined") {
       window._idpIhLastResult = _idpIhLastResult;
@@ -12941,75 +13090,196 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
 
   function _idpIhEsc(s) { return s == null ? "" : String(s); }
 
-  function _idpIhBuildExcelRowsForPlay(opps, categoryLabel, confidenceLabel, fuzzyMetaByKey) {
+  /* Resolve the opp-level canonical description. Centralised so the
+     per-line-item Excel rows below carry exactly the same Description
+     value the on-screen Cat 1 / Cat 2 tables show — including the
+     "+N more" suffix for fuzzy clusters with multiple distinct
+     descriptions. */
+  function _idpIhOppCanonicalDescription(partKey, isFuzzy) {
+    var desc = "";
+    var sj;
+    if (isFuzzy && typeof _idpIhResolveFuzzyDesc === "function") {
+      var _f = _idpIhResolveFuzzyDesc(partKey);
+      if (_f && _f.canonical) {
+        desc = _f.canonical;
+        if (_f.distinctCount > 1) desc += "  +" + (_f.distinctCount - 1) + " more";
+      }
+      return desc;
+    }
+    if (typeof D !== "undefined" && D && D.rows && typeof idpHarmonizationItemKey === "function") {
+      for (sj = 0; sj < D.rows.length; sj++) {
+        var _row = D.rows[sj];
+        if (!_row) continue;
+        if (idpHarmonizationItemKey(_row) === partKey) {
+          if (typeof psRowDescription === "function") desc = psRowDescription(_row);
+          if (desc) break;
+        }
+      }
+    }
+    return desc;
+  }
+
+  /* Build one Excel row per UNDERLYING LINE ITEM (not per opportunity).
+     Each line carries forward all opportunity-level fields so the
+     sheet is pivot-table-friendly. Line items come from the prep.rows
+     attribution metadata that harmonization-client.js writes during
+     compute (_idpIhAssignedCat, _idpIhC1Key, _idpIhC2Key, set in the
+     dedup pass). Opportunities are sorted by Total Savings desc; line
+     items within an opportunity are sorted by Line Spend desc. */
+  function _idpIhBuildExcelLineItemRowsForPlay(opps, categoryLabel, confidenceLabel, fuzzyMetaByKey, prepRows, catNum) {
     var out = [];
-    var i;
-    for (i = 0; i < opps.length; i++) {
-      var p = opps[i];
+    if (!opps || !opps.length) return out;
+    var sortedOpps = opps.slice().sort(function (a, b) {
+      return (+(b && b.savings) || 0) - (+(a && a.savings) || 0);
+    });
+    /* Index prep.rows once by the relevant opp key for O(N) lookup
+       rather than O(N×M). For Cat 1 we group by _idpIhC1Key; for
+       Cat 2 we group by _idpIhC2Key.
+
+       We include ALL group rows (regardless of _idpIhAssignedCat) so
+       Σ(Line Spend) ties exactly to opp.total_spend — the math layer
+       computes opp.total_spend by summing every g.rows entry, not just
+       those assigned to this category by the dedup pass. Lines that
+       were dedup-resolved into the OTHER category still appear here
+       with their actual unit-price / spend; their "Line Row Savings
+       vs Benchmark" is the same naive formula (max(0,
+       (price-bench)×qty)) regardless of where their savings were
+       credited. Σ(Line Row Savings) ≥ opp.total_savings (equals when
+       no dedup overlap; exceeds when some line's savings were credited
+       to a sibling opportunity in the other category — see the
+       Methodology sheet). */
+    var idx = Object.create(null);
+    var i, r;
+    if (prepRows && prepRows.length) {
+      for (i = 0; i < prepRows.length; i++) {
+        r = prepRows[i];
+        if (!r) continue;
+        var key = catNum === 1 ? r._idpIhC1Key : r._idpIhC2Key;
+        if (!key) continue;
+        if (!idx[key]) idx[key] = [];
+        idx[key].push(r);
+      }
+    }
+    for (i = 0; i < sortedOpps.length; i++) {
+      var p = sortedOpps[i];
       if (!p) continue;
       var partKey = p.item != null ? String(p.item) : "";
       var isFuzzy = partKey.indexOf("IH#FUZZY#") === 0;
       var keyedBy = isFuzzy ? "Fuzzy" : "Part #";
       var meta = fuzzyMetaByKey && fuzzyMetaByKey[partKey];
       var mergedDescs = meta && meta.merged_descriptions ? meta.merged_descriptions.join(" | ") : "";
-      var sites = {};
-      var sup = "";
       var totalSpend = +(p.total_spend || 0);
       var totalQty = +(p.total_quantity || 0);
       var totalSavings = +(p.savings || 0);
       var benchmark = +(p.benchmark || 0);
+      /* Opp-level supplier + site(s): pulled from p.suppliers, which
+         the prettify pass earlier already cased correctly. For Cat 1
+         there's exactly one site; for Cat 2 we comma-join distinct
+         sites. */
+      var oppSup = "";
+      var oppSiteSet = Object.create(null);
+      var oppSiteList = [];
       var sj;
       if (p.suppliers && p.suppliers.length) {
         for (sj = 0; sj < p.suppliers.length; sj++) {
-          if (p.suppliers[sj].site != null) sites[p.suppliers[sj].site] = 1;
-          if (!sup && p.suppliers[sj].supplier) sup = p.suppliers[sj].supplier;
-        }
-      }
-      var siteList = Object.keys(sites).join(", ");
-      var savingsPct = totalSpend > 0 ? Math.round(1000 * (100 * totalSavings / totalSpend)) / 1000 : null;
-      /* Canonical description matches what the on-screen table shows:
-         - For part-number-keyed rows, it's the underlying part's
-           description from the raw spend slice.
-         - For fuzzy-keyed rows, it's the description of the highest
-           |spend| transaction in the cluster (via _idpIhResolveFuzzyDesc).
-         "Merged Descriptions" is preserved for fuzzy rows so the
-         download still has the full deduplicated list. */
-      var canonicalDesc = "";
-      if (isFuzzy && typeof _idpIhResolveFuzzyDesc === "function") {
-        var _ihExFuzzy = _idpIhResolveFuzzyDesc(partKey);
-        if (_ihExFuzzy && _ihExFuzzy.canonical) {
-          canonicalDesc = _ihExFuzzy.canonical;
-          if (_ihExFuzzy.distinctCount > 1) {
-            canonicalDesc += "  +" + (_ihExFuzzy.distinctCount - 1) + " more";
-          }
-        }
-      } else if (!isFuzzy && typeof D !== "undefined" && D && D.rows && typeof idpHarmonizationItemKey === "function") {
-        for (sj = 0; sj < D.rows.length; sj++) {
-          var _exRow = D.rows[sj];
-          if (!_exRow) continue;
-          if (idpHarmonizationItemKey(_exRow) === partKey) {
-            if (typeof psRowDescription === "function") {
-              canonicalDesc = psRowDescription(_exRow);
+          var sx = p.suppliers[sj];
+          if (!oppSup && sx && sx.supplier) oppSup = sx.supplier;
+          if (sx && sx.site != null) {
+            var sxKey = String(sx.site);
+            if (!oppSiteSet[sxKey]) {
+              oppSiteSet[sxKey] = 1;
+              oppSiteList.push(sxKey);
             }
-            if (canonicalDesc) break;
           }
         }
       }
-      out.push({
-        "Category": categoryLabel,
-        "Confidence": confidenceLabel,
-        "Part Key": partKey,
-        "Keyed By": keyedBy,
-        "Description": canonicalDesc,
-        "Merged Descriptions": mergedDescs,
-        "Site(s)": siteList,
-        "Supplier": sup,
-        "Total Spend": Math.round(totalSpend * 100) / 100,
-        "Total Volume": Math.round(totalQty * 100) / 100,
-        "Benchmark $/unit": Math.round(benchmark * 100) / 100,
-        "Total Savings": Math.round(totalSavings * 100) / 100,
-        "Savings %": savingsPct != null ? savingsPct + "%" : ""
+      var oppSiteJoined = oppSiteList.join(", ");
+      var savingsPct = totalSpend > 0
+        ? Math.round(1000 * (100 * totalSavings / totalSpend)) / 1000
+        : null;
+      var canonicalDesc = _idpIhOppCanonicalDescription(partKey, isFuzzy);
+      var oppKey = catNum === 1 ? p._c1Key : p._c2Key;
+      var lines = (oppKey && idx[oppKey]) ? idx[oppKey].slice() : [];
+      /* Defensive fallback: if no attributed rows came back (e.g.
+         opp's underlying _origRow refs went stale because compute()
+         was called from a different code path that bypassed our
+         _idpIhRender wiring), emit a single placeholder row carrying
+         just the opp-level columns. This keeps the workbook structure
+         intact and signals to the analyst that something needs a
+         second look, rather than silently dropping the opp. */
+      if (!lines.length) {
+        out.push({
+          "Category": categoryLabel,
+          "Confidence": confidenceLabel,
+          "Part Key": partKey,
+          "Keyed By": keyedBy,
+          "Opp Description": canonicalDesc,
+          "Merged Descriptions": mergedDescs,
+          "Opp Site(s)": oppSiteJoined,
+          "Opp Supplier": oppSup,
+          "Benchmark $/unit": Math.round(benchmark * 100) / 100,
+          "Opp Total Spend": Math.round(totalSpend * 100) / 100,
+          "Opp Total Volume": Math.round(totalQty * 100) / 100,
+          "Opp Total Savings": Math.round(totalSavings * 100) / 100,
+          "Opp Savings %": savingsPct != null ? savingsPct + "%" : "",
+          "Line Part Number": "",
+          "Line Description": "(no line-item rows attributed — see notes)",
+          "Line Site": "",
+          "Line Supplier": "",
+          "Line Quantity": "",
+          "Line Unit Price": "",
+          "Line Spend": "",
+          "Line Date": "",
+          "Line Row Savings vs Benchmark": ""
+        });
+        continue;
+      }
+      lines.sort(function (a, b) {
+        return (+(b && b.spend) || 0) - (+(a && a.spend) || 0);
       });
+      var lj, ln;
+      for (lj = 0; lj < lines.length; lj++) {
+        ln = lines[lj];
+        var lnQty = +(ln.quantity != null ? ln.quantity : ln.qty) || 0;
+        var lnSpend = +(ln.spend) || 0;
+        var lnUP = +(ln.price);
+        if (!isFinite(lnUP) || lnUP === 0) lnUP = lnQty > 0 ? lnSpend / lnQty : 0;
+        var lnRowSav = 0;
+        if (isFinite(benchmark) && benchmark > 0 && lnUP > benchmark && lnQty > 0) {
+          lnRowSav = (lnUP - benchmark) * lnQty;
+          if (lnRowSav < 0) lnRowSav = 0;
+        }
+        var lnDesc = "";
+        if (typeof psRowDescription === "function") lnDesc = psRowDescription(ln);
+        var lnSiteDisplay = ln.site != null ? _idpIhPrettifySite(ln.site) : "";
+        var lnPart = ln.part != null ? String(ln.part) : "";
+        var lnSup = ln.supplier != null ? String(ln.supplier) : "";
+        var lnDate = ln.d != null && ln.d !== "" ? String(ln.d) : (ln.ym != null ? String(ln.ym) : "");
+        out.push({
+          "Category": categoryLabel,
+          "Confidence": confidenceLabel,
+          "Part Key": partKey,
+          "Keyed By": keyedBy,
+          "Opp Description": canonicalDesc,
+          "Merged Descriptions": mergedDescs,
+          "Opp Site(s)": oppSiteJoined,
+          "Opp Supplier": oppSup,
+          "Benchmark $/unit": Math.round(benchmark * 100) / 100,
+          "Opp Total Spend": Math.round(totalSpend * 100) / 100,
+          "Opp Total Volume": Math.round(totalQty * 100) / 100,
+          "Opp Total Savings": Math.round(totalSavings * 100) / 100,
+          "Opp Savings %": savingsPct != null ? savingsPct + "%" : "",
+          "Line Part Number": lnPart,
+          "Line Description": lnDesc,
+          "Line Site": lnSiteDisplay,
+          "Line Supplier": lnSup,
+          "Line Quantity": Math.round(lnQty * 1000) / 1000,
+          "Line Unit Price": Math.round(lnUP * 100) / 100,
+          "Line Spend": Math.round(lnSpend * 100) / 100,
+          "Line Date": lnDate,
+          "Line Row Savings vs Benchmark": Math.round(lnRowSav * 100) / 100
+        });
+      }
     }
     return out;
   }
@@ -13027,25 +13297,43 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
       }
       return;
     }
-    var c1Rows = _idpIhBuildExcelRowsForPlay(
+    /* Build line-item rows. Cat 1 first, then Cat 2 — within each
+       category opps are sorted by Total Savings desc and line items
+       within each opp are sorted by Line Spend desc (handled inside
+       the builder). The prep.rows reference is needed for line-item
+       attribution; if it's missing we fall back to a degraded one-row-
+       per-opp output, which the builder handles via its placeholder
+       branch. */
+    var prepRowsForExport = _idpIhLastResult.prepRows || [];
+    var c1Rows = _idpIhBuildExcelLineItemRowsForPlay(
       _idpIhLastResult.cat1Opps || [],
       "Cat 1 — Same Supplier, Same Site — Single-Invoice Rightsizing",
       "high",
-      _idpIhLastResult.fuzzyMetaByKey
+      _idpIhLastResult.fuzzyMetaByKey,
+      prepRowsForExport,
+      1
     );
-    var c2Rows = _idpIhBuildExcelRowsForPlay(
+    var c2Rows = _idpIhBuildExcelLineItemRowsForPlay(
       _idpIhLastResult.cat2Opps || [],
       "Cat 2 — Same Supplier, Different Sites — Cross-Site Rightsizing to Site Average",
       "medium",
-      _idpIhLastResult.fuzzyMetaByKey
+      _idpIhLastResult.fuzzyMetaByKey,
+      prepRowsForExport,
+      2
     );
     var allRows = c1Rows.concat(c2Rows);
     var wb = XLSX.utils.book_new();
     var wsAll = XLSX.utils.json_to_sheet(allRows.length ? allRows : [{ "Category": "(no opportunities for the current global filters)" }]);
+    /* Column widths roughly tuned to the longest values you'd
+       reasonably expect in each column. Opp-level columns come first
+       (positions 1-13), line-item columns to the right (positions 14-
+       22). */
     wsAll["!cols"] = allRows.length ? [
       { wch: 56 }, { wch: 11 }, { wch: 18 }, { wch: 10 }, { wch: 60 },
-      { wch: 28 }, { wch: 28 }, { wch: 14 }, { wch: 14 }, { wch: 16 },
-      { wch: 14 }, { wch: 11 }
+      { wch: 60 }, { wch: 38 }, { wch: 28 }, { wch: 14 }, { wch: 16 },
+      { wch: 16 }, { wch: 16 }, { wch: 11 },
+      { wch: 22 }, { wch: 60 }, { wch: 38 }, { wch: 32 },
+      { wch: 12 }, { wch: 12 }, { wch: 14 }, { wch: 12 }, { wch: 22 }
     ] : [{ wch: 80 }];
     XLSX.utils.book_append_sheet(wb, wsAll, "Indirect Opportunities");
     var d = _idpIhLastResult.diagnostics || {};
@@ -13079,6 +13367,8 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
       { "Section": "Fuzzy threshold — INDIRECT_HARM_FUZZY_THRESHOLD", "Value": String(INDIRECT_HARM_FUZZY_THRESHOLD) + " (token-set Jaccard for fuzzy description clustering)" },
       { "Section": "", "Value": "" },
       { "Section": "De-duplication tiebreaker", "Value": "Transactions eligible for BOTH categories go to whichever has the LARGER per-transaction savings. Ties go to Cat 1 (higher confidence, more specific, no cross-site action needed)." },
+      { "Section": "Excel structure", "Value": "Indirect Opportunities sheet emits ONE ROW PER LINE ITEM (not per opportunity). Opportunity-level fields (Category, Confidence, Part Key, Description, Opp Site(s), Opp Supplier, Benchmark, Opp Total Spend, Opp Total Volume, Opp Total Savings, Opp Savings %) repeat across every line item belonging to that opportunity, making the sheet pivot-table-friendly. Line-item fields (Part Number, Description, Site, Supplier, Quantity, Unit Price, Spend, Date, Row Savings vs Benchmark) follow on the right. Ordering: Category (Cat 1 first) → Opp Total Savings (desc) → Line Spend (desc, within each opp)." },
+      { "Section": "Line-item attribution", "Value": "Each line item is attributed to the opportunity whose (key, supplier[, site]) it falls under. ALL lines in an opp's group appear in the export, including any that the dedup pass credited to a sibling opportunity in the OTHER category — so Σ(Line Spend) ties exactly to Opp Total Spend. Line Row Savings vs Benchmark uses the naive formula max(0, (Unit Price − Benchmark) × Quantity); Σ(Line Row Savings) ties to Opp Total Savings when no dedup overlap exists, and exceeds it (by the savings credited to a sibling opp) otherwise." },
       { "Section": "", "Value": "" },
       { "Section": "Diagnostics — total indirect rows", "Value": String(pd.totalIndirectRows || 0) },
       { "Section": "Diagnostics — pre-clean: dummy word", "Value": String(d.preCleanExcludedByDummyWord || 0) },

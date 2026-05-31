@@ -1450,6 +1450,15 @@
         }
         continue;
       }
+      /* Reset per-row IH attribution metadata up front so a row that
+         doesn't make it into the work[] this run (e.g. fails a
+         min-spend/min-unit-price gate) doesn't carry stale assignment
+         data from a previous compute() call on the same prep.rows. */
+      r._idpIhAssignedCat = 0;
+      r._idpIhAssignedSavings = 0;
+      r._idpIhC1Key = null;
+      r._idpIhC2Key = null;
+      r._idpIhAttributed = false;
       work.push({
         yr: yr,
         part: partKey,
@@ -1481,6 +1490,14 @@
       if (!cat2Groups[k2]) cat2Groups[k2] = { key: w.part, supplier: w.supplier, rows: [] };
       cat2Groups[k2].rows.push(w);
       w._c2Key = k2;
+      /* Propagate group keys back to the underlying prep.row so the
+         line-item Excel export can attribute every line to the
+         opportunity it rolled up into. _assignedCat / _assignedSavings
+         are added below in the dedup pass. */
+      if (w._origRow) {
+        w._origRow._idpIhC1Key = k1;
+        w._origRow._idpIhC2Key = k2;
+      }
     }
     /* UoM-mismatch fingerprint detector. Splits the group's rows at
        the median quantity, computes a spend-weighted-average unit
@@ -1709,6 +1726,14 @@
       } else {
         w2._assignedCat = 0;
         w2._assignedSavings = 0;
+      }
+      /* Mirror the assigned cat + savings back onto the prep.row so
+         downstream surfaces (line-item Excel export, drill-downs) can
+         find every line item belonging to a given opportunity. */
+      if (w2._origRow) {
+        w2._origRow._idpIhAssignedCat = w2._assignedCat;
+        w2._origRow._idpIhAssignedSavings = w2._assignedSavings;
+        w2._origRow._idpIhAttributed = true;
       }
     }
     /* Emit Cat 1 opportunities (post-dedup totals). */
