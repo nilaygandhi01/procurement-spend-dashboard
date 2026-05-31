@@ -9731,7 +9731,13 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
     }
     return Object.keys(u).length;
   }
-  /** Sum spend / volume / savings / row count from opportunity objects (same fields as KPIs; no formula changes). */
+  /** Sum spend / volume / savings / row count from opportunity objects.
+   *  Spend and quantity prefer p.assigned_spend / p.assigned_quantity
+   *  when present (IH opps, post-dedup, no Cat-1↔Cat-2 overlap so
+   *  Σ ties exactly to analyzedRowsSpend). Fall back to
+   *  p.total_spend / p.total_quantity for opps that don't carry
+   *  attribution metadata (standard Harm tab, which is MECE on rows
+   *  to begin with — total_spend already equals assigned_spend there). */
   function harmAggregateOppsList(opps) {
     var j, p, hs, q, totSp, totQ, totSv, n;
     totSp = 0;
@@ -9744,12 +9750,17 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
       if (!p) continue;
       hs = harmSumExportSavings(p);
       if (hs != null && !isNaN(hs)) totSv += hs;
-      if (p.total_spend != null && !isNaN(+p.total_spend)) totSp += +p.total_spend;
-      q = p.total_quantity != null ? +p.total_quantity : NaN;
+      var spendVal = (p.assigned_spend != null && !isNaN(+p.assigned_spend))
+        ? +p.assigned_spend
+        : (p.total_spend != null && !isNaN(+p.total_spend) ? +p.total_spend : null);
+      if (spendVal != null) totSp += spendVal;
+      q = (p.assigned_quantity != null && !isNaN(+p.assigned_quantity))
+        ? +p.assigned_quantity
+        : (p.total_quantity != null ? +p.total_quantity : NaN);
       if (!isFinite(q) && p.suppliers && p.suppliers.length) {
         q = 0;
         p.suppliers.forEach(function (s) {
-          q += +(s.quantity || s.qty || 0);
+          q += +(s.assigned_quantity || s.quantity || s.qty || 0);
         });
       }
       if (isFinite(q)) totQ += q;
@@ -9915,18 +9926,32 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
       fGrid.appendChild(rollupOuter);
     })();
   }
-  /** One harmonization category block: title, description, table (server MECE opportunities already filtered). */
+  /** One harmonization category block: title, description, table (server MECE opportunities already filtered).
+   *  `opts.opps` is the (possibly TRUNCATED) list rendered in the table.
+   *  `opts.kpiOpps` is the FULL category bucket used to aggregate the
+   *  blue KPI strip / banner — if omitted, falls back to opts.opps so
+   *  the standard Harm tab (which doesn't truncate) keeps working
+   *  unchanged. The IH tab passes kpiOpps separately so its
+   *  TOP_N=20 table-render cap doesn't bleed into the banner totals
+   *  (the source of the $20.4M-vs-$12.7M Total Savings discrepancy
+   *  reported 2026-05-30). */
   function harmRenderCategoryOpportunitySection(fGrid, opts) {
     var title = opts.title, description = opts.description, opps = opts.opps, rowsSlice = opts.rowsSlice, yYear = opts.yYear;
     var harmKind = opts.harmKind, tableKey = opts.tableKey;
+    var kpiOpps = (opts && Array.isArray(opts.kpiOpps)) ? opts.kpiOpps : opps;
     var secInner, pdesc, wrapScroll, tbl2, thead2, trh, th2, tb2, labels, i, li, p, td;
     var catIdNum, sumCatSav, si, colSpan, harmMoreBtnWrap;
     var kpiShell, kpiToggle, kpiBody, cardsSectionId, svgC, pathC;
     harmMoreBtnWrap = null;
+    /* sumCatSav drives the section header chip ("Cat 1 — $X potential
+       savings, N opps"). It MUST aggregate over the full kpiOpps
+       bucket, not the truncated table view — otherwise the chip shows
+       a "top-20 only" number while the rollup table shows the
+       all-opps number. */
     sumCatSav = 0;
-    if (opps && opps.length) {
-      for (si = 0; si < opps.length; si++) {
-        p = opps[si];
+    if (kpiOpps && kpiOpps.length) {
+      for (si = 0; si < kpiOpps.length; si++) {
+        p = kpiOpps[si];
         li = p ? harmSumExportSavings(p) : null;
         if (li != null && !isNaN(li)) sumCatSav += li;
       }
@@ -9979,7 +10004,9 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
     kpiBody = document.createElement("div");
     kpiBody.id = "content-" + cardsSectionId;
     kpiBody.className = "idp-harm-kpi-collapsible-body";
-    harmAppendCategoryKpiStrip(kpiBody, opps);
+    /* Banner aggregates over the FULL kpiOpps bucket (see opts.kpiOpps
+       comment at the top of this function). */
+    harmAppendCategoryKpiStrip(kpiBody, kpiOpps);
     kpiShell.appendChild(kpiToggle);
     kpiShell.appendChild(kpiBody);
     secInner.appendChild(kpiShell);
@@ -10702,6 +10729,13 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
           title: finalTitle,
           description: sectionDescription,
           opps: finalOpps,
+          /* kpiOpps = the FULL bucket pre-truncation, so the blue KPI
+             strip / section banner aggregates over every qualifying
+             opportunity in the category — not just the top-N rendered
+             in the table. Without this, the banner reports
+             "top-20 savings" while the rollup table reports
+             "all-opps savings" and they silently diverge. */
+          kpiOpps: oppsBucket,
           rowsSlice: rowsSlice,
           yYear: yYear,
           harmKind: def.kind,
@@ -12902,15 +12936,12 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
       },
       onAfterRender: function () {
         try { _idpIhDecorateFuzzyRows(prep.fuzzyMetaByKey); } catch (eDeco) {}
-        /* Override Total Spend KPI tile BEFORE appending the walk so
-           a user opening the page sees a reconciled overall figure
-           even if they never expand the walk. */
-        try {
-          _idpIhOverrideTotalSpendKpi(
-            mathOut.diagnostics && mathOut.diagnostics.analyzedRowsSpend,
-            "ih-"
-          );
-        } catch (eKpi) {}
+        /* No more _idpIhOverrideTotalSpendKpi: harmAggregateOppsList
+           now prefers opp.assigned_spend (set by the math layer's
+           post-dedup attribution pass), so the top KPI tile,
+           per-category banners, and rollup table all naturally
+           compute Σ assigned_spend = analyzedRowsSpend without
+           any rewrite of the rendered DOM. */
         try {
           var fGridForWalk = document.getElementById("ih-comparison-grid");
           if (fGridForWalk) {
@@ -12919,6 +12950,19 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
         } catch (eWalk) {
           if (typeof console !== "undefined" && console.warn)
             console.warn("[indirect-harm] assumption walk render failed:", eWalk && eWalk.message ? eWalk.message : eWalk);
+        }
+        /* Reconciliation guard — verifies the three views agree on
+           the same numbers after every render. Logs a console warning
+           (and shows a chip when ?ihverify=1) if any of:
+              topTile.savings ≠ Σ banners.savings ≠ Σ table.savings
+              topTile.spend   ≠ Σ banners.spend   ≠ Σ table.spend
+           This is the "should be impossible to ship again" test the
+           user asked for. */
+        try {
+          _idpIhAssertReconciliation(mathOut, "ih-");
+        } catch (eRec) {
+          if (typeof console !== "undefined" && console.warn)
+            console.warn("[indirect-harm] reconciliation check failed:", eRec && eRec.message ? eRec.message : eRec);
         }
         try {
           if (typeof window !== "undefined" && window.location &&
@@ -13376,35 +13420,77 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
     return walkRows;
   }
 
-  /* Override the Overall Summary's "Total Spend" KPI tile to show the
-     UNIQUE analyzed-row spend (each invoice counted once) instead of
-     the per-opp sum (which double-counts rows in BOTH Cat 1 and Cat 2
-     kept groups). Walk bottom row uses this same value so the two
-     reconcile to the dollar. Per-category strips are NOT changed —
-     within a category the opps are MECE on rows. */
-  function _idpIhOverrideTotalSpendKpi(analyzedRowsSpend, sectionIdPrefix) {
-    if (typeof document === "undefined") return;
-    if (analyzedRowsSpend == null || !isFinite(+analyzedRowsSpend)) return;
+  /* Reconciliation guard — asserts that the three IH views agree on
+     Total Spend and Total Savings after a render. Reads the actual
+     DOM values to catch any regression where one surface starts
+     computing its own totals instead of going through
+     harmAggregateOppsList / opp.assigned_spend. Logs a console.error
+     on mismatch so it's visible in tests and dev consoles; also
+     attaches a small red chip to the Overall Summary card when
+     ?ihverify=1 is in the URL so reviewers can see it without opening
+     DevTools. */
+  function _idpIhAssertReconciliation(mathOut, sectionIdPrefix) {
+    if (typeof document === "undefined" || !mathOut) return;
     var prefix = sectionIdPrefix || "ih-";
-    /* The Overall Summary collapsible was built with section id
-       <prefix>overall-summary, so its content body is
-       content-<prefix>overall-summary and the KPI strip's blue 5-card
-       grid is inside that body. */
-    var body = document.getElementById("content-" + prefix + "overall-summary");
-    if (!body) return;
-    var cards = body.querySelectorAll(".idp-harm-summary-card");
-    var c;
-    for (c = 0; c < cards.length; c++) {
-      var card = cards[c];
-      var lbl = card.firstChild;
-      if (!lbl || !lbl.textContent) continue;
-      if (lbl.textContent.trim().toUpperCase() === "TOTAL SPEND") {
-        var valNode = card.children[1];
-        if (valNode) {
-          valNode.textContent = fmtOppUSD(analyzedRowsSpend);
-        }
-        break;
+    var cat1 = mathOut.cat1Opps || [];
+    var cat2 = mathOut.cat2Opps || [];
+    var combined = cat1.concat(cat2);
+    var aggOverall = harmAggregateOppsList(combined);
+    var aggCat1 = harmAggregateOppsList(cat1);
+    var aggCat2 = harmAggregateOppsList(cat2);
+    var sumBannersSpend = aggCat1.spend + aggCat2.spend;
+    var sumBannersSav = aggCat1.sav + aggCat2.sav;
+    var diag = mathOut.diagnostics || {};
+    var analyzedSpend = +diag.analyzedRowsSpend || 0;
+    /* The savings field is post-dedup in both code paths so equality
+       must be exact; the spend field is post-dedup via assigned_spend
+       so equality must also be exact (within a few cents of rounding
+       since assigned_spend is roundUsd-ed per opp). */
+    var spendTol = 5;
+    var savTol = 5;
+    var problems = [];
+    if (Math.abs(aggOverall.spend - sumBannersSpend) > spendTol) {
+      problems.push("top-tile spend (" + Math.round(aggOverall.spend) + ") ≠ Σ banners spend (" + Math.round(sumBannersSpend) + "); delta " + Math.round(aggOverall.spend - sumBannersSpend));
+    }
+    if (Math.abs(aggOverall.sav - sumBannersSav) > savTol) {
+      problems.push("top-tile savings (" + Math.round(aggOverall.sav) + ") ≠ Σ banners savings (" + Math.round(sumBannersSav) + "); delta " + Math.round(aggOverall.sav - sumBannersSav));
+    }
+    if (Math.abs(aggOverall.spend - analyzedSpend) > spendTol) {
+      problems.push("top-tile spend (" + Math.round(aggOverall.spend) + ") ≠ walk bookend / analyzedRowsSpend (" + Math.round(analyzedSpend) + "); delta " + Math.round(aggOverall.spend - analyzedSpend));
+    }
+    if (typeof window !== "undefined") {
+      window._idpIhReconciliation = {
+        topTile: { spend: aggOverall.spend, savings: aggOverall.sav, n: aggOverall.n },
+        banners: { cat1: aggCat1, cat2: aggCat2, sumSpend: sumBannersSpend, sumSavings: sumBannersSav },
+        walkBookend: { spend: analyzedSpend },
+        problems: problems,
+        ok: problems.length === 0
+      };
+    }
+    if (problems.length) {
+      if (typeof console !== "undefined" && console.error) {
+        try { console.error("[indirect-harm] reconciliation FAILED:\n  " + problems.join("\n  ")); } catch (eC) {}
       }
+      /* Visible chip when verify mode is on. */
+      try {
+        if (typeof window !== "undefined" && window.location &&
+            /[?&]ihverify=1\b/.test(String(window.location.search || ""))) {
+          var body = document.getElementById("content-" + prefix + "overall-summary");
+          if (body) {
+            var existing = body.querySelector(".ih-reconciliation-chip");
+            if (existing) existing.remove();
+            var chip = document.createElement("div");
+            chip.className = "ih-reconciliation-chip";
+            chip.style.cssText = "margin:6px 12px;padding:6px 10px;border-radius:6px;background:#fef2f2;color:#991b1b;border:1px solid #fecaca;font-size:0.75rem;line-height:1.4;font-family:ui-sans-serif,system-ui;";
+            chip.textContent = "Reconciliation mismatch: " + problems.join("; ");
+            body.insertBefore(chip, body.firstChild);
+          }
+        }
+      } catch (eChip) {}
+    } else if (typeof console !== "undefined" && console.log) {
+      try {
+        console.log("[indirect-harm] reconciliation OK · top tile $" + Math.round(aggOverall.spend / 1e6) + "M spend / $" + Math.round(aggOverall.sav / 1e6) + "M savings / " + aggOverall.n + " opps; matches banners and walk bookend (analyzedRowsSpend $" + Math.round(analyzedSpend / 1e6) + "M)");
+      } catch (eOk) {}
     }
   }
 

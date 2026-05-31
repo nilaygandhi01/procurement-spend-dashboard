@@ -1758,11 +1758,24 @@
         var supRows = [];
         var exportRows = [];
         var totalSpend = 0, totalQty = 0;
+        /* assignedSpend / assignedQty = post-dedup contribution of this
+           Cat 1 opportunity (rows the dedup pass attributed to Cat 1
+           for this group). Rows in this group that the dedup pass
+           routed to Cat 2 are still counted toward total_spend
+           (pre-dedup group total, used by drill-down / Excel for
+           full visibility) but are excluded from assigned_spend so
+           that Σ over all opps reconciles to analyzedRowsSpend with
+           NO double-counting. */
+        var assignedSpend = 0, assignedQty = 0;
         var ti;
         for (ti = 0; ti < sortedRows.length; ti++) {
           var gr = sortedRows[ti];
           totalSpend += gr.spend;
           totalQty += gr.qty;
+          if (gr._assignedCat === 1) {
+            assignedSpend += gr.spend;
+            assignedQty += gr.qty;
+          }
           var rowSav = (gr._assignedCat === 1) ? gr._assignedSavings : 0;
           var trancheLabel = "Tranche #" + (ti + 1);
           supRows.push({
@@ -1798,6 +1811,8 @@
           confidence: "high",
           total_spend: roundUsd(totalSpend),
           total_quantity: roundUsd(totalQty),
+          assigned_spend: roundUsd(assignedSpend),
+          assigned_quantity: roundUsd(assignedQty),
           savings: roundUsd(grpTotal),
           savings_subtitle: formatNotePctBelow(benchmark, stat.maxUP)[1] || "",
           suppliers: supRows,
@@ -1839,6 +1854,25 @@
         var benchmark = stat.minUP;
         var perSite = stat.siteAggregates;
         var perSiteSav = totals[kk] ? totals[kk].perSiteSav : Object.create(null);
+        /* assignedSpend / assignedQty for Cat 2 must walk g.rows
+           directly (perSite aggregates a pre-dedup site total, which
+           would double-count rows the dedup pass routed to Cat 1).
+           Per-row _assignedCat was set in the dedup pass above. */
+        var assignedSpend = 0, assignedQty = 0;
+        var assignedSpendBySite = Object.create(null);
+        var assignedQtyBySite = Object.create(null);
+        var rj;
+        for (rj = 0; rj < g.rows.length; rj++) {
+          var gr2 = g.rows[rj];
+          if (!gr2 || gr2._assignedCat !== 2) continue;
+          assignedSpend += gr2.spend;
+          assignedQty += gr2.qty;
+          var siteN = gr2.site;
+          if (!assignedSpendBySite[siteN]) assignedSpendBySite[siteN] = 0;
+          if (!assignedQtyBySite[siteN]) assignedQtyBySite[siteN] = 0;
+          assignedSpendBySite[siteN] += gr2.spend;
+          assignedQtyBySite[siteN] += gr2.qty;
+        }
         var siteRows = [];
         var sk2;
         for (sk2 in perSite) {
@@ -1848,6 +1882,8 @@
             site: sr.site,
             spend: sr.spend,
             qty: sr.qty,
+            assignedSpend: assignedSpendBySite[sr.site] || 0,
+            assignedQty: assignedQtyBySite[sr.site] || 0,
             txnCount: sr.txnCount,
             unit_price: sr.avgUP,
             assignedSav: perSiteSav[sr.site] || 0,
@@ -1868,6 +1904,8 @@
             unit_price: roundUsd(sr2.unit_price),
             quantity: roundUsd(sr2.qty),
             spend: roundUsd(sr2.spend),
+            assigned_spend: roundUsd(sr2.assignedSpend),
+            assigned_quantity: roundUsd(sr2.assignedQty),
             txn_count: sr2.txnCount,
             _rowSavings: roundUsd(sr2.assignedSav),
             _isBenchmark: !!sr2._isBenchmark
@@ -1896,6 +1934,8 @@
           confidence: "medium",
           total_spend: roundUsd(totalSpend),
           total_quantity: roundUsd(totalQty),
+          assigned_spend: roundUsd(assignedSpend),
+          assigned_quantity: roundUsd(assignedQty),
           savings: roundUsd(grpTotal),
           savings_subtitle: formatNotePctBelow(benchmark, stat.maxUP)[1] || "",
           suppliers: supRows,
@@ -1949,7 +1989,19 @@
     var wi, wr, failReason;
     for (wi = 0; wi < work.length; wi++) {
       wr = work[wi];
-      if (c1Kept[wr._c1Key] || c2Kept[wr._c2Key]) {
+      /* "Analyzed" = the row's assigned category was emitted as an
+         opportunity, so its spend contributes to that opportunity's
+         assigned_spend total. This is strictly tighter than "row's
+         group was kept" — a row assigned to Cat 1 whose Cat 1 group
+         failed minSavings is NOT analyzed even if its Cat 2 group
+         (which the dedup pass declined to use) ended up being kept
+         on the strength of OTHER rows. That row's spend goes through
+         the walk attribution path below (typically minSavings), so
+         the walk reconciles exactly to Σ opp.assigned_spend. */
+      var inKept = false;
+      if (wr._assignedCat === 1 && c1Kept[wr._c1Key]) inKept = true;
+      else if (wr._assignedCat === 2 && c2Kept[wr._c2Key]) inKept = true;
+      if (inKept) {
         diag.analyzedRowsCount++;
         diag.analyzedRowsSpend += wr.spend;
         continue;
