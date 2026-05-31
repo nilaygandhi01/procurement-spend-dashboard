@@ -5447,19 +5447,46 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
   }
   /* ----------------------------------------------------------------
      Adjusted-Scope filter (loaded from src/dashboard/config/adjusted-scope-rules.json).
-     The rules JSON is fetched once at app init (with a static inlined
-     fallback so the offline single-file Cummins_IDP_Dashboard.html
-     keeps working). When fState.scope === "adjusted", a precomputed
-     Uint8Array mask flags rows that match ANY exclusion rule with OR
-     semantics. The mask is rebuilt lazily on first read after the
-     rules or the underlying dataset change, and cached thereafter so
-     repeated rowOk() calls stay O(1). Per-rule diagnostics (rows /
-     spend dropped, walk-incremental impact) are exposed on
-     window._idpAdjustedScopeDiag for the verification tooling. */
+
+     Behavior changed 2026-05-30: the original implementation applied
+     the rules as a hidden Uint8Array exclusion mask layered on top of
+     the existing filter pills, so analysts couldn't see (or edit)
+     what was being excluded — the L3 / L4 / Supplier pills still
+     showed "All" even with $193M of spend removed behind the scenes.
+
+     The new implementation makes the exclusions VISIBLE and EDITABLE.
+     Selecting Scope = "Adjusted (Indirect)" programmatically
+     unchecks the corresponding boxes in the existing pills:
+       * KPIT supplier rule → unchecks any supplier whose name
+         contains "kpit" (CI) in the Supplier pill.
+       * Software / Utilities L4 rules → uncheck the matching boxes
+         in the L4 pill.
+       * CAPEX / Engineering Consulting / Engineering Services subset
+         L3 rules → uncheck the matching boxes in the L3 pill.
+       * Transport/logistics rule → for each value, unchecks it
+         wherever it lives in the data (mostly L4 in this dataset;
+         "Warehousing" is L3).
+     Ownership is tracked per pill in _idpAdjScopeOwned; boxes the
+     user manually re-checks (or other boxes they un-check) are
+     removed from ownership and flip _idpAdjScopeUserModified to true
+     so the Scope pill label can show "Adjusted (Indirect) — modified"
+     while the rest of the canonical scope stays applied. Switching
+     back to Scope = Total re-checks ONLY the boxes still owned by
+     the scope toggle (so a user's prior manual unchecks survive).
+     Reset Filters clears ownership and modified state. */
   var _idpAdjustedScopeRules = null;
-  var _idpAdjustedScopeMask = null;
-  var _idpAdjustedScopeMaskSig = "";
   var _idpAdjustedScopeDiag = null;
+  /* Sets of values currently un-checked by the Scope toggle. Null
+     means "scope is not active" (Total). When non-null, holds the
+     specific values that were unchecked at apply time and have not
+     yet been re-checked by the user. */
+  var _idpAdjScopeOwned = { su: null, c3: null, c4: null };
+  var _idpAdjScopeUserModified = false;
+  /* Last Scope value the filter machinery actually applied (vs the
+     radio's UI state). Used by onFfApply to detect Total → Adjusted
+     and Adjusted → Total transitions and run the appropriate
+     uncheck / re-check pass exactly once per transition. */
+  var _idpAdjScopeLastApplied = "total";
   function _idpAdjScopeInlinedRules() {
     return {
       name: "Adjusted Indirect Scope",
@@ -5485,169 +5512,281 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
     }
     return s;
   }
-  /* Pre-resolve each rule's value lists to {lowercased} sets and to
-     interned dict-index sets for the dicts we know about (so per-row
-     evaluation is an O(1) integer lookup instead of repeated string
-     work). Called once per (rules, dicts) pair. */
-  function _idpAdjScopeCompileRules(rules) {
-    if (!rules || !rules.exclusions) return [];
-    var out = [], i;
+  /* Compute the actual checkbox values to uncheck for each pill, by
+     resolving the rule values against the live dataset dicts at call
+     time. Returns:
+       { su: Set<numericIndex>,  // supplier dict indices to uncheck
+         c3: Set<lowerCasedValue>, // category_l3 raw values (lowercased) to uncheck
+         c4: Set<lowerCasedValue> } // category_l4 raw values (lowercased) to uncheck
+     Casing is normalized to lowercase here because the dataset isn't
+     guaranteed-consistent (some L3 entries are lowercased in
+     data.json, some L4 entries are mixed-case; see
+     scripts/verify-adjusted-scope-filter-mapping.mjs). Matching at
+     apply time uses the same CI normalization on the checkbox's
+     dict-resolved value.
+
+     Rules with `category_l3_or_l4_in_ci`: each value is checked
+     against both L3 and L4 dicts and added to whichever it actually
+     exists in (most transport/logistics values live in L4 in this
+     dataset; "Warehousing" is L3). Values not found anywhere are
+     silently skipped — the verification script lists every mismatch
+     up front, before the user ever sees Scope = Adjusted. */
+  function _idpAdjScopeComputeTargets() {
+    var out = { su: new Set(), c3: new Set(), c4: new Set() };
+    var rules = _idpAdjustedScopeRules;
+    if (!rules || !rules.exclusions) return out;
     var d = (typeof D !== "undefined" && D && D.dicts) ? D.dicts : null;
-    function ixSetForDict(dictArr, namesSet) {
-      var setIx = Object.create(null);
-      if (!dictArr || !namesSet) return setIx;
-      var j;
-      for (j = 0; j < dictArr.length; j++) {
-        var sv = dictArr[j] == null ? "" : String(dictArr[j]).trim().toLowerCase();
-        if (sv && namesSet[sv]) setIx[j] = 1;
-      }
-      return setIx;
-    }
-    function ixSetForDictContains(dictArr, tokens) {
-      var setIx = Object.create(null);
-      if (!dictArr || !tokens || !tokens.length) return setIx;
+    if (!d) return out;
+    function indicesContaining(dictArr, tokens) {
+      var hits = [];
+      if (!dictArr || !tokens || !tokens.length) return hits;
       var lower = [];
       for (var t = 0; t < tokens.length; t++) {
         var tok = tokens[t] == null ? "" : String(tokens[t]).trim().toLowerCase();
         if (tok) lower.push(tok);
       }
-      if (!lower.length) return setIx;
-      var j;
-      for (j = 0; j < dictArr.length; j++) {
+      if (!lower.length) return hits;
+      for (var j = 0; j < dictArr.length; j++) {
         var sv = dictArr[j] == null ? "" : String(dictArr[j]).trim().toLowerCase();
         if (!sv) continue;
         for (var k = 0; k < lower.length; k++) {
-          if (sv.indexOf(lower[k]) !== -1) { setIx[j] = 1; break; }
+          if (sv.indexOf(lower[k]) !== -1) { hits.push(j); break; }
         }
       }
-      return setIx;
+      return hits;
     }
-    for (i = 0; i < rules.exclusions.length; i++) {
+    function dictHas(dictArr, valueLc) {
+      if (!dictArr) return false;
+      for (var j = 0; j < dictArr.length; j++) {
+        var sv = dictArr[j] == null ? "" : String(dictArr[j]).trim().toLowerCase();
+        if (sv === valueLc) return true;
+      }
+      return false;
+    }
+    for (var i = 0; i < rules.exclusions.length; i++) {
       var rule = rules.exclusions[i];
       if (!rule || !rule.match) continue;
       var m = rule.match;
-      var compiled = { id: rule.id || ("rule_" + i), label: rule.label || rule.id || ("rule_" + i) };
-      if (m.supplier_contains_ci && d) {
-        compiled.supIx = ixSetForDictContains(d.supplier, m.supplier_contains_ci);
+      if (m.supplier_contains_ci) {
+        var supHits = indicesContaining(d.supplier, m.supplier_contains_ci);
+        for (var s = 0; s < supHits.length; s++) out.su.add(supHits[s]);
       }
-      if (m.category_l1_equals_ci && d) {
-        compiled.c1Ix = ixSetForDict(d.category_l1, _idpAdjScopeLowerSet(m.category_l1_equals_ci));
+      if (m.category_l3_equals_ci) {
+        for (var a = 0; a < m.category_l3_equals_ci.length; a++) {
+          var v3 = String(m.category_l3_equals_ci[a] || "").trim().toLowerCase();
+          if (v3) out.c3.add(v3);
+        }
       }
-      if (m.category_l2_equals_ci && d) {
-        compiled.c2Ix = ixSetForDict(d.category_l2, _idpAdjScopeLowerSet(m.category_l2_equals_ci));
+      if (m.category_l3_in_ci) {
+        for (var b = 0; b < m.category_l3_in_ci.length; b++) {
+          var v3b = String(m.category_l3_in_ci[b] || "").trim().toLowerCase();
+          if (v3b) out.c3.add(v3b);
+        }
       }
-      if (m.category_l3_equals_ci && d) {
-        compiled.c3Ix = ixSetForDict(d.category_l3, _idpAdjScopeLowerSet(m.category_l3_equals_ci));
+      if (m.category_l4_equals_ci) {
+        for (var c = 0; c < m.category_l4_equals_ci.length; c++) {
+          var v4 = String(m.category_l4_equals_ci[c] || "").trim().toLowerCase();
+          if (v4) out.c4.add(v4);
+        }
       }
-      if (m.category_l3_in_ci && d) {
-        compiled.c3Ix = ixSetForDict(d.category_l3, _idpAdjScopeLowerSet(m.category_l3_in_ci));
+      if (m.category_l4_in_ci) {
+        for (var e = 0; e < m.category_l4_in_ci.length; e++) {
+          var v4b = String(m.category_l4_in_ci[e] || "").trim().toLowerCase();
+          if (v4b) out.c4.add(v4b);
+        }
       }
-      if (m.category_l4_equals_ci && d) {
-        compiled.c4Ix = ixSetForDict(d.category_l4, _idpAdjScopeLowerSet(m.category_l4_equals_ci));
+      if (m.category_l3_or_l4_in_ci) {
+        for (var f = 0; f < m.category_l3_or_l4_in_ci.length; f++) {
+          var vof = String(m.category_l3_or_l4_in_ci[f] || "").trim().toLowerCase();
+          if (!vof) continue;
+          var inL3 = dictHas(d.category_l3, vof);
+          var inL4 = dictHas(d.category_l4, vof);
+          if (inL3) out.c3.add(vof);
+          if (inL4) out.c4.add(vof);
+        }
       }
-      if (m.category_l4_in_ci && d) {
-        compiled.c4Ix = ixSetForDict(d.category_l4, _idpAdjScopeLowerSet(m.category_l4_in_ci));
-      }
-      if (m.category_l3_or_l4_in_ci && d) {
-        var combined = _idpAdjScopeLowerSet(m.category_l3_or_l4_in_ci);
-        compiled.c3Ix = ixSetForDict(d.category_l3, combined);
-        compiled.c4Ix = ixSetForDict(d.category_l4, combined);
-        compiled.c3OrC4 = true;
-      }
-      out.push(compiled);
     }
     return out;
   }
-  /* Build the mask in one pass over D. Each row gets bit 0 set iff
-     ANY compiled rule matches. The applies_when clause (e.g. L1 =
-     Indirect) gates the rule set: rows outside it are NEVER excluded
-     by Adjusted scope, so e.g. selecting Adjusted with L1 = Direct
-     produces the same view as Total. */
-  function _idpAdjScopeBuildMask() {
-    var sig = (typeof D !== "undefined" && D ? (D.n || 0) : 0) + "|" + (_idpAdjustedScopeRules ? JSON.stringify(_idpAdjustedScopeRules.exclusions || []).length : 0);
-    if (_idpAdjustedScopeMask && _idpAdjustedScopeMaskSig === sig) return _idpAdjustedScopeMask;
-    var nR = (typeof D !== "undefined" && D && typeof D.n === "number") ? D.n : 0;
-    var mask = new Uint8Array(nR);
-    if (!_idpAdjustedScopeRules || !_idpAdjustedScopeRules.exclusions || !nR) {
-      _idpAdjustedScopeMask = mask;
-      _idpAdjustedScopeMaskSig = sig;
-      return mask;
+
+  /* Apply Scope = Adjusted: walk the existing filter pills, set every
+     non-target checkbox to checked and every target checkbox to
+     unchecked, and record which boxes the Scope toggle owns (= the
+     boxes whose visual state the toggle is actively forcing to
+     unchecked AND that the user had intended to be selected before
+     the toggle fired).
+
+     About this codebase's convention: a filter pill with ZERO boxes
+     checked is treated as "all selected" by getStrSetFromChk and by
+     idpSyncSpendReviewFilterPanelsFromFState (which itself emits the
+     zero-checked form when fState.suSet is empty). So the user's
+     intended set is computed below as:
+
+         n=0  →  intended = every dict value
+         n=tot →  intended = every dict value (same semantically)
+         0<n<tot →  intended = the specific checked values
+
+     The Scope toggle then materializes (intended − targets) as
+     explicit per-box checked states so the K target boxes are
+     visually unchecked while every other intended-to-be-selected
+     box is checked. That's what the user expects to see when they
+     open the L3 / L4 / Supplier pill after activating Adjusted. */
+  function _idpAdjScopeApplyToFilters() {
+    var targets = _idpAdjScopeComputeTargets();
+    _idpAdjScopeUserModified = false;
+    _idpAdjScopeOwned = { su: new Set(), c3: new Set(), c4: new Set() };
+    if (typeof window !== "undefined") {
+      try { window._idpAdjustedScopeDiag = { targets: { su: Array.from(targets.su), c3: Array.from(targets.c3), c4: Array.from(targets.c4) } }; } catch (eD) {}
     }
-    var compiled = _idpAdjScopeCompileRules(_idpAdjustedScopeRules);
-    var aw = _idpAdjustedScopeRules.applies_when || null;
-    var awC1Ix = null;
-    if (aw && aw.category_l1_equals_ci && D.dicts && D.dicts.category_l1) {
-      var nameSet = _idpAdjScopeLowerSet(aw.category_l1_equals_ci);
-      awC1Ix = Object.create(null);
-      var z;
-      for (z = 0; z < D.dicts.category_l1.length; z++) {
-        var sv = D.dicts.category_l1[z] == null ? "" : String(D.dicts.category_l1[z]).trim().toLowerCase();
-        if (sv && nameSet[sv]) awC1Ix[z] = 1;
-      }
-    }
-    var diag = { rules: {}, totalExcludedRows: 0, totalExcludedSpend: 0 };
-    var i, j, rule, hit, ruleHit;
-    for (i = 0; i < compiled.length; i++) {
-      diag.rules[compiled[i].id] = { rows: 0, spend: 0, walk_rows: 0, walk_spend: 0, label: compiled[i].label };
-    }
-    for (i = 0; i < nR; i++) {
-      if (awC1Ix) {
-        var c1i = D.iC1[i];
-        if (!awC1Ix[c1i]) continue;
-      }
-      hit = false;
-      var firstRuleId = null;
-      for (j = 0; j < compiled.length; j++) {
-        rule = compiled[j];
-        ruleHit = true;
-        if (rule.supIx) { if (!rule.supIx[D.iSu[i]]) { ruleHit = false; } }
-        if (ruleHit && rule.c1Ix) { if (!rule.c1Ix[D.iC1[i]]) { ruleHit = false; } }
-        if (ruleHit && rule.c2Ix) { if (!rule.c2Ix[D.iC2[i]]) { ruleHit = false; } }
-        if (ruleHit && rule.c3OrC4) {
-          if (!(rule.c3Ix[D.iC3[i]] || rule.c4Ix[D.iC4[i]])) ruleHit = false;
+    var pillSpecs = [
+      { sid: "f-su", dkey: "supplier", target: targets.su, owned: _idpAdjScopeOwned.su, byIndex: true },
+      { sid: "f-c3", dkey: "category_l3", target: targets.c3, owned: _idpAdjScopeOwned.c3, byIndex: false },
+      { sid: "f-c4", dkey: "category_l4", target: targets.c4, owned: _idpAdjScopeOwned.c4, byIndex: false }
+    ];
+    for (var p = 0; p < pillSpecs.length; p++) {
+      var spec = pillSpecs[p];
+      if (!spec.target || !spec.target.size) continue;
+      var panel = ffGetPanel(spec.sid);
+      if (!panel) continue;
+      var cbs = panel.querySelectorAll(".ff-opts .ff-cb");
+      var d = dicts && dicts[spec.dkey];
+      /* First pass: count current state to decide whether to expand
+         "n=0 means all" into "every non-target box checked". */
+      var nChecked = 0, total = cbs.length;
+      for (var q = 0; q < total; q++) if (cbs[q].checked) nChecked++;
+      var allMode = (nChecked === 0 || nChecked === total);
+      /* Second pass: set checked state per box according to (intended
+         − targets) and accumulate ownership for the boxes whose
+         transition the toggle is actively forcing. */
+      for (var i = 0; i < total; i++) {
+        var cb = cbs[i];
+        var ix = +cb.getAttribute("data-ix");
+        var isTarget = false;
+        var keyForOwn = null;
+        if (spec.byIndex) {
+          isTarget = spec.target.has(ix);
+          keyForOwn = ix;
         } else {
-          if (ruleHit && rule.c3Ix) { if (!rule.c3Ix[D.iC3[i]]) { ruleHit = false; } }
-          if (ruleHit && rule.c4Ix) { if (!rule.c4Ix[D.iC4[i]]) { ruleHit = false; } }
+          var rawV = d && d[ix] != null ? String(d[ix]).trim() : "";
+          var lc = rawV.toLowerCase();
+          isTarget = spec.target.has(lc);
+          keyForOwn = lc;
         }
-        if (ruleHit) {
-          var sp = +(D.spend && D.spend[i] != null ? D.spend[i] : 0);
-          if (!isFinite(sp)) sp = 0;
-          diag.rules[rule.id].rows++;
-          diag.rules[rule.id].spend += sp;
-          if (!hit) { firstRuleId = rule.id; hit = true; }
+        var wasIntended = allMode ? true : cb.checked;
+        var shouldBeChecked = wasIntended && !isTarget;
+        if (isTarget && wasIntended) {
+          /* The Scope toggle is what's forcing this box to unchecked
+             on this transition. Own it so we can restore on the way
+             back to Total. */
+          spec.owned.add(keyForOwn);
         }
-      }
-      if (hit) {
-        mask[i] = 1;
-        var spR = +(D.spend && D.spend[i] != null ? D.spend[i] : 0);
-        if (!isFinite(spR)) spR = 0;
-        diag.totalExcludedRows++;
-        diag.totalExcludedSpend += spR;
-        if (firstRuleId && diag.rules[firstRuleId]) {
-          diag.rules[firstRuleId].walk_rows++;
-          diag.rules[firstRuleId].walk_spend += spR;
+        if (cb.checked !== shouldBeChecked) {
+          cb.checked = shouldBeChecked;
+          ffChkStyle(cb);
         }
       }
+      if (panel.querySelector(".ff-cb-sa")) ffSyncSelectAll(panel);
     }
-    _idpAdjustedScopeMask = mask;
-    _idpAdjustedScopeMaskSig = sig;
-    _idpAdjustedScopeDiag = diag;
-    try { if (typeof window !== "undefined") window._idpAdjustedScopeDiag = diag; } catch (eDg) {}
-    return mask;
   }
-  function _idpAdjScopeIsExcluded(i) {
-    if (!fState || String(fState.scope || "total") !== "adjusted") return false;
-    var m = _idpAdjScopeBuildMask();
-    return !!(m && m[i]);
+
+  /* Clear Scope = Adjusted: re-check ONLY the boxes still owned by
+     the scope toggle. Boxes the user explicitly un-checked after the
+     toggle was applied have already been pruned from ownership by
+     _idpAdjScopeNoteUserChange, so this won't trample their manual
+     selections. Always clears ownership + modified flag, regardless
+     of whether any re-checks actually happened. */
+  function _idpAdjScopeClearFromFilters() {
+    var owned = _idpAdjScopeOwned || { su: null, c3: null, c4: null };
+    var pillSpecs = [
+      { sid: "f-su", dkey: "supplier", owned: owned.su, byIndex: true },
+      { sid: "f-c3", dkey: "category_l3", owned: owned.c3, byIndex: false },
+      { sid: "f-c4", dkey: "category_l4", owned: owned.c4, byIndex: false }
+    ];
+    for (var p = 0; p < pillSpecs.length; p++) {
+      var spec = pillSpecs[p];
+      if (!spec.owned || !spec.owned.size) continue;
+      var panel = ffGetPanel(spec.sid);
+      if (!panel) continue;
+      var cbs = panel.querySelectorAll(".ff-opts .ff-cb");
+      var d = dicts && dicts[spec.dkey];
+      for (var i = 0; i < cbs.length; i++) {
+        var cb = cbs[i];
+        var ix = +cb.getAttribute("data-ix");
+        var match = false;
+        if (spec.byIndex) {
+          match = spec.owned.has(ix);
+        } else {
+          var rawV = d && d[ix] != null ? String(d[ix]).trim() : "";
+          match = spec.owned.has(rawV.toLowerCase());
+        }
+        if (match) {
+          if (!cb.checked) cb.checked = true;
+          ffChkStyle(cb);
+        }
+      }
+      if (panel.querySelector(".ff-cb-sa")) ffSyncSelectAll(panel);
+    }
+    _idpAdjScopeOwned = { su: null, c3: null, c4: null };
+    _idpAdjScopeUserModified = false;
   }
-  function _idpAdjScopeInvalidate() {
-    _idpAdjustedScopeMask = null;
-    _idpAdjustedScopeMaskSig = "";
-    _idpAdjustedScopeDiag = null;
+
+  /* Called by the filter-bar change-event listener whenever any
+     checkbox in any pill is toggled. If the touched checkbox is one
+     the Scope toggle owns, remove it from ownership and flip the
+     modified flag so the Scope pill label can show "Adjusted
+     (Indirect) — modified". Cheap O(1) lookup. */
+  function _idpAdjScopeNoteUserChange(panel, checkbox) {
+    if (!panel || !checkbox) return;
+    var owned = _idpAdjScopeOwned;
+    if (!owned || (!owned.su && !owned.c3 && !owned.c4)) return;
+    var sid = panel.getAttribute("data-ff-for");
+    var ix = +checkbox.getAttribute("data-ix");
+    var changedOne = false;
+    if (sid === "f-su" && owned.su && owned.su.has(ix)) {
+      owned.su.delete(ix); changedOne = true;
+    } else if (sid === "f-c3" && owned.c3) {
+      var d3 = dicts && dicts.category_l3;
+      var v3 = d3 && d3[ix] != null ? String(d3[ix]).trim().toLowerCase() : "";
+      if (v3 && owned.c3.has(v3)) { owned.c3.delete(v3); changedOne = true; }
+    } else if (sid === "f-c4" && owned.c4) {
+      var d4 = dicts && dicts.category_l4;
+      var v4 = d4 && d4[ix] != null ? String(d4[ix]).trim().toLowerCase() : "";
+      if (v4 && owned.c4.has(v4)) { owned.c4.delete(v4); changedOne = true; }
+    }
+    if (changedOne) _idpAdjScopeUserModified = true;
   }
+
+  /* Read the Scope radio's CURRENT UI state (not the applied state).
+     Always returns "total" or "adjusted". */
+  function _idpAdjScopeReadRadio() {
+    var radios = document.querySelectorAll("#ff-panel-scope input[name=\"f-scope-radio\"]");
+    for (var i = 0; i < radios.length; i++) {
+      if (radios[i].checked) return String(radios[i].value || "total") === "adjusted" ? "adjusted" : "total";
+    }
+    return "total";
+  }
+
+  /* Sync the on-screen radio + the applied flag to the given value.
+     Used by Reset Filters and by code that programmatically forces a
+     scope value (none today, but easier to keep callable for the
+     future). */
+  function _idpAdjScopeForceUiState(scopeVal) {
+    var want = scopeVal === "adjusted" ? "adjusted" : "total";
+    var radios = document.querySelectorAll("#ff-panel-scope input[name=\"f-scope-radio\"]");
+    for (var i = 0; i < radios.length; i++) {
+      radios[i].checked = String(radios[i].value || "total") === want;
+    }
+    _idpAdjScopeLastApplied = want;
+  }
+
+  /* Hidden-mask path is deprecated. Left as a no-op so the three
+     legacy call sites in rowOk / rowOkIgnoreYm / rowOkHarmonization
+     keep compiling without behavior changes — the exclusions are now
+     reflected in the actual checkbox state and consumed by the
+     existing sel() predicates already in those functions. */
+  function _idpAdjScopeIsExcluded(_i) { return false; }
   function _idpAdjScopeSetRules(rules) {
     _idpAdjustedScopeRules = rules || null;
-    _idpAdjScopeInvalidate();
     try { if (typeof window !== "undefined") window._idpAdjustedScopeRules = _idpAdjustedScopeRules; } catch (eSr) {}
   }
   /* Load the rules JSON from src/dashboard/config/adjusted-scope-rules.json
@@ -6991,20 +7130,20 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
     fState.suSet = new Set();
     fState.rapCat = new Set();
     fState.scope = "total";
+    /* Clear Adjusted-Scope ownership / modified state so a fresh
+       Reset doesn't leave dangling references to checkboxes the
+       fillF() rebuild below is about to recreate from scratch. The
+       _idpAdjScopeForceUiState call also flips the radio back to
+       Total and resets _idpAdjScopeLastApplied so the next Apply
+       sees an Adjusted toggle as a fresh Total → Adjusted transition. */
+    _idpAdjScopeOwned = { su: null, c3: null, c4: null };
+    _idpAdjScopeUserModified = false;
     timeQuickSet("2025");
     spendTimeAggregation = "monthly";
     if ($("spend-over-time-aggregation")) $("spend-over-time-aggregation").value = "monthly";
     closeAllFfPanelsEverywhere();
     populateFilterSelectsFromData();
-    /* Restore the Scope radio panel back to "Total" so the on-screen
-       state matches fState after a reset. */
-    (function () {
-      var radios = document.querySelectorAll("#ff-panel-scope input[name=\"f-scope-radio\"]");
-      var i;
-      for (i = 0; i < radios.length; i++) {
-        radios[i].checked = String(radios[i].value || "total") === "total";
-      }
-    })();
+    _idpAdjScopeForceUiState("total");
     readFiltersFromForm();
     updateFilterButtonLabels();
     markTimeQuick();
@@ -7024,7 +7163,41 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
     performPartSearch("");
     idpToastFiltersReset();
   }
-  function onFfApply() { readFiltersFromForm(); updateFilterButtonLabels(); withLoad(function () { runWithCharts(); }); }
+  /* Apply handler for every filter pill's Apply button. If the Scope
+     radio's UI state changed since the last apply, run the
+     uncheck / re-check pass for the appropriate transition BEFORE
+     reading the form into fState — so the readFiltersFromForm() call
+     below picks up the newly-mutated checkbox state.
+
+       Total → Adjusted: programmatically uncheck the rule-matching
+                         boxes in Supplier / L3 / L4. The user can
+                         then re-check any of them individually.
+
+       Adjusted → Total: re-check only the boxes still owned by the
+                         Scope toggle. Any owned box the user already
+                         re-checked has been pruned from ownership by
+                         _idpAdjScopeNoteUserChange, so their manual
+                         selections are preserved (or rather, the
+                         going-back-to-Total leaves them as the user
+                         had them — exactly what the spec calls for).
+
+     Same-state applies (e.g. user clicked Apply on a Supplier pill
+     without touching Scope) are pass-through: no apply/clear runs,
+     ownership and modified flags survive. */
+  function onFfApply() {
+    var newScope = _idpAdjScopeReadRadio();
+    var oldScope = _idpAdjScopeLastApplied;
+    if (newScope !== oldScope) {
+      if (newScope === "adjusted") _idpAdjScopeApplyToFilters();
+      else _idpAdjScopeClearFromFilters();
+      _idpAdjScopeLastApplied = newScope;
+    }
+    readFiltersFromForm();
+    /* Apply is the sole owner of fState.scope (see readFiltersFromForm). */
+    fState.scope = newScope;
+    updateFilterButtonLabels();
+    withLoad(function () { runWithCharts(); });
+  }
   function setFilterSt(f, tot, spendFilt, wFilt, iArr) { if ($("filter-status")) $("filter-status").textContent = f === tot ? "All data" : "Filter applied"; if ($("kpi-spend-bn") && spendFilt != null) $("kpi-spend-bn").textContent = fmtChartMillions(spendFilt / 1e6); if ($("kpi-weight-lbs") && wFilt != null) $("kpi-weight-lbs").textContent = fmtLbsUnit(wFilt); idpUpdateSupplierConcentrationKpis(iArr); }
   function destroySparkKpis() { if (!kpiSparks) { kpiSparks = { s: null, w: null }; } if (kpiSparks.s) { try { kpiSparks.s.destroy(); } catch (e) { /* */ } kpiSparks.s = null; } if (kpiSparks.w) { try { kpiSparks.w.destroy(); } catch (e) { /* */ } kpiSparks.w = null; } }
   function renderKpiSparkCanvases(serS, serW) {
@@ -20013,17 +20186,14 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
     fState.site = getStrSetFromChk("f-site", "site");
     fState.suSet = getSuSetFromChk();
     fState.rapCat = getRapCatSetFromChk();
-    /* Scope (Total vs Adjusted Indirect): selected via the radio group
-       in the Scope filter pill. Defaults to "total" when no radio is
-       checked. Mask cache stays valid across reads because it's keyed
-       on D.n + the rules JSON shape, not on this state. */
-    var scopeRadios = document.querySelectorAll("#ff-panel-scope input[name=\"f-scope-radio\"]");
-    var scopeVal = "total";
-    var rIx;
-    for (rIx = 0; rIx < scopeRadios.length; rIx++) {
-      if (scopeRadios[rIx].checked) { scopeVal = String(scopeRadios[rIx].value || "total"); break; }
-    }
-    fState.scope = scopeVal === "adjusted" ? "adjusted" : "total";
+    /* Scope (Total vs Adjusted Indirect) is NOT read here. The radio
+       state alone doesn't drive Adjusted scope anymore — the new
+       implementation programmatically unchecks the rule-matching
+       boxes when the user clicks the Scope panel's Apply button (or
+       any pill's Apply button while the radio has moved), and that
+       Apply path is the sole owner of fState.scope. See onFfApply().
+       This keeps fState.scope in lock-step with whether the visible
+       checkbox state actually reflects the Adjusted exclusions. */
     a0 = $("f-ym0") ? +$("f-ym0").value : 0; a1 = $("f-ym1") ? +$("f-ym1").value : 0;
     fState.r0 = isNaN(a0) ? 0 : a0; fState.r1 = isNaN(a1) ? 0 : a1;
     if (fState.r0 > fState.r1) { t0 = fState.r0; fState.r0 = fState.r1; fState.r1 = t0; }
@@ -20045,7 +20215,7 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
     return z;
   }
   function idpCaptureSpendReviewFilterSnapshot() {
-    return {
+    var snap = {
       bu: idpCloneSpendReviewSet(fState.bu),
       c1: idpCloneSpendReviewSet(fState.c1),
       c2: idpCloneSpendReviewSet(fState.c2),
@@ -20060,6 +20230,22 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
       timeMode: String(fState.timeMode || "all"),
       scope: String(fState.scope || "total")
     };
+    /* Also capture the Adjusted-Scope machine state so the restore can
+       put ownership / modified back in lock-step with fState. Without
+       this, a snapshot taken with Scope = Adjusted would restore the
+       boxes correctly (via fState.suSet etc.) but lose the toggle's
+       ownership — so toggling back to Total wouldn't know which
+       boxes to re-check. */
+    snap._adjScope = {
+      lastApplied: String(_idpAdjScopeLastApplied || "total"),
+      userModified: !!_idpAdjScopeUserModified,
+      owned: {
+        su: _idpAdjScopeOwned && _idpAdjScopeOwned.su ? new Set(_idpAdjScopeOwned.su) : null,
+        c3: _idpAdjScopeOwned && _idpAdjScopeOwned.c3 ? new Set(_idpAdjScopeOwned.c3) : null,
+        c4: _idpAdjScopeOwned && _idpAdjScopeOwned.c4 ? new Set(_idpAdjScopeOwned.c4) : null
+      }
+    };
+    return snap;
   }
   function idpRestoreSpendReviewFilterSnapshot(snap) {
     if (!snap) return;
@@ -20076,6 +20262,27 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
     fState.r1 = snap.r1;
     fState.timeMode = String(snap.timeMode != null ? snap.timeMode : "2025");
     fState.scope = snap.scope === "adjusted" ? "adjusted" : "total";
+    /* Restore the Adjusted-Scope machine state. The DOM radio + the
+       checkbox states will be reconciled by the caller's subsequent
+       populateFilterSelectsFromData + idpSyncSpendReviewFilterPanelsFromFState
+       pass (which mirrors fState.suSet / c3 / c4 onto the boxes). */
+    var as = snap._adjScope;
+    if (as) {
+      _idpAdjScopeLastApplied = as.lastApplied === "adjusted" ? "adjusted" : "total";
+      _idpAdjScopeUserModified = !!as.userModified;
+      _idpAdjScopeOwned = {
+        su: as.owned && as.owned.su ? new Set(as.owned.su) : null,
+        c3: as.owned && as.owned.c3 ? new Set(as.owned.c3) : null,
+        c4: as.owned && as.owned.c4 ? new Set(as.owned.c4) : null
+      };
+    } else {
+      _idpAdjScopeLastApplied = fState.scope === "adjusted" ? "adjusted" : "total";
+      _idpAdjScopeUserModified = false;
+      _idpAdjScopeOwned = { su: null, c3: null, c4: null };
+    }
+    /* Make the Scope radio reflect the restored fState.scope so the
+       on-screen pill state matches the data state. */
+    _idpAdjScopeForceUiState(fState.scope === "adjusted" ? "adjusted" : "total");
   }
   function idpSyncSpendReviewFilterPanelsFromFState() {
     var specs = [
@@ -20328,9 +20535,17 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
       var vScope = document.getElementById("ff-summ-scope");
       if (!bScope || !vScope) return;
       var isAdj = fState && String(fState.scope || "total") === "adjusted";
-      vScope.textContent = isAdj ? "Adjusted (Indirect)" : "Total";
-      if (isAdj) bScope.classList.add("ff-filter-active");
-      else bScope.classList.remove("ff-filter-active");
+      /* When Adjusted is active and the user has manually toggled any
+         box the Scope owned, show "— modified" so they know the scope
+         is no longer the canonical adjustment. The unchecked boxes
+         themselves are visible proof of which exclusions remain. */
+      if (isAdj) {
+        vScope.textContent = _idpAdjScopeUserModified ? "Adjusted (Indirect) — modified" : "Adjusted (Indirect)";
+        bScope.classList.add("ff-filter-active");
+      } else {
+        vScope.textContent = "Total";
+        bScope.classList.remove("ff-filter-active");
+      }
     })();
   }
   function initFfDropdowns() {
@@ -20385,11 +20600,22 @@ Transactions eligible for both categories go to whichever yields LARGER per-tran
         e.stopPropagation();
         if (t.getAttribute("data-selall") != null) {
           cbs = p && p.querySelectorAll(".ff-opts .ff-cb");
-          for (k = 0; cbs && k < cbs.length; k++) { cbs[k].checked = t.checked; ffChkStyle(cbs[k]); }
+          for (k = 0; cbs && k < cbs.length; k++) {
+            cbs[k].checked = t.checked;
+            ffChkStyle(cbs[k]);
+            /* Select-all sweeps every row, so each owned box that
+               flips counts as a user modification of the Scope
+               toggle's canonical state. */
+            _idpAdjScopeNoteUserChange(p, cbs[k]);
+          }
           if (p) ffSyncSelectAll(p);
           return;
         }
-        if (t.classList && t.classList.contains("ff-cb") && p) { ffChkStyle(t); ffSyncSelectAll(p); }
+        if (t.classList && t.classList.contains("ff-cb") && p) {
+          ffChkStyle(t);
+          ffSyncSelectAll(p);
+          _idpAdjScopeNoteUserChange(p, t);
+        }
       });
     }
     document.querySelectorAll("#filter-bar .ff-panel").forEach(function (panel) { panel.addEventListener("click", function (e) { e.stopPropagation(); }); });
