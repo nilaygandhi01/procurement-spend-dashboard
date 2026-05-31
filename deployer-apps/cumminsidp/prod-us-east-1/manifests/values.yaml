@@ -30,7 +30,7 @@ image:
   # event reused a node-cached layer due to IfNotPresent, shipping
   # stale bits). Keep this value in lockstep with the same field in
   # procurement-spend-dashboard.yaml (the rendered manifest).
-  tag: "0.1.0-30967261"
+  tag: "0.1.0-bc801950"
   # Bumped from IfNotPresent → Always so future tag floats can't
   # silently degrade to a cached node image.
   pullPolicy: Always
