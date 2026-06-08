@@ -1,4 +1,4 @@
-# Cummins IDP Dashboard
+# IDP Dashboard
 
 Procurement spend analytics dashboard with harmonization analysis.
 
